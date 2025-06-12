@@ -1,0 +1,9 @@
+.env
+node_modules/
+secrets/fireblocks_secret.key
+fireblocks_secret.pem
+*.pem
+test.js
+testcall.js
+testfireblocks.js
+testAT.js
