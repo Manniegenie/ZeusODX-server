@@ -132,6 +132,7 @@ app.use("/set-fee", SetfeeRoutes);
 app.use("/pending", clearpendingRoutes);
 app.use("/fetching", fetchrefreshtoken);
 app.use("/fund", FunduserRoutes);
+app.use("/usernamecheck", usernamecheckRoutes);
 
 
 // Protected Routes (JWT Required)
