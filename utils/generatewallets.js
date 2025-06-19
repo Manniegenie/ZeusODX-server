@@ -15,6 +15,16 @@ const currenciesToCreate = [
   { currency: 'USDT', network: 'BSC' },
   { currency: 'USDC', network: 'ETH' },
   { currency: 'USDC', network: 'BSC' },
+  { currency: 'BNB', network: 'BSC' },
+  { currency: 'BNB', network: 'BNB' },
+  { currency: 'MATIC', network: 'MATIC' },
+  { currency: 'XRP', network: 'XRP' },
+  { currency: 'ADA', network: 'ADA' },
+  { currency: 'DOGE', network: 'DOGE' },
+  { currency: 'TRX', network: 'TRX' },
+  { currency: 'LTC', network: 'LTC' },
+  { currency: 'AVAX', network: 'AVAX' },
+  
 ];
 
 // Retry wrapper with exponential backoff and jitter

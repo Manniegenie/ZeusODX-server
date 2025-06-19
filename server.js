@@ -76,7 +76,6 @@ const authenticateToken = (req, res, next) => {
 const avatarsRoutes = require("./routes/avatars");
 const logoutRoutes = require("./routes/logout");
 const refreshtokenRoutes = require("./routes/refreshtoken");
-const updatepinRoutes = require("./routes/updatesecuritypin");
 const addpinRoutes = require("./routes/addsecuritypin");
 const signinRoutes = require("./routes/signin");
 const signupRoutes = require("./routes/signup");
@@ -109,6 +108,8 @@ const BettingRoutes = require('./routes/betting');
 const CableTVRoutes = require('./routes/cabletv');
 const fetchdataplans = require('./routes/dataplans');
 const billwebhookRoutes = require('./routes/billwebhook');
+const passwordpinRoutes = require("./routes/passwordpin");
+const transactionpinRoutes = require("./routes/transactionpin");
 
 
 
@@ -143,7 +144,6 @@ app.use("/usernamecheck", authenticateToken, usernamecheckRoutes);
 app.use("/balance", authenticateToken, balanceRoutes);
 app.use("/deposit", authenticateToken, depositRoutes);
 app.use("/wallet", authenticateToken, walletRoutes);
-app.use("/updatepin", authenticateToken, updatepinRoutes);
 app.use("/withdraw", authenticateToken, withdrawRoutes);
 app.use("/validate-balance", authenticateToken, validatewithdrawRoutes);
 app.use("/2FA", authenticateToken, TwoFARoutes);
@@ -154,6 +154,8 @@ app.use("/verifybill", authenticateToken, VerifybillRoutes);
 app.use("/electricity", authenticateToken, ElectricityRoutes);
 app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
+app.use("/passwordpin", authenticateToken, passwordpinRoutes);
+app.use("/transactionpin", authenticateToken, transactionpinRoutes);
 
 
 
