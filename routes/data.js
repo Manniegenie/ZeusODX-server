@@ -5,6 +5,7 @@ const { vtuAuth } = require('../auth/billauth');
 const { validateUserBalance } = require('../services/balance');
 const { reserveUserBalance, releaseReservedBalance } = require('../services/portfolio');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { validateTransactionLimit } = require('../services/kyccheckservice'); // Add KYC service import
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 
@@ -392,7 +393,7 @@ async function callEBillsDataAirtimeAPI({ phone_number, amount, service_id, vari
 }
 
 /**
- * Main data/airtime purchase endpoint with guaranteed unique order IDs
+ * Main data/airtime purchase endpoint with guaranteed unique order IDs and KYC validation
  */
 router.post('/purchase', async (req, res) => {
   let reservationMade = false;
@@ -460,6 +461,90 @@ router.post('/purchase', async (req, res) => {
       timestamp: new Date().toISOString().slice(0, 19).replace('T', ' '),
       userId 
     });
+
+    // ========================================
+    // KYC LIMIT VALIDATION - NEW ADDITION
+    // ========================================
+    logger.info(`Validating KYC limits for ${service_type} purchase`, { userId, amount, currency: 'NGNB' });
+    
+    try {
+      // Determine transaction type based on service_type
+      const transactionType = service_type === 'data' ? 'DATA' : 'AIRTIME';
+      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', transactionType);
+      
+      if (!kycValidation.allowed) {
+        logger.warn(`${service_type} purchase blocked by KYC limits`, {
+          userId,
+          amount,
+          currency: 'NGNB',
+          phone_number,
+          service_id,
+          service_type,
+          variation_id,
+          kycCode: kycValidation.code,
+          kycMessage: kycValidation.message,
+          kycData: kycValidation.data
+        });
+
+        // Return detailed KYC error response
+        return res.status(403).json({
+          success: false,
+          error: 'KYC_LIMIT_EXCEEDED',
+          message: kycValidation.message,
+          code: kycValidation.code,
+          kycDetails: {
+            kycLevel: kycValidation.data?.kycLevel,
+            limitType: kycValidation.data?.limitType,
+            requestedAmount: kycValidation.data?.requestedAmount,
+            currentLimit: kycValidation.data?.currentLimit,
+            currentSpent: kycValidation.data?.currentSpent,
+            availableAmount: kycValidation.data?.availableAmount,
+            upgradeRecommendation: kycValidation.data?.upgradeRecommendation,
+            amountInNaira: kycValidation.data?.amountInNaira,
+            currency: kycValidation.data?.currency,
+            transactionType: transactionType
+          }
+        });
+      }
+
+      // Log successful KYC validation with details
+      logger.info(`KYC validation passed for ${service_type} purchase`, {
+        userId,
+        amount,
+        currency: 'NGNB',
+        phone_number,
+        service_id,
+        service_type,
+        variation_id,
+        kycLevel: kycValidation.data?.kycLevel,
+        dailyRemaining: kycValidation.data?.dailyRemaining,
+        monthlyRemaining: kycValidation.data?.monthlyRemaining,
+        amountInNaira: kycValidation.data?.amountInNaira
+      });
+
+    } catch (kycError) {
+      logger.error(`KYC validation failed with error for ${service_type} purchase`, {
+        userId,
+        amount,
+        currency: 'NGNB',
+        phone_number,
+        service_id,
+        service_type,
+        variation_id,
+        error: kycError.message,
+        stack: kycError.stack
+      });
+
+      return res.status(500).json({
+        success: false,
+        error: 'KYC_VALIDATION_ERROR',
+        message: 'Unable to validate transaction limits. Please try again or contact support.',
+        code: 'KYC_VALIDATION_ERROR'
+      });
+    }
+    // ========================================
+    // END KYC VALIDATION
+    // ========================================
 
     // Step 5: Validate customer and get plan details
     const customerValidation = await validateCustomerAndGetPlanPrice(
@@ -579,6 +664,7 @@ router.post('/purchase', async (req, res) => {
         purchase_amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
         is_ngnb_transaction: true,
         twofa_validated: true,
+        kyc_validated: true, // Track that KYC was validated
         price_verified: service_type === 'data',
         expected_amount: service_type === 'data' ? customerValidation.expectedAmount : purchaseAmount,
         plan_info: customerValidation.planInfo,
@@ -590,13 +676,15 @@ router.post('/purchase', async (req, res) => {
       customerPhone: phone_number,
       userId: userId,
       timestamp: new Date(),
-      webhookProcessedAt: null
+      webhookProcessedAt: null,
+      twoFactorValidated: true, // New schema field
+      kycValidated: true // New schema field
     };
     
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnbAmount} NGNB | ✅ 2FA | ⚠️ Not Reserved`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
     logger.info(`Created ${service_type} transaction ${pendingTransaction._id} with unique OrderID: ${uniqueOrderId}, RequestID: ${uniqueRequestId}`);
     
     // Step 11: Call eBills API FIRST (before reserving balance) - FIXED to use VTUAuth
@@ -687,7 +775,7 @@ router.post('/purchase', async (req, res) => {
         'metaData.balance_reserved_at': new Date()
       });
       
-      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnbAmount} NGNB | ✅ 2FA | ✅ Reserved`);
+      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ✅ Reserved`);
       logger.info(`Successfully reserved ${ngnbAmount} ${currency} for user ${userId} after eBills ${service_type} API success`);
       
     } catch (balanceError) {
@@ -745,6 +833,7 @@ router.post('/purchase', async (req, res) => {
         balance_reserved: true,
         balance_reserved_at: new Date(),
         twofa_validated: true,
+        kyc_validated: true,
         ebills_order_id: ebillsResponse.data.order_id, // Store eBills order ID separately
         order_id_type: 'system_generated_unique'
       }
@@ -780,6 +869,7 @@ router.post('/purchase', async (req, res) => {
         price_verified: service_type === 'data',
         expected_amount: service_type === 'data' ? customerValidation.expectedAmount : purchaseAmount,
         twofa_validated: true,
+        kyc_validated: true,
         unique_ids_generated: true
       }
     };

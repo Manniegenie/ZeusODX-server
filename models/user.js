@@ -22,8 +22,63 @@ const userSchema = new mongoose.Schema({
   avatarUrl: { type: String, default: null },
   avatarLastUpdated: { type: Date, default: null },
 
-  // Login Info
-  failedLoginAttempts: { type: Number, default: 0 },
+  // KYC Verification Levels
+  kycLevel: { 
+    type: Number, 
+    default: 0, 
+    min: 0, 
+    max: 3,
+    enum: [0, 1, 2, 3] // 0 = not verified, 1-3 = KYC levels
+  },
+  kycStatus: { 
+    type: String, 
+    default: 'not_verified',
+    enum: ['not_verified', 'pending', 'approved', 'rejected', 'under_review']
+  },
+  kyc: {
+    level1: {
+      status: { 
+        type: String, 
+        default: 'not_submitted',
+        enum: ['not_submitted', 'pending', 'approved', 'rejected']
+      },
+      submittedAt: { type: Date, default: null },
+      approvedAt: { type: Date, default: null },
+      rejectedAt: { type: Date, default: null },
+      rejectionReason: { type: String, default: null }
+    },
+    level2: {
+      status: { 
+        type: String, 
+        default: 'not_submitted',
+        enum: ['not_submitted', 'pending', 'approved', 'rejected']
+      },
+      submittedAt: { type: Date, default: null },
+      approvedAt: { type: Date, default: null },
+      rejectedAt: { type: Date, default: null },
+      rejectionReason: { type: String, default: null },
+      documentType: { type: String, default: null }, // ID type submitted
+      documentNumber: { type: String, default: null }
+    },
+    level3: {
+      status: { 
+        type: String, 
+        default: 'not_submitted',
+        enum: ['not_submitted', 'pending', 'approved', 'rejected']
+      },
+      submittedAt: { type: Date, default: null },
+      approvedAt: { type: Date, default: null },
+      rejectedAt: { type: Date, default: null },
+      rejectionReason: { type: String, default: null },
+      addressVerified: { type: Boolean, default: false },
+      sourceOfFunds: { type: String, default: null }
+    }
+  },
+
+  // Login Info - FIXED TO MATCH CODE
+  loginAttempts: { type: Number, default: 0 },           // Changed from failedLoginAttempts
+  lockUntil: { type: Date, default: null },              // Added missing field
+  failedLoginAttempts: { type: Number, default: 0 },     // Keep for backward compatibility
   lastFailedLogin: { type: Date },
 
   // Wallet Addresses + Reference IDs from Obiex
@@ -132,6 +187,24 @@ userSchema.pre('save', async function (next) {
 userSchema.methods.comparePassword = async function (candidatePassword) {
   if (!this.password) return false;
   return bcrypt.compare(candidatePassword, this.password);
+};
+
+// KYC helper methods
+userSchema.methods.updateKycLevel = function(level, status = 'approved') {
+  if (level >= 1 && level <= 3 && status === 'approved') {
+    this.kycLevel = Math.max(this.kycLevel, level);
+    this.kycStatus = 'approved';
+  }
+};
+
+userSchema.methods.getKycLimits = function() {
+  const limits = {
+    0: { daily: 0, monthly: 0, description: 'No verification' },
+    1: { daily: 50000, monthly: 200000, description: 'Basic verification' },
+    2: { daily: 5000000, monthly: 20000000, description: 'Identity verified' },
+    3: { daily: 20000000, monthly: 200000000, description: 'Enhanced verification' }
+  };
+  return limits[this.kycLevel] || limits[0];
 };
 
 module.exports = mongoose.model('User', userSchema);

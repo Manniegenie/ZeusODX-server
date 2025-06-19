@@ -10,6 +10,7 @@ const EBILLS_BASE_URL = process.env.EBILLS_BASE_URL || 'https://ebills.africa/wp
 const { validateUserBalance } = require('../services/balance'); // Import balance validation
 const { reserveUserBalance, releaseReservedBalance } = require('../services/portfolio'); // Import portfolio services
 const { validateTwoFactorAuth } = require('../services/twofactorAuth'); // Import 2FA validation
+const { validateTransactionLimit } = require('../services/kyccheckservice'); // Add KYC service import
 const logger = require('../utils/logger');
 
 // Creating a router instance
@@ -201,7 +202,7 @@ async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) 
 }
 
 /**
- * Main airtime purchase endpoint - SIMPLIFIED for NGNB only with 2FA
+ * Main airtime purchase endpoint - SIMPLIFIED for NGNB only with 2FA and KYC
  * Note: Global auth middleware provides req.user.id
  */
 router.post('/purchase', async (req, res) => {
@@ -259,6 +260,82 @@ router.post('/purchase', async (req, res) => {
       timestamp: new Date().toISOString().slice(0, 19).replace('T', ' '),
       userId 
     });
+
+    // ========================================
+    // KYC LIMIT VALIDATION - NEW ADDITION
+    // ========================================
+    logger.info('Validating KYC limits for airtime purchase', { userId, amount, currency: 'NGNB' });
+    
+    try {
+      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', 'AIRTIME');
+      
+      if (!kycValidation.allowed) {
+        logger.warn('Airtime purchase blocked by KYC limits', {
+          userId,
+          amount,
+          currency: 'NGNB',
+          phone,
+          service_id,
+          kycCode: kycValidation.code,
+          kycMessage: kycValidation.message,
+          kycData: kycValidation.data
+        });
+
+        // Return detailed KYC error response
+        return res.status(403).json({
+          success: false,
+          error: 'KYC_LIMIT_EXCEEDED',
+          message: kycValidation.message,
+          code: kycValidation.code,
+          kycDetails: {
+            kycLevel: kycValidation.data?.kycLevel,
+            limitType: kycValidation.data?.limitType,
+            requestedAmount: kycValidation.data?.requestedAmount,
+            currentLimit: kycValidation.data?.currentLimit,
+            currentSpent: kycValidation.data?.currentSpent,
+            availableAmount: kycValidation.data?.availableAmount,
+            upgradeRecommendation: kycValidation.data?.upgradeRecommendation,
+            amountInNaira: kycValidation.data?.amountInNaira,
+            currency: kycValidation.data?.currency,
+            transactionType: 'AIRTIME'
+          }
+        });
+      }
+
+      // Log successful KYC validation with details
+      logger.info('KYC validation passed for airtime purchase', {
+        userId,
+        amount,
+        currency: 'NGNB',
+        phone,
+        service_id,
+        kycLevel: kycValidation.data?.kycLevel,
+        dailyRemaining: kycValidation.data?.dailyRemaining,
+        monthlyRemaining: kycValidation.data?.monthlyRemaining,
+        amountInNaira: kycValidation.data?.amountInNaira
+      });
+
+    } catch (kycError) {
+      logger.error('KYC validation failed with error for airtime purchase', {
+        userId,
+        amount,
+        currency: 'NGNB',
+        phone,
+        service_id,
+        error: kycError.message,
+        stack: kycError.stack
+      });
+
+      return res.status(500).json({
+        success: false,
+        error: 'KYC_VALIDATION_ERROR',
+        message: 'Unable to validate transaction limits. Please try again or contact support.',
+        code: 'KYC_VALIDATION_ERROR'
+      });
+    }
+    // ========================================
+    // END KYC VALIDATION
+    // ========================================
     
     // Step 3: Check for existing pending transactions to prevent duplicates
     const existingPending = await BillTransaction.getUserPendingTransactions(userId, 'airtime', 5);
@@ -351,6 +428,7 @@ router.post('/purchase', async (req, res) => {
         exchange_rate: 1, // 1:1 ratio
         balance_reserved: false, // Track that balance isn't reserved yet
         twofa_validated: true, // Track that 2FA was validated
+        kyc_validated: true, // Track that KYC was validated
         request_id_type: 'user_id_direct' // Track that we're using direct userId mapping
       },
       network: service_id.toUpperCase(),
@@ -363,13 +441,14 @@ router.post('/purchase', async (req, res) => {
       timestamp: new Date(),
       webhookProcessedAt: null,
       balanceReserved: false, // New schema field
-      twoFactorValidated: true // New schema field
+      twoFactorValidated: true, // New schema field
+      kycValidated: true // New schema field
     };
     
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnbAmount} NGNB | ✅ 2FA | ⚠️ Not Reserved`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
     logger.info(`Created pending transaction ${pendingTransaction._id} for request ${finalRequestId}`);
     
     // Step 8: Call eBills API FIRST (before reserving balance) - FIXED to use VTUAuth
@@ -431,7 +510,7 @@ router.post('/purchase', async (req, res) => {
       // Update transaction to mark balance as reserved using the new method
       await pendingTransaction.markBalanceReserved();
       
-      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnbAmount} NGNB | ✅ 2FA | ✅ Reserved`);
+      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ✅ Reserved`);
       logger.info(`Successfully reserved ${ngnbAmount} ${currency} for user ${userId}`);
       
     } catch (balanceError) {
@@ -486,6 +565,7 @@ router.post('/purchase', async (req, res) => {
         balance_reserved: true,
         balance_reserved_at: new Date(),
         twofa_validated: true,
+        kyc_validated: true,
         request_id_type: 'user_id_direct'
       }
     };

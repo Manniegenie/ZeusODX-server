@@ -10,6 +10,7 @@ const CryptoFeeMarkup = require('../models/cryptofee');
 const { reserveUserBalance, getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { validateTransactionLimit } = require('../services/kyccheckservice'); // Add KYC service import
 const logger = require('../utils/logger');
 const config = require('./config');
 
@@ -375,6 +376,73 @@ router.post('/crypto', async (req, res) => {
         message: 'Invalid two-factor authentication code'
       });
     }
+
+    // ========================================
+    // KYC LIMIT VALIDATION - NEW ADDITION
+    // ========================================
+    logger.info('Validating KYC limits for withdrawal', { userId, amount, currency });
+    
+    try {
+      const kycValidation = await validateTransactionLimit(userId, amount, currency, 'WITHDRAWAL');
+      
+      if (!kycValidation.allowed) {
+        logger.warn('Withdrawal blocked by KYC limits', {
+          userId,
+          amount,
+          currency,
+          kycCode: kycValidation.code,
+          kycMessage: kycValidation.message,
+          kycData: kycValidation.data
+        });
+
+        // Return detailed KYC error response
+        return res.status(403).json({
+          success: false,
+          message: kycValidation.message,
+          code: kycValidation.code,
+          kycDetails: {
+            kycLevel: kycValidation.data?.kycLevel,
+            limitType: kycValidation.data?.limitType,
+            requestedAmount: kycValidation.data?.requestedAmount,
+            currentLimit: kycValidation.data?.currentLimit,
+            currentSpent: kycValidation.data?.currentSpent,
+            availableAmount: kycValidation.data?.availableAmount,
+            upgradeRecommendation: kycValidation.data?.upgradeRecommendation,
+            amountInNaira: kycValidation.data?.amountInNaira,
+            currency: kycValidation.data?.currency
+          }
+        });
+      }
+
+      // Log successful KYC validation with details
+      logger.info('KYC validation passed for withdrawal', {
+        userId,
+        amount,
+        currency,
+        kycLevel: kycValidation.data?.kycLevel,
+        dailyRemaining: kycValidation.data?.dailyRemaining,
+        monthlyRemaining: kycValidation.data?.monthlyRemaining,
+        amountInNaira: kycValidation.data?.amountInNaira
+      });
+
+    } catch (kycError) {
+      logger.error('KYC validation failed with error', {
+        userId,
+        amount,
+        currency,
+        error: kycError.message,
+        stack: kycError.stack
+      });
+
+      return res.status(500).json({
+        success: false,
+        message: 'Unable to validate transaction limits. Please try again or contact support.',
+        code: 'KYC_VALIDATION_ERROR'
+      });
+    }
+    // ========================================
+    // END KYC VALIDATION
+    // ========================================
 
     // Check for duplicate withdrawals
     const duplicateCheck = await checkDuplicateWithdrawal(userId, currency, amount, address);
