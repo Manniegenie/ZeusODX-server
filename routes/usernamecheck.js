@@ -12,7 +12,7 @@ const RESERVED_USERNAMES = new Set([
   'guest', 'anonymous', 'user', 'users', 'account', 'accounts', 'profile',
   'profiles', 'settings', 'config', 'system', 'null', 'undefined', 'true',
   'false', 'login', 'logout', 'register', 'signup', 'signin', 'auth',
-  'oauth', 'moderator', 'mod', 'staff', 'team', 'official', 'verified', 'Bramp'
+  'oauth', 'moderator', 'mod', 'staff', 'team', 'official', 'verified', 'ZeusODX'
 ]);
 
 // Username validation configuration

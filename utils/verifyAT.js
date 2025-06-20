@@ -22,7 +22,7 @@ async function sendVerificationCode(phoneNumber, code) {
 
   const recipient = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
   const senderId = process.env.AT_SENDER_ID || 'sandbox';
-  const message = `Your Bramp verification code is: ${code}`;
+  const message = `Your ZeusODX verification code is: ${code}`;
 
   // Log final values
   console.log('📨 Prepared SMS:');

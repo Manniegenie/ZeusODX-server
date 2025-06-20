@@ -1,58 +1,69 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
-const logger = require('../utils/logger'); // adjust path as needed
+const logger = require('../utils/logger');
 
-// GET /api/balance?type=solBalanceUSD
-router.get('/balance', async (req, res) => {
+// POST /api/balance with { "types": ["all"] } or a list of allowed balance fields
+router.post('/balance', async (req, res) => {
   try {
-    const userId = req.user.id; // From your JWT middleware
-    const { type } = req.query;
+    const userId = req.user.id;
+    const { types } = req.body;
 
     if (!userId) {
       logger.warn('Unauthorized request - missing userId', { route: '/balance' });
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    if (!type) {
-      logger.warn('Bad request - missing type parameter', { userId });
-      return res.status(400).json({ error: 'Missing type parameter' });
+    if (!types || !Array.isArray(types) || types.length === 0) {
+      logger.warn('Bad request - missing or invalid types array', { userId });
+      return res.status(400).json({ error: 'Missing or invalid "types" array in request body' });
     }
 
-    // Allowed balance fields
+    // List of allowed balance fields
     const allowedFields = [
       'solBalance', 'solBalanceUSD',
       'btcBalance', 'btcBalanceUSD',
       'usdtBalance', 'usdtBalanceUSD',
       'usdcBalance', 'usdcBalanceUSD',
       'ethBalance', 'ethBalanceUSD',
+      'ngnzBalance', 'ngnbBalanceUSD',
       'totalPortfolioBalance'
     ];
 
-    if (!allowedFields.includes(type)) {
-      logger.warn('Bad request - invalid balance type', { userId, requestedType: type });
-      return res.status(400).json({ error: 'Invalid balance type requested' });
+    let finalFields = [];
+
+    if (types.includes('all')) {
+      finalFields = allowedFields;
+    } else {
+      // Validate requested types
+      const invalidFields = types.filter(field => !allowedFields.includes(field));
+      if (invalidFields.length > 0) {
+        logger.warn('Invalid balance type(s) requested', { userId, invalidFields });
+        return res.status(400).json({ error: `Invalid balance type(s): ${invalidFields.join(', ')}` });
+      }
+      finalFields = types;
     }
 
     const projection = {};
-    projection[type] = 1;
+    finalFields.forEach(field => projection[field] = 1);
 
     const user = await User.findById(userId, projection);
 
     if (!user) {
-      logger.error('User not found while fetching balance', { userId, requestedType: type });
+      logger.error('User not found while fetching balances', { userId });
       return res.status(404).json({ error: 'User not found' });
     }
 
-    logger.info('Balance fetched successfully', {
-      userId,
-      balanceType: type,
-      balanceValue: user[type]
+    const response = {};
+    finalFields.forEach(field => {
+      response[field] = user[field];
     });
 
-    return res.status(200).json({ [type]: user[type] });
+    logger.info('Balances fetched', { userId, requestedFields: finalFields });
+
+    return res.status(200).json(response);
   } catch (error) {
-    logger.error('Error fetching balance', {
+    logger.error('Error fetching balances', {
       userId: req.user?.id || 'unknown',
       error: error.message,
       stack: error.stack
