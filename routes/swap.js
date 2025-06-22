@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const { attachObiexAuth } = require('./utils/obiexAuth');
 const tradingPairsService = require('./services/tradingPairsService');
+const GlobalSwapMarkdown = require('./models/GlobalSwapMarkdown'); // Add this import
 
 const router = express.Router();
 
@@ -17,7 +18,7 @@ const TOKEN_MAP = {
   'BNB': { currency: 'BNB', name: 'Binance Coin' },
   'MATIC': { currency: 'MATIC', name: 'Polygon' },
   'XRP': { currency: 'XRP', name: 'Ripple' },
-  'ADA': { currency: 'ADA', name: 'Cardano' },
+  'ADA': { currency: 'ADA', name: 'Cardano' },                                                                                                                                                                                                    
   'DOGE': { currency: 'DOGE', name: 'Dogecoin' },
   'TRX': { currency: 'TRX', name: 'TRON' },
   'LTC': { currency: 'LTC', name: 'Litecoin' },
@@ -170,6 +171,21 @@ router.post('/quote', async (req, res) => {
         message: "Failed to create quote",
         error: quoteResult.error
       });
+    }
+
+    // Apply global markdown to reduce the amount user receives
+    try {
+      const originalReceiveAmount = quoteResult.data.receiveAmount || quoteResult.data.amount;
+      const markedDownAmount = await GlobalSwapMarkdown.applyGlobalMarkdown(originalReceiveAmount);
+      
+      // Server-side logging for internal monitoring
+      const markdownConfig = await GlobalSwapMarkdown.getGlobalMarkdown();
+      console.log(`[MARKDOWN APPLIED] Pair: ${from}-${to}, Original: ${originalReceiveAmount}, Final: ${markedDownAmount}, Reduction: ${originalReceiveAmount - markedDownAmount}, Rate: ${markdownConfig.markdownPercentage}%`);
+      
+      quoteResult.data.receiveAmount = markedDownAmount;
+    } catch (markdownError) {
+      console.error('Error applying markdown:', markdownError);
+      // Continue without markdown if there's an error
     }
 
     res.json({
