@@ -73,7 +73,6 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Route Imports
-const avatarsRoutes = require("./routes/avatars");
 const logoutRoutes = require("./routes/logout");
 const refreshtokenRoutes = require("./routes/refreshtoken");
 const addpinRoutes = require("./routes/addsecuritypin");
@@ -137,7 +136,6 @@ app.use("/usernamecheck", usernamecheckRoutes);
 
 
 // Protected Routes (JWT Required)
-app.use("/avatar-update", authenticateToken, avatarsRoutes);
 app.use("/logout", authenticateToken, logoutRoutes);
 app.use("/username", authenticateToken, usernameRoutes);
 app.use("/usernamecheck", authenticateToken, usernamecheckRoutes);
