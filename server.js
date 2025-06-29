@@ -75,7 +75,7 @@ const authenticateToken = (req, res, next) => {
 // Route Imports
 const logoutRoutes = require("./routes/logout");
 const refreshtokenRoutes = require("./routes/refreshtoken");
-const addpinRoutes = require("./routes/addsecuritypin");
+const addpinRoutes = require("./routes/passwordpin");
 const signinRoutes = require("./routes/signin");
 const signupRoutes = require("./routes/signup");
 const usernameRoutes = require("./routes/username");
