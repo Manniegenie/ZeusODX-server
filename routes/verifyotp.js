@@ -59,9 +59,8 @@ router.post("/verify-otp", async (req, res) => {
       if (parts.length === 1) {
         normalizedKey = key;
       } else if (parts.length === 2) {
-        // Adjust for schema keys (e.g., USDT_BSC -> USDT_BEP20)
         if (parts[0] === 'USDT' && parts[1] === 'BSC') {
-          normalizedKey = 'USDT_BEP20';
+          normalizedKey = 'USDT_BSC'; // FIXED: match your schema key
         } else if (parts[0] === 'USDT' && parts[1] === 'TRX') {
           normalizedKey = 'USDT_TRX';
         } else if (parts[0] === 'USDT' && parts[1] === 'ETH') {
@@ -71,27 +70,29 @@ router.post("/verify-otp", async (req, res) => {
         } else if (parts[0] === 'USDC' && parts[1] === 'ETH') {
           normalizedKey = 'USDC_ETH';
         } else {
-          normalizedKey = parts[0]; // e.g., BTC_BTC -> BTC
+          normalizedKey = key; // e.g., BTC_BTC, ETH_ETH, SOL_SOL
         }
       } else {
         normalizedKey = key;
       }
 
-      normalizedWallets[normalizedKey] = {
-        address: walletData.address,
-        network: walletData.network,
-        walletReferenceId: walletData.referenceId, // Include referenceId
-      };
+      if (walletData && walletData.address) {
+        normalizedWallets[normalizedKey] = {
+          address: walletData.address,
+          network: walletData.network,
+          walletReferenceId: walletData.referenceId || null,
+        };
+      }
     }
 
-    // Add NGNB placeholder wallet
+    // Add NGNB placeholder wallet as per your schema
     normalizedWallets["NGNB"] = {
       address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
       network: "PLACEHOLDER_FOR_NGNB_NETWORK",
       walletReferenceId: "PLACEHOLDER_FOR_NGNB_REFERENCE",
     };
 
-    // Create user document
+    // Create user document with KYC Level 1
     const { email, firstname, lastname, bvn, DoB, securitypin, username } = pendingUser;
     const newUser = new User({
       username: username || null,
@@ -104,11 +105,39 @@ router.post("/verify-otp", async (req, res) => {
       password: null, // Explicitly set to null
       passwordpin: null,
       transactionpin: null,
-      securitypin,
+      securitypin, // Make sure this field exists in your schema or remove it
       wallets: normalizedWallets,
+      // Set KYC Level 1 upon successful phone verification
+      kycLevel: 1,
+      kycStatus: 'approved',
+      kyc: {
+        level1: {
+          status: 'approved',
+          submittedAt: now,
+          approvedAt: now,
+          rejectedAt: null,
+          rejectionReason: null
+        },
+        level2: {
+          status: 'not_submitted',
+          submittedAt: null,
+          approvedAt: null,
+          rejectedAt: null,
+          rejectionReason: null,
+          documentType: null,
+          documentNumber: null
+        },
+        level3: {
+          status: 'not_submitted',
+          submittedAt: null,
+          approvedAt: null,
+          rejectedAt: null,
+          rejectionReason: null,
+          addressVerified: false,
+          sourceOfFunds: null
+        }
+      }
     });
-
-    await newUser.save();
 
     // Generate JWT tokens with 2FA info
     const accessToken = jwt.sign(
@@ -129,16 +158,17 @@ router.post("/verify-otp", async (req, res) => {
       { expiresIn: "7d" }
     );
 
+    // Add refresh token to user before saving once
     newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
     await newUser.save();
 
-    logger.info(`User verified and created: ${newUser._id}`);
+    logger.info(`User verified and created with KYC Level 1: ${newUser._id}`);
 
     // Remove pending user
     await PendingUser.deleteOne({ _id: pendingUser._id });
 
     res.status(200).json({
-      message: "Phone number verified. Account activated.",
+      message: "Phone number verified. Account activated with KYC Level 1.",
       user: {
         id: newUser._id,
         username: newUser.username,
@@ -146,6 +176,8 @@ router.post("/verify-otp", async (req, res) => {
         phonenumber,
         firstname,
         lastname,
+        kycLevel: newUser.kycLevel,
+        kycStatus: newUser.kycStatus
       },
       accessToken,
       refreshToken,
