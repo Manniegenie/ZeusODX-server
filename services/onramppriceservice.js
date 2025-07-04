@@ -1,217 +1,250 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
-const NairaMark = require('../models/markup');
+const NairaMarkup = require('../models/onramp');
 
 /**
- * Simple CurrencyAPI.com service with markup
+ * Onramp service using direct rate from database
  */
-class CurrencyAPIService {
+class OnrampPriceService {
   constructor() {
     this.apiKey = process.env.CURRENCYAPI_KEY;
     this.baseURL = 'https://api.currencyapi.com/v3';
-    this.cachedRate = null;
-    this.cacheExpiry = null;
-    this.cacheDuration = 2 * 60 * 1000; // 2 minutes cache
-    this.fallbackRate = 1650; // Emergency fallback rate
     this.requestCount = 0;
     
-    // Markup cache
-    this.markupCache = null;
-    this.markupCacheExpiry = null;
-    this.markupCacheDuration = 5 * 60 * 1000; // 5 minutes cache for markup
+    // Cache objects
+    this.cache = {
+      rate: null,
+      rateExpiry: null,
+      currencyAPIRate: null,
+      currencyAPIExpiry: null
+    };
+    
+    this.cacheDuration = {
+      rate: 2 * 60 * 1000, // 2 minutes
+      currencyAPIRate: 5 * 60 * 1000 // 5 minutes
+    };
   }
 
   /**
-   * Get markup number from database
-   * @returns {Promise<number>} Markup number
+   * Get direct onramp rate from database
+   * @returns {Promise<Object>} Onramp rate information
    */
-  async getMarkup() {
-    // Check cache
-    if (this.markupCache !== null && this.markupCacheExpiry && new Date() < this.markupCacheExpiry) {
-      return this.markupCache;
+  async getOnrampRate() {
+    if (this.cache.rate && new Date() < this.cache.rateExpiry) {
+      logger.debug('Using cached onramp rate');
+      return this.cache.rate;
     }
 
     try {
-      const markupRecord = await NairaMark.findOne({});
-      const markup = markupRecord?.markup || 0;
+      const record = await NairaMarkup.findOne({});
       
-      // Cache the markup
-      this.markupCache = markup;
-      this.markupCacheExpiry = new Date(Date.now() + this.markupCacheDuration);
+      if (!record || !record.onrampRate) {
+        throw new Error('No onramp rate configured. Please set onramp rate first.');
+      }
       
-      return markup;
+      const rateInfo = {
+        finalPrice: record.onrampRate,
+        lastUpdated: record.updatedAt,
+        source: record.rateSource || 'manual',
+        reliability: 'high',
+        type: 'onramp',
+        configured: true
+      };
+
+      this.cache.rate = rateInfo;
+      this.cache.rateExpiry = new Date(Date.now() + this.cacheDuration.rate);
+      
+      logger.debug(`Using direct onramp rate: ₦${record.onrampRate} per $1`);
+      return rateInfo;
+
     } catch (error) {
-      logger.error('Failed to get markup from database:', error);
-      return 0; // Return 0 if error
+      logger.error('Failed to get onramp rate from database:', error.message);
+      throw new Error(`Failed to fetch onramp rate: ${error.message}`);
     }
   }
 
   /**
-   * Get USD to NGN exchange rate with markup added
-   * @returns {Promise<Object>} Rate information with markup applied
+   * Get CurrencyAPI rate for comparison purposes (optional)
+   * @returns {Promise<Object>} CurrencyAPI rate information
    */
-  async getUsdToNgnRate() {
-    // Check cache first
-    if (this.isCacheValid()) {
+  async getCurrencyAPIRate() {
+    if (this.cache.currencyAPIRate && new Date() < this.cache.currencyAPIExpiry) {
       logger.debug('Using cached CurrencyAPI rate');
-      return this.cachedRate;
+      return this.cache.currencyAPIRate;
     }
 
     if (!this.apiKey) {
-      logger.error('CurrencyAPI key not configured');
-      return this.getFallbackRate();
+      logger.warn('Currency API key not configured - cannot fetch comparison rate');
+      return null;
     }
 
     try {
       this.requestCount++;
-      logger.debug(`Making CurrencyAPI request #${this.requestCount} this session`);
-
+      logger.debug(`Making CurrencyAPI request #${this.requestCount} for comparison`);
+      
       const response = await axios.get(`${this.baseURL}/latest`, {
         headers: { 'apikey': this.apiKey },
         params: { base_currency: 'USD', currencies: 'NGN' },
         timeout: 8000
       });
 
-      if (!response.data?.data?.NGN) {
+      const rate = response.data?.data?.NGN?.value;
+      if (!rate) {
         throw new Error('Invalid response format from CurrencyAPI');
       }
 
-      const baseRate = response.data.data.NGN.value;
-      
-      // Get markup from database and add to rate
-      const markup = await this.getMarkup();
-      const finalRate = baseRate + markup;
-
       const rateInfo = {
-        finalPrice: finalRate,
+        rate: rate,
         lastUpdated: response.data.meta.last_updated_at,
         source: 'currencyapi.com',
-        reliability: 'high',
-        requestCount: this.requestCount
+        type: 'market_comparison'
       };
 
-      this.cacheRate(rateInfo);
-      logger.info(`Rate with markup: ₦${baseRate} + ₦${markup} = ₦${finalRate} per $1`);
-
+      this.cache.currencyAPIRate = rateInfo;
+      this.cache.currencyAPIExpiry = new Date(Date.now() + this.cacheDuration.currencyAPIRate);
+      
+      logger.debug(`CurrencyAPI comparison rate: ₦${rate} per $1`);
       return rateInfo;
 
     } catch (error) {
-      logger.error('CurrencyAPI request failed:', error.message);
-      return this.getFallbackRate();
+      logger.warn('CurrencyAPI comparison request failed:', error.message);
+      return null; // Don't throw error for comparison rate
     }
   }
 
   /**
-   * Convert Naira to USD (markup already included in rate)
+   * Get USD to NGN exchange rate (direct from database)
+   * @returns {Promise<Object>} Rate information
+   */
+  async getUsdToNgnRate() {
+    return await this.getOnrampRate();
+  }
+
+  /**
+   * Convert Naira to USD using onramp rate
    * @param {number} nairaAmount - Amount in NGN
    * @returns {Promise<number>} Amount in USD
    */
   async convertNairaToUsd(nairaAmount) {
-    try {
-      const rateInfo = await this.getUsdToNgnRate();
-      const usdAmount = nairaAmount / rateInfo.finalPrice;
-      
-      logger.debug(`Naira to USD: ₦${nairaAmount} ÷ ₦${rateInfo.finalPrice} = $${usdAmount.toFixed(4)}`);
-      return usdAmount;
-
-    } catch (error) {
-      logger.error('Naira to USD conversion failed:', error);
-      
-      // Emergency fallback
-      const fallbackAmount = nairaAmount / this.fallbackRate;
-      logger.warn(`Using fallback conversion: ₦${nairaAmount} = $${fallbackAmount.toFixed(4)}`);
-      return fallbackAmount;
-    }
+    const rate = await this.getOnrampRate();
+    const usdAmount = nairaAmount / rate.finalPrice;
+    
+    logger.debug(`Onramp Naira to USD: ₦${nairaAmount} ÷ ₦${rate.finalPrice} = $${usdAmount.toFixed(4)}`);
+    return usdAmount;
   }
 
   /**
-   * Convert USD to Naira (markup already included in rate)
+   * Convert USD to Naira using onramp rate
    * @param {number} usdAmount - Amount in USD
    * @returns {Promise<number>} Amount in NGN
    */
   async convertUsdToNaira(usdAmount) {
-    try {
-      const rateInfo = await this.getUsdToNgnRate();
-      const nairaAmount = usdAmount * rateInfo.finalPrice;
-      
-      logger.debug(`USD to Naira: $${usdAmount} × ₦${rateInfo.finalPrice} = ₦${nairaAmount.toFixed(2)}`);
-      return nairaAmount;
-
-    } catch (error) {
-      logger.error('USD to Naira conversion failed:', error);
-      
-      // Emergency fallback
-      const fallbackAmount = usdAmount * this.fallbackRate;
-      logger.warn(`Using fallback conversion: $${usdAmount} = ₦${fallbackAmount.toFixed(2)}`);
-      return fallbackAmount;
-    }
+    const rate = await this.getOnrampRate();
+    const nairaAmount = usdAmount * rate.finalPrice;
+    
+    logger.debug(`Onramp USD to Naira: $${usdAmount} × ₦${rate.finalPrice} = ₦${nairaAmount.toFixed(2)}`);
+    return nairaAmount;
   }
 
   /**
-   * Calculate crypto amount needed for Naira purchase
-   * @param {number} nairaAmount - Amount in Naira
-   * @param {string} cryptoCurrency - Target cryptocurrency
+   * Calculate crypto amount user gets for their Naira (onramp scenario)
+   * @param {number} nairaAmount - Amount of Naira user is paying
+   * @param {string} cryptoCurrency - Cryptocurrency being bought
    * @param {number} cryptoPrice - Current crypto price in USD
-   * @returns {Promise<number>} Crypto amount needed
+   * @returns {Promise<number>} Crypto amount user receives
    */
-  async calculateCryptoRequired(nairaAmount, cryptoCurrency, cryptoPrice) {
+  async calculateCryptoFromNaira(nairaAmount, cryptoCurrency, cryptoPrice) {
     try {
       const usdAmount = await this.convertNairaToUsd(nairaAmount);
       const cryptoAmount = usdAmount / cryptoPrice;
       
-      logger.debug(`Crypto calculation: ₦${nairaAmount} → $${usdAmount.toFixed(4)} → ${cryptoAmount.toFixed(8)} ${cryptoCurrency}`);
+      logger.debug(`Onramp crypto calculation: ₦${nairaAmount} → $${usdAmount.toFixed(4)} → ${cryptoAmount.toFixed(8)} ${cryptoCurrency}`);
       
       return parseFloat(cryptoAmount.toFixed(8));
-
     } catch (error) {
-      logger.error('Crypto calculation failed:', error);
-      throw new Error(`Failed to calculate crypto requirement: ${error.message}`);
+      logger.error('Onramp crypto calculation failed:', error);
+      throw new Error(`Failed to calculate onramp crypto amount: ${error.message}`);
     }
   }
 
   /**
-   * Get fallback rate with default markup
-   * @returns {Object} Fallback rate
+   * Calculate Naira amount needed for target crypto amount (onramp scenario)
+   * @param {number} cryptoAmount - Target crypto amount
+   * @param {string} cryptoCurrency - Cryptocurrency being bought
+   * @param {number} cryptoPrice - Current crypto price in USD
+   * @returns {Promise<number>} Naira amount needed
    */
-  getFallbackRate() {
-    logger.warn(`Using fallback rate: ₦${this.fallbackRate} per $1`);
-    return {
-      finalPrice: this.fallbackRate,
-      lastUpdated: new Date().toISOString(),
-      source: 'fallback-static',
-      reliability: 'low'
-    };
+  async calculateNairaRequired(cryptoAmount, cryptoCurrency, cryptoPrice) {
+    try {
+      const usdAmount = cryptoAmount * cryptoPrice;
+      const nairaAmount = await this.convertUsdToNaira(usdAmount);
+      
+      logger.debug(`Onramp Naira needed: ${cryptoAmount} ${cryptoCurrency} @ $${cryptoPrice} = $${usdAmount.toFixed(4)} → ₦${nairaAmount.toFixed(2)}`);
+      
+      return parseFloat(nairaAmount.toFixed(2));
+    } catch (error) {
+      logger.error('Onramp Naira calculation failed:', error);
+      throw new Error(`Failed to calculate onramp Naira requirement: ${error.message}`);
+    }
   }
 
   /**
-   * Cache rate
-   * @param {Object} rateData - Rate data to cache
+   * Legacy method alias - calculate crypto amount required for Naira amount
+   * @param {number} nairaAmount - Amount of Naira
+   * @param {string} cryptoCurrency - Cryptocurrency
+   * @param {number} cryptoPrice - Current crypto price in USD
+   * @returns {Promise<number>} Crypto amount
    */
-  cacheRate(rateData) {
-    this.cachedRate = rateData;
-    this.cacheExpiry = new Date(Date.now() + this.cacheDuration);
-    logger.debug(`Rate cached until: ${this.cacheExpiry.toISOString()}`);
+  async calculateCryptoRequired(nairaAmount, cryptoCurrency, cryptoPrice) {
+    return await this.calculateCryptoFromNaira(nairaAmount, cryptoCurrency, cryptoPrice);
   }
 
   /**
-   * Check if cached rate is valid
-   * @returns {boolean} True if cache is valid
+   * Get comprehensive rate information including comparison
+   * @returns {Promise<Object>} Rate information with comparison
    */
-  isCacheValid() {
-    return this.cachedRate && 
-           this.cacheExpiry && 
-           new Date() < this.cacheExpiry;
+  async getRateWithComparison() {
+    try {
+      const [onrampRate, currencyAPIRate] = await Promise.allSettled([
+        this.getOnrampRate(),
+        this.getCurrencyAPIRate()
+      ]);
+
+      const hasOnrampRate = onrampRate.status === 'fulfilled';
+      const hasCurrencyAPIRate = currencyAPIRate.status === 'fulfilled' && currencyAPIRate.value;
+
+      const result = {
+        onramp: hasOnrampRate ? onrampRate.value : null,
+        currencyAPI: hasCurrencyAPIRate ? currencyAPIRate.value : null,
+        comparison: null
+      };
+
+      if (hasOnrampRate && hasCurrencyAPIRate) {
+        const difference = onrampRate.value.finalPrice - currencyAPIRate.value.rate;
+        result.comparison = {
+          difference: parseFloat(difference.toFixed(2)),
+          percentageDifference: parseFloat((difference / currencyAPIRate.value.rate * 100).toFixed(2))
+        };
+      }
+
+      return result;
+    } catch (error) {
+      logger.error('Failed to get rate with comparison:', error.message);
+      throw error;
+    }
   }
 
   /**
    * Clear caches
    */
   clearCache() {
-    this.cachedRate = null;
-    this.cacheExpiry = null;
-    this.markupCache = null;
-    this.markupCacheExpiry = null;
-    logger.info('All caches cleared');
+    this.cache = {
+      rate: null,
+      rateExpiry: null,
+      currencyAPIRate: null,
+      currencyAPIExpiry: null
+    };
+    logger.info('Onramp caches cleared');
   }
 
   /**
@@ -219,29 +252,33 @@ class CurrencyAPIService {
    * @returns {Promise<Object>} API status
    */
   async getApiStatus() {
-    if (!this.apiKey) {
-      return { configured: false, error: 'API key not configured' };
-    }
-
     try {
-      const response = await axios.get(`${this.baseURL}/status`, {
-        headers: { 'apikey': this.apiKey },
-        timeout: 5000
-      });
+      const onrampRate = await this.getOnrampRate();
+      const currencyAPIRate = await this.getCurrencyAPIRate();
 
       return {
         configured: true,
-        sessionRequests: this.requestCount,
-        quotaUsed: response.data.quotas?.month?.used || 'Unknown',
-        quotaTotal: response.data.quotas?.month?.total || 'Unknown',
-        quotaRemaining: response.data.quotas?.month?.remaining || 'Unknown'
+        onrampRate: {
+          rate: onrampRate.finalPrice,
+          source: onrampRate.source,
+          lastUpdated: onrampRate.lastUpdated,
+          configured: true
+        },
+        currencyAPI: currencyAPIRate ? {
+          rate: currencyAPIRate.rate,
+          sessionRequests: this.requestCount,
+          available: true
+        } : {
+          available: false,
+          reason: 'API key not configured or request failed'
+        },
+        type: 'onramp'
       };
-
     } catch (error) {
       return {
-        configured: true,
-        sessionRequests: this.requestCount,
-        error: error.message
+        configured: false,
+        error: error.message,
+        type: 'onramp'
       };
     }
   }
@@ -252,44 +289,131 @@ class CurrencyAPIService {
    */
   async healthCheck() {
     try {
-      const [rate, markup] = await Promise.all([
-        this.getUsdToNgnRate(),
-        this.getMarkup()
-      ]);
+      const rate = await this.getOnrampRate();
 
       return {
         status: 'healthy',
         rate: rate.finalPrice,
-        markup: markup,
-        cacheValid: this.isCacheValid()
+        source: rate.source,
+        lastUpdated: rate.lastUpdated,
+        cacheValid: !!(this.cache.rate && new Date() < this.cache.rateExpiry),
+        type: 'onramp'
       };
     } catch (error) {
       return {
         status: 'unhealthy',
-        error: error.message
+        error: error.message,
+        type: 'onramp'
       };
+    }
+  }
+
+  /**
+   * Force refresh rate (clear cache and fetch new)
+   * @returns {Promise<Object>} Fresh rate information
+   */
+  async refreshRate() {
+    this.cache.rate = null;
+    this.cache.rateExpiry = null;
+    return await this.getOnrampRate();
+  }
+
+  /**
+   * Method that swap router expects - alias for getUsdToNgnRate
+   * @returns {Promise<Object>} Current rate information
+   */
+  async getCurrentRate() {
+    return await this.getOnrampRate();
+  }
+
+  /**
+   * Update onramp rate in database
+   * @param {number} newRate - New onramp rate
+   * @returns {Promise<Object>} Update result
+   */
+  async updateOnrampRate(newRate) {
+    if (typeof newRate !== 'number' || newRate <= 0) {
+      throw new Error('Invalid rate. Must be a positive number.');
+    }
+
+    try {
+      // Get current CurrencyAPI rate for reference
+      let currencyAPIRate = null;
+      try {
+        const apiRate = await this.getCurrencyAPIRate();
+        currencyAPIRate = apiRate?.rate || null;
+      } catch (apiError) {
+        logger.warn('Could not fetch CurrencyAPI rate for reference:', apiError.message);
+      }
+
+      let record = await NairaMarkup.findOne({});
+      if (!record) {
+        record = new NairaMarkup({ 
+          onrampRate: newRate,
+          rateSource: 'manual',
+          lastCurrencyAPIRate: currencyAPIRate,
+          markup: 0 // Keep for backward compatibility
+        });
+      } else {
+        record.onrampRate = newRate;
+        record.rateSource = 'manual';
+        record.lastCurrencyAPIRate = currencyAPIRate;
+      }
+
+      await record.save();
+      
+      // Clear cache to force fresh data
+      this.clearCache();
+      
+      logger.info('Onramp rate updated via service', {
+        newRate,
+        currencyAPIRate,
+        difference: currencyAPIRate ? (newRate - currencyAPIRate).toFixed(2) : null
+      });
+
+      return {
+        success: true,
+        onrampRate: newRate,
+        currencyAPIRate,
+        difference: currencyAPIRate ? parseFloat((newRate - currencyAPIRate).toFixed(2)) : null,
+        updatedAt: record.updatedAt
+      };
+    } catch (error) {
+      logger.error('Failed to update onramp rate via service:', error.message);
+      throw error;
     }
   }
 }
 
 // Create singleton instance
-const currencyService = new CurrencyAPIService();
+const onrampService = new OnrampPriceService();
 
-// Export simple methods (markup included silently)
+// Export with correct method names (matching what swap router expects)
 module.exports = {
-  CurrencyAPIService,
-  currencyService,
+  OnrampPriceService,
+  onrampService,
   
-  // Main methods
-  convertNairaToUsd: (amount) => currencyService.convertNairaToUsd(amount),
-  convertUsdToNaira: (amount) => currencyService.convertUsdToNaira(amount),
+  // Main methods (matching what swap router expects)
+  convertNairaToUsd: (amount) => onrampService.convertNairaToUsd(amount),
+  convertUsdToNaira: (amount) => onrampService.convertUsdToNaira(amount),
   calculateCryptoRequired: (nairaAmount, cryptoCurrency, cryptoPrice) => 
-    currencyService.calculateCryptoRequired(nairaAmount, cryptoCurrency, cryptoPrice),
+    onrampService.calculateCryptoRequired(nairaAmount, cryptoCurrency, cryptoPrice),
+  calculateCryptoFromNaira: (nairaAmount, cryptoCurrency, cryptoPrice) =>
+    onrampService.calculateCryptoFromNaira(nairaAmount, cryptoCurrency, cryptoPrice),
+  calculateNairaRequired: (cryptoAmount, cryptoCurrency, cryptoPrice) =>
+    onrampService.calculateNairaRequired(cryptoAmount, cryptoCurrency, cryptoPrice),
+  
+  // Methods expected by swap router
+  getOnrampRate: () => onrampService.getOnrampRate(),
+  
+  // New methods for direct rate management
+  updateOnrampRate: (rate) => onrampService.updateOnrampRate(rate),
+  getRateWithComparison: () => onrampService.getRateWithComparison(),
   
   // Utility methods
-  getCurrentRate: () => currencyService.getCurrentRate(),
-  refreshRate: () => currencyService.refreshRate(),
-  getApiStatus: () => currencyService.getApiStatus(),
-  healthCheck: () => currencyService.healthCheck(),
-  clearCache: () => currencyService.clearCache()
+  getCurrentRate: () => onrampService.getCurrentRate(),
+  refreshRate: () => onrampService.refreshRate(),
+  getApiStatus: () => onrampService.getApiStatus(),
+  healthCheck: () => onrampService.healthCheck(),
+  clearCache: () => onrampService.clearCache()
 };
