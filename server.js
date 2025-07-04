@@ -155,8 +155,6 @@ app.use("/electricity", authenticateToken, ElectricityRoutes);
 app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
 app.use("/passwordpin", authenticateToken, passwordpinRoutes);
-app.use("/transactionpin", authenticateToken, transactionpinRoutes);
-
 
 
 
