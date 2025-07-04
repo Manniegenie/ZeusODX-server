@@ -109,7 +109,6 @@ const CableTVRoutes = require('./routes/cabletv');
 const fetchdataplans = require('./routes/dataplans');
 const billwebhookRoutes = require('./routes/billwebhook');
 const passwordpinRoutes = require("./routes/passwordpin");
-const transactionpinRoutes = require("./routes/transactionpin");
 
 
 
