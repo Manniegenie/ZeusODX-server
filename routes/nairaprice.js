@@ -8,7 +8,7 @@ const {
   clearCache,
   currencyService 
 } = require('../services/onramppriceservice');
-const NairaMark = require('../models/markup');
+const NairaMark = require('../models/offramp');
 const logger = require('../utils/logger');
 
 /**
