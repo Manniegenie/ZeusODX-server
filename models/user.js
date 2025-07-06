@@ -5,7 +5,7 @@ const SALT_WORK_FACTOR = 10;
 
 const userSchema = new mongoose.Schema({
   // Authentication
-  username: { type: String, unique: true, sparse: true }, // FIXED: Added sparse: true
+  username: { type: String },
   email: { type: String, required: true, unique: true },
   password: { type: String },
   passwordpin: { type: String },
@@ -13,98 +13,13 @@ const userSchema = new mongoose.Schema({
   // Personal Information
   firstname: { type: String },
   lastname: { type: String },
-  middlename: { type: String }, // Added for address verification
-  phonenumber: { type: String, unique: true }, // Added unique constraint
+  phonenumber: { type: String }, // FIXED: Removed redundant unique constraint
   bvn: { type: String },
-  nin: { type: String }, // Added NIN field
-  driversLicense: { type: String }, // Added Driver's License field
-  passport: { type: String }, // Added Passport field
   DoB: { type: String },
-  gender: { type: String, enum: ['M', 'F', 'Male', 'Female', ''] }, // Added for address verification
 
   // Avatar
   avatarUrl: { type: String, default: null },
   avatarLastUpdated: { type: Date, default: null },
-
-  // BVN Verification (Separate from KYC)
-  bvnVerification: {
-    status: { 
-      type: String, 
-      default: 'not_verified',
-      enum: ['not_verified', 'verified', 'failed'] 
-    },
-    matchScore: { type: Number, default: null },
-    verifiedAt: { type: Date, default: null },
-    qoreIdVerificationId: { type: String, default: null },
-    faceMatchPassed: { type: Boolean, default: false },
-    nameMatchPassed: { type: Boolean, default: false },
-    verificationCount: { type: Number, default: 0 } // Track how many times user tried
-  },
-
-  // NIN Verification (Separate from KYC)
-  ninVerification: {
-    status: { 
-      type: String, 
-      default: 'not_verified',
-      enum: ['not_verified', 'verified', 'failed'] 
-    },
-    matchScore: { type: Number, default: null },
-    verifiedAt: { type: Date, default: null },
-    qoreIdVerificationId: { type: String, default: null },
-    faceMatchPassed: { type: Boolean, default: false },
-    nameMatchPassed: { type: Boolean, default: false },
-    ninData: { type: Object, default: null }, // Store NIN data from QoreID
-    verificationCount: { type: Number, default: 0 } // Track how many times user tried
-  },
-
-  // Driver's License Verification (Separate from KYC)
-  driversLicenseVerification: {
-    status: { 
-      type: String, 
-      default: 'not_verified',
-      enum: ['not_verified', 'verified', 'failed'] 
-    },
-    matchScore: { type: Number, default: null },
-    verifiedAt: { type: Date, default: null },
-    qoreIdVerificationId: { type: String, default: null },
-    faceMatchPassed: { type: Boolean, default: false },
-    nameMatchPassed: { type: Boolean, default: false },
-    driversLicenseData: { type: Object, default: null }, // Store Driver's License data from QoreID
-    verificationCount: { type: Number, default: 0 } // Track how many times user tried
-  },
-
-  // Passport Verification (Separate from KYC)
-  passportVerification: {
-    status: { 
-      type: String, 
-      default: 'not_verified',
-      enum: ['not_verified', 'verified', 'failed'] 
-    },
-    matchScore: { type: Number, default: null },
-    verifiedAt: { type: Date, default: null },
-    qoreIdVerificationId: { type: String, default: null },
-    faceMatchPassed: { type: Boolean, default: false },
-    nameMatchPassed: { type: Boolean, default: false },
-    passportData: { type: Object, default: null }, // Store Passport data from QoreID
-    verificationCount: { type: Number, default: 0 } // Track how many times user tried
-  },
-
-  // Address Verification (Required for KYC Level 3)
-  addressVerification: {
-    status: { 
-      type: String, 
-      default: 'not_submitted',
-      enum: ['not_submitted', 'in_progress', 'verified', 'failed'] 
-    },
-    submittedAt: { type: Date, default: null },
-    verifiedAt: { type: Date, default: null },
-    qoreIdVerificationId: { type: String, default: null },
-    customerReference: { type: String, default: null },
-    addressData: { type: Object, default: null }, // Store submitted address data
-    qoreIdStatus: { type: Object, default: null }, // Store full QoreID status response
-    failureReason: { type: String, default: null },
-    verificationCount: { type: Number, default: 0 } // Track how many times user tried
-  },
 
   // KYC Verification Levels
   kycLevel: { 
@@ -206,6 +121,37 @@ const userSchema = new mongoose.Schema({
   ],
 });
 
+// Sparse unique indexes - only enforce uniqueness when values exist
+userSchema.index({ username: 1 }, { unique: true, sparse: true });
+userSchema.index({ phonenumber: 1 }, { unique: true, sparse: true });
+userSchema.index({ bvn: 1 }, { unique: true, sparse: true });
+userSchema.index({ twoFASecret: 1 }, { unique: true, sparse: true });
+
+// Wallet address unique indexes (each address type should be unique)
+userSchema.index({ 'wallets.BTC_BTC.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.ETH_ETH.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.SOL_SOL.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDT_ETH.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDT_TRX.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDT_BSC.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDC_ETH.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDC_BSC.address': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.NGNB.address': 1 }, { unique: true, sparse: true });
+
+// Wallet reference ID indexes (should also be unique)
+userSchema.index({ 'wallets.BTC_BTC.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.ETH_ETH.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.SOL_SOL.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDT_ETH.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDT_TRX.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDT_BSC.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDC_ETH.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.USDC_BSC.walletReferenceId': 1 }, { unique: true, sparse: true });
+userSchema.index({ 'wallets.NGNB.walletReferenceId': 1 }, { unique: true, sparse: true });
+
+// Refresh token uniqueness
+userSchema.index({ 'refreshTokens.token': 1 }, { unique: true, sparse: true });
+
 // Virtual 'id' field
 userSchema.virtual('id').get(function () {
   return this._id.toHexString();
@@ -276,284 +222,6 @@ userSchema.methods.getKycLimits = function() {
     3: { daily: 20000000, monthly: 200000000, description: 'Enhanced verification' }
   };
   return limits[this.kycLevel] || limits[0];
-};
-
-// ADD: BVN verification helper (separate from KYC)
-userSchema.methods.updateBvnVerification = function(matchScore, verificationId, nameMatchPassed) {
-  const MATCH_THRESHOLD = 70; // Industry standard
-  const faceMatchPassed = matchScore >= MATCH_THRESHOLD;
-  const isFullyVerified = faceMatchPassed && nameMatchPassed;
-  
-  if (isFullyVerified) {
-    this.bvnVerification = {
-      status: 'verified',
-      matchScore,
-      verifiedAt: new Date(),
-      qoreIdVerificationId: verificationId,
-      faceMatchPassed: true,
-      nameMatchPassed: true,
-      verificationCount: (this.bvnVerification?.verificationCount || 0) + 1
-    };
-  } else {
-    this.bvnVerification = {
-      ...this.bvnVerification,
-      status: 'failed',
-      matchScore,
-      faceMatchPassed,
-      nameMatchPassed,
-      verificationCount: (this.bvnVerification?.verificationCount || 0) + 1
-    };
-  }
-  
-  return isFullyVerified;
-};
-
-// ADD: NIN verification helper (separate from KYC)
-userSchema.methods.updateNinVerification = function(matchScore, verificationId, nameMatchPassed, ninData) {
-  const MATCH_THRESHOLD = 70; // Industry standard
-  const faceMatchPassed = matchScore >= MATCH_THRESHOLD;
-  const isFullyVerified = faceMatchPassed && nameMatchPassed;
-  
-  if (isFullyVerified) {
-    this.ninVerification = {
-      status: 'verified',
-      matchScore,
-      verifiedAt: new Date(),
-      qoreIdVerificationId: verificationId,
-      faceMatchPassed: true,
-      nameMatchPassed: true,
-      ninData: ninData,
-      verificationCount: (this.ninVerification?.verificationCount || 0) + 1
-    };
-  } else {
-    this.ninVerification = {
-      ...this.ninVerification,
-      status: 'failed',
-      matchScore,
-      faceMatchPassed,
-      nameMatchPassed,
-      ninData: ninData,
-      verificationCount: (this.ninVerification?.verificationCount || 0) + 1
-    };
-  }
-  
-  return isFullyVerified;
-};
-
-// ADD: Check if BVN verification is valid
-userSchema.methods.isBvnVerified = function() {
-  return this.bvnVerification?.status === 'verified' &&
-         this.bvnVerification?.faceMatchPassed === true &&
-         this.bvnVerification?.nameMatchPassed === true;
-};
-
-// ADD: Check if NIN verification is valid
-userSchema.methods.isNinVerified = function() {
-  return this.ninVerification?.status === 'verified' &&
-         this.ninVerification?.faceMatchPassed === true &&
-         this.ninVerification?.nameMatchPassed === true;
-};
-
-// ADD: Driver's License verification helper (separate from KYC)
-userSchema.methods.updateDriversLicenseVerification = function(matchScore, verificationId, nameMatchPassed, driversLicenseData) {
-  const MATCH_THRESHOLD = 70; // Industry standard
-  const faceMatchPassed = matchScore >= MATCH_THRESHOLD;
-  const isFullyVerified = faceMatchPassed && nameMatchPassed;
-  
-  if (isFullyVerified) {
-    this.driversLicenseVerification = {
-      status: 'verified',
-      matchScore,
-      verifiedAt: new Date(),
-      qoreIdVerificationId: verificationId,
-      faceMatchPassed: true,
-      nameMatchPassed: true,
-      driversLicenseData: driversLicenseData,
-      verificationCount: (this.driversLicenseVerification?.verificationCount || 0) + 1
-    };
-  } else {
-    this.driversLicenseVerification = {
-      ...this.driversLicenseVerification,
-      status: 'failed',
-      matchScore,
-      faceMatchPassed,
-      nameMatchPassed,
-      driversLicenseData: driversLicenseData,
-      verificationCount: (this.driversLicenseVerification?.verificationCount || 0) + 1
-    };
-  }
-  
-  return isFullyVerified;
-};
-
-// ADD: Check if Driver's License verification is valid
-userSchema.methods.isDriversLicenseVerified = function() {
-  return this.driversLicenseVerification?.status === 'verified' &&
-         this.driversLicenseVerification?.faceMatchPassed === true &&
-         this.driversLicenseVerification?.nameMatchPassed === true;
-};
-
-// ADD: Passport verification helper (separate from KYC)
-userSchema.methods.updatePassportVerification = function(matchScore, verificationId, nameMatchPassed, passportData) {
-  const MATCH_THRESHOLD = 70; // Industry standard
-  const faceMatchPassed = matchScore >= MATCH_THRESHOLD;
-  const isFullyVerified = faceMatchPassed && nameMatchPassed;
-  
-  if (isFullyVerified) {
-    this.passportVerification = {
-      status: 'verified',
-      matchScore,
-      verifiedAt: new Date(),
-      qoreIdVerificationId: verificationId,
-      faceMatchPassed: true,
-      nameMatchPassed: true,
-      passportData: passportData,
-      verificationCount: (this.passportVerification?.verificationCount || 0) + 1
-    };
-  } else {
-    this.passportVerification = {
-      ...this.passportVerification,
-      status: 'failed',
-      matchScore,
-      faceMatchPassed,
-      nameMatchPassed,
-      passportData: passportData,
-      verificationCount: (this.passportVerification?.verificationCount || 0) + 1
-    };
-  }
-  
-  return isFullyVerified;
-};
-
-// ADD: Check if Passport verification is valid
-userSchema.methods.isPassportVerified = function() {
-  return this.passportVerification?.status === 'verified' &&
-         this.passportVerification?.faceMatchPassed === true &&
-         this.passportVerification?.nameMatchPassed === true;
-};
-
-// ADD: Check if Address verification is valid
-userSchema.methods.isAddressVerified = function() {
-  return this.addressVerification?.status === 'verified';
-};
-
-// ADD: Auto-approve KYC Level 2 when any identity verification is complete (NIN, Driver's License, or Passport)
-userSchema.methods.autoApproveKycLevel2 = function() {
-  // Auto-approve if any identity document is verified and KYC level 2 is not already approved
-  const isNinVerified = this.isNinVerified();
-  const isDriversLicenseVerified = this.isDriversLicenseVerified();
-  const isPassportVerified = this.isPassportVerified();
-  const hasIdentityVerification = isNinVerified || isDriversLicenseVerified || isPassportVerified;
-  const isLevel2Eligible = this.kycLevel < 2 && hasIdentityVerification;
-  
-  if (isLevel2Eligible) {
-    this.kycLevel = 2;
-    this.kycStatus = 'approved';
-    
-    // Determine document type based on what's verified
-    let documentType = 'Unknown';
-    let documentNumber = null;
-    
-    if (isNinVerified) {
-      documentType = 'NIN';
-      documentNumber = this.nin;
-    } else if (isDriversLicenseVerified) {
-      documentType = 'Driver\'s License';
-      documentNumber = this.driversLicense;
-    } else if (isPassportVerified) {
-      documentType = 'Passport';
-      documentNumber = this.passport;
-    }
-    
-    // Update level 2 KYC status
-    this.kyc.level2.status = 'approved';
-    this.kyc.level2.approvedAt = new Date();
-    this.kyc.level2.documentType = documentType;
-    this.kyc.level2.documentNumber = documentNumber;
-    
-    return true;
-  }
-  
-  return false;
-};
-
-// ADD: Auto-approve KYC Level 3 when address verification is complete
-userSchema.methods.autoApproveKycLevel3 = function() {
-  // Auto-approve if BVN and Address verification are complete and KYC level 3 is not already approved
-  const isBvnVerified = this.isBvnVerified();
-  const isAddressVerified = this.isAddressVerified();
-  const isLevel3Eligible = this.kycLevel < 3 && isBvnVerified && isAddressVerified;
-  
-  if (isLevel3Eligible) {
-    this.kycLevel = 3;
-    this.kycStatus = 'approved';
-    
-    // Update level 3 KYC status
-    this.kyc.level3.status = 'approved';
-    this.kyc.level3.approvedAt = new Date();
-    this.kyc.level3.addressVerified = true;
-    
-    return true;
-  }
-  
-  return false;
-};
-
-// ADD: Check if user can apply for specific KYC level
-userSchema.methods.canApplyForKycLevel = function(level) {
-  const requirements = {
-    1: {
-      bvnRequired: false,
-      ninRequired: false,
-      addressRequired: false,
-      description: 'Basic verification - no identity documents required'
-    },
-    2: {
-      bvnRequired: false,
-      ninRequired: false, // Any identity document (NIN, Driver's License, or Passport)
-      addressRequired: false,
-      description: 'Identity verification - NIN, Driver\'s License, or Passport verification required'
-    },
-    3: {
-      bvnRequired: true,
-      ninRequired: false,
-      addressRequired: true,
-      description: 'Enhanced verification - BVN and Address verification required'
-    }
-  };
-  
-  const requirement = requirements[level];
-  if (!requirement) return { canApply: false, reason: 'Invalid KYC level' };
-  
-  // For level 2, any identity verification is acceptable
-  if (level === 2) {
-    const hasIdentityVerification = this.isNinVerified() || this.isDriversLicenseVerified() || this.isPassportVerified();
-    
-    if (!hasIdentityVerification) {
-      return { 
-        canApply: false, 
-        reason: 'Identity verification required. Please complete NIN, Driver\'s License, or Passport verification.' 
-      };
-    }
-  }
-  
-  // For level 3, BVN verification is specifically required
-  if (requirement.bvnRequired && !this.isBvnVerified()) {
-    return { 
-      canApply: false, 
-      reason: 'BVN verification required before applying for this KYC level' 
-    };
-  }
-  
-  // For level 3, address verification is specifically required
-  if (requirement.addressRequired && !this.isAddressVerified()) {
-    return { 
-      canApply: false, 
-      reason: 'Address verification required before applying for this KYC level' 
-    };
-  }
-  
-  return { canApply: true, description: requirement.description };
 };
 
 module.exports = mongoose.model('User', userSchema);
