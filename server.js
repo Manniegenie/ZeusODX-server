@@ -167,7 +167,7 @@ app.use((err, req, res, next) => {
 async function migrateUserData() {
   try {
     console.log("🔧 Starting comprehensive user data migration...");
-    const User = require("./models/User");
+    const User = require("./models/user");
 
     // Handle duplicate data conflicts before dropping indexes
     console.log("   📋 Checking for data conflicts...");
