@@ -134,6 +134,7 @@ app.use("/pending", clearpendingRoutes);
 app.use("/fetching", fetchrefreshtoken);
 app.use("/fund", FunduserRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
+app.use("/passwordpin", passwordpinRoutes);
 
 
 // Protected Routes (JWT Required)
