@@ -31,12 +31,14 @@ router.post('/password-pin', async (req, res) => {
   }
 
   try {
+    // Find the pending user
     const pendingUser = await PendingUser.findById(pendingUserId);
     if (!pendingUser) {
       logger.warn('Pending user not found', { pendingUserId, source: 'password-pin' });
       return res.status(404).json({ message: 'Pending user not found' });
     }
 
+    // Check if OTP was verified
     if (!pendingUser.otpVerified) {
       logger.warn('OTP not verified', { pendingUserId, source: 'password-pin' });
       return res.status(400).json({ message: 'Phone number must be verified before setting PIN' });
@@ -55,19 +57,31 @@ router.post('/password-pin', async (req, res) => {
     }
 
     const rawWallets = generated.wallets || {};
-    const normalizedWallets = {};
 
+    // Normalize wallet keys to match schema
+    const normalizedWallets = {};
     for (const [key, walletData] of Object.entries(rawWallets)) {
       const parts = key.split('_');
-      let normalizedKey = key;
+      let normalizedKey;
 
-      if (parts.length === 2) {
-        const [token, chain] = parts;
-        const validKeys = ['USDT_BSC', 'USDT_TRX', 'USDT_ETH', 'USDC_BSC', 'USDC_ETH', 'BTC_BTC', 'ETH_ETH', 'SOL_SOL'];
-        const compoundKey = `${token}_${chain}`;
-        if (validKeys.includes(compoundKey)) {
-          normalizedKey = compoundKey;
+      if (parts.length === 1) {
+        normalizedKey = key;
+      } else if (parts.length === 2) {
+        if (parts[0] === 'USDT' && parts[1] === 'BSC') {
+          normalizedKey = 'USDT_BSC';
+        } else if (parts[0] === 'USDT' && parts[1] === 'TRX') {
+          normalizedKey = 'USDT_TRX';
+        } else if (parts[0] === 'USDT' && parts[1] === 'ETH') {
+          normalizedKey = 'USDT_ETH';
+        } else if (parts[0] === 'USDC' && parts[1] === 'BSC') {
+          normalizedKey = 'USDC_BSC';
+        } else if (parts[0] === 'USDC' && parts[1] === 'ETH') {
+          normalizedKey = 'USDC_ETH';
+        } else {
+          normalizedKey = key; // e.g., BTC_BTC, ETH_ETH, SOL_SOL
         }
+      } else {
+        normalizedKey = key;
       }
 
       if (walletData && walletData.address) {
@@ -79,7 +93,7 @@ router.post('/password-pin', async (req, res) => {
       }
     }
 
-    // Add NGNB placeholder
+    // Add NGNB placeholder wallet as per your schema
     normalizedWallets["NGNB"] = {
       address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
       network: "PLACEHOLDER_FOR_NGNB_NETWORK",
@@ -87,33 +101,35 @@ router.post('/password-pin', async (req, res) => {
     };
 
     const now = new Date();
-    const {
-      email,
-      firstname,
-      lastname,
-      bvn,
-      DoB,
-      phonenumber,
-      username,
-      securitypin,
-      twoFASecret
+    
+    // Create user document with KYC Level 1
+    // FIXED: Only destructure fields that exist in pendingUser
+    const { 
+      email, 
+      firstname, 
+      lastname, 
+      bvn, 
+      DoB, 
+      username, 
+      phonenumber 
     } = pendingUser;
 
-    // Build user object
-    const userData = {
+    // FIXED: Only include securitypin if it exists in pendingUser
+    const userFields = {
+      username: username || null,
       email,
       firstname,
       lastname,
       phonenumber,
       bvn,
       DoB,
-      password: null,
-      passwordpin: newPin,
+      password: null, // Explicitly set to null
+      passwordpin: newPin, // Set the PIN - let the model handle hashing
       transactionpin: null,
       wallets: normalizedWallets,
+      // Set KYC Level 1 upon successful phone verification
       kycLevel: 1,
       kycStatus: 'approved',
-      refreshTokens: [],
       kyc: {
         level1: {
           status: 'approved',
@@ -143,21 +159,21 @@ router.post('/password-pin', async (req, res) => {
       }
     };
 
-    // Conditionally add sparse/unique fields
-    if (username) userData.username = username;
-    if (twoFASecret) userData.twoFASecret = twoFASecret;
-    if (securitypin) userData.securitypin = securitypin;
+    // Add securitypin only if it exists in pendingUser
+    if (pendingUser.securitypin) {
+      userFields.securitypin = pendingUser.securitypin;
+    }
 
-    const newUser = new User(userData);
+    const newUser = new User(userFields);
 
-    // Create JWTs
+    // FIXED: Use consistent field names that exist in schema
     const accessToken = jwt.sign(
       {
         id: newUser._id,
         email: newUser.email,
         username: newUser.username,
         is2FAEnabled: newUser.is2FAEnabled || false,
-        is2FAVerified: newUser.is2FAVerified || false,
+        is2FAVerified: newUser.is2FAVerified || false, // Now this field exists
       },
       config.jwtSecret || process.env.JWT_SECRET,
       { expiresIn: "1h" }
@@ -169,8 +185,40 @@ router.post('/password-pin', async (req, res) => {
       { expiresIn: "7d" }
     );
 
+    // Add refresh token to user before saving
     newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
-    await newUser.save();
+    
+    // FIXED: Add error handling for save operation
+    try {
+      await newUser.save();
+    } catch (saveError) {
+      logger.error('Error saving new user', { 
+        error: saveError.message, 
+        stack: saveError.stack,
+        pendingUserId,
+        validationErrors: saveError.errors ? Object.keys(saveError.errors) : null,
+        source: 'password-pin' 
+      });
+      
+      // Handle specific validation errors
+      if (saveError.name === 'ValidationError') {
+        const errorMessages = Object.values(saveError.errors).map(err => err.message);
+        return res.status(400).json({ 
+          message: 'Validation failed', 
+          errors: errorMessages 
+        });
+      }
+      
+      // Handle duplicate key errors
+      if (saveError.code === 11000) {
+        const duplicateField = Object.keys(saveError.keyPattern || {})[0];
+        return res.status(400).json({ 
+          message: `${duplicateField} already exists` 
+        });
+      }
+      
+      throw saveError; // Re-throw if not handled
+    }
 
     logger.info('User created successfully with password PIN and KYC Level 1', {
       userId: newUser._id,
@@ -181,6 +229,7 @@ router.post('/password-pin', async (req, res) => {
       kycLevel: newUser.kycLevel
     });
 
+    // Remove pending user after successful account creation
     await PendingUser.deleteOne({ _id: pendingUser._id });
 
     res.status(201).json({
@@ -200,11 +249,11 @@ router.post('/password-pin', async (req, res) => {
     });
 
   } catch (error) {
-    logger.error('Error creating user account with password PIN', {
-      error: error.message,
+    logger.error('Error creating user account with password PIN', { 
+      error: error.message, 
       stack: error.stack,
-      pendingUserId,
-      source: 'password-pin'
+      pendingUserId, 
+      source: 'password-pin' 
     });
     res.status(500).json({ message: 'Server error' });
   }

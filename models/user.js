@@ -9,11 +9,13 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String },
   passwordpin: { type: String },
+  transactionpin: { type: String }, // ADDED: Missing field
+  securitypin: { type: String }, // ADDED: Missing field
 
   // Personal Information
   firstname: { type: String },
   lastname: { type: String },
-  phonenumber: { type: String }, // FIXED: Removed redundant unique constraint
+  phonenumber: { type: String },
   bvn: { type: String },
   DoB: { type: String },
 
@@ -111,6 +113,7 @@ const userSchema = new mongoose.Schema({
   // 2FA
   twoFASecret: { type: String, default: null },
   is2FAEnabled: { type: Boolean, default: false },
+  is2FAVerified: { type: Boolean, default: false }, // ADDED: Missing field
 
   // Refresh Tokens
   refreshTokens: [
@@ -164,6 +167,7 @@ userSchema.set('toJSON', {
     delete ret.password;
     delete ret.passwordpin;
     delete ret.transactionpin;
+    delete ret.securitypin; // ADDED: Also hide security pin
     delete ret.twoFASecret;
     delete ret.__v;
     return ret;
@@ -188,6 +192,12 @@ userSchema.pre('save', async function (next) {
       this.transactionpin = await bcrypt.hash(this.transactionpin, salt);
     }
 
+    // ADDED: Hash security pin if it exists
+    if (this.isModified('securitypin') && this.securitypin) {
+      const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
+      this.securitypin = await bcrypt.hash(this.securitypin, salt);
+    }
+
     if (!this.isNew && this.isModified('username')) {
       const err = new Error('Username cannot be changed once set.');
       err.status = 400;
@@ -204,6 +214,24 @@ userSchema.pre('save', async function (next) {
 userSchema.methods.comparePassword = async function (candidatePassword) {
   if (!this.password) return false;
   return bcrypt.compare(candidatePassword, this.password);
+};
+
+// ADDED: Compare password pin method
+userSchema.methods.comparePasswordPin = async function (candidatePin) {
+  if (!this.passwordpin) return false;
+  return bcrypt.compare(candidatePin, this.passwordpin);
+};
+
+// ADDED: Compare transaction pin method
+userSchema.methods.compareTransactionPin = async function (candidatePin) {
+  if (!this.transactionpin) return false;
+  return bcrypt.compare(candidatePin, this.transactionpin);
+};
+
+// ADDED: Compare security pin method
+userSchema.methods.compareSecurityPin = async function (candidatePin) {
+  if (!this.securitypin) return false;
+  return bcrypt.compare(candidatePin, this.securitypin);
 };
 
 // KYC helpers
