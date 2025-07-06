@@ -5,7 +5,7 @@ const SALT_WORK_FACTOR = 10;
 
 const userSchema = new mongoose.Schema({
   // Authentication
-  username: { type: String, unique: true },
+  username: { type: String, unique: true, sparse: true }, // FIXED: Added sparse: true
   email: { type: String, required: true, unique: true },
   password: { type: String },
   passwordpin: { type: String },
@@ -384,13 +384,6 @@ userSchema.methods.updateDriversLicenseVerification = function(matchScore, verif
   }
   
   return isFullyVerified;
-};
-
-// ADD: Check if Driver's License verification is valid
-userSchema.methods.isDriversLicenseVerified = function() {
-  return this.driversLicenseVerification?.status === 'verified' &&
-         this.driversLicenseVerification?.faceMatchPassed === true &&
-         this.driversLicenseVerification?.nameMatchPassed === true;
 };
 
 // ADD: Check if Driver's License verification is valid
