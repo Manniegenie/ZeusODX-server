@@ -73,9 +73,11 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Route Imports
+const avatarsRoutes = require("./routes/avatars");
 const logoutRoutes = require("./routes/logout");
 const refreshtokenRoutes = require("./routes/refreshtoken");
-const addpinRoutes = require("./routes/passwordpin");
+const passwordpinRoutes = require("./routes/passwordpin");
+const transactionpinRoutes = require("./routes/transactionpin");
 const signinRoutes = require("./routes/signin");
 const signupRoutes = require("./routes/signup");
 const usernameRoutes = require("./routes/username");
@@ -96,8 +98,11 @@ const fetchwalletRoutes = require("./adminRoutes/fetchwallet");
 const fetchtransactionRoutes = require("./adminRoutes/fetchtransactions");
 const deletepinRoutes = require("./adminRoutes/deletepin");
 const nairaPriceRouter = require('./routes/nairaprice');
-const onrampRoutes = require('./adminRoutes/onramp');
-const offrampRoutes = require('./adminRoutes/offramp');
+const markupRouter = require('./adminRoutes/onramp');
+const markdownRouter = require('./adminRoutes/offramp');
+const baserateaddRouter = require('./adminRoutes/baserateaddition');
+const unlockaccountRoutes = require('./adminRoutes/unlockaccount');
+const fetchuserRoutes = require('./adminRoutes/fetchuser');
 const walletRoutes = require('./routes/wallet');
 const TwoFARoutes = require('./auth/setup-2fa');
 const AirtimeRoutes = require('./routes/airtime');
@@ -108,10 +113,21 @@ const BettingRoutes = require('./routes/betting');
 const CableTVRoutes = require('./routes/cabletv');
 const fetchdataplans = require('./routes/dataplans');
 const billwebhookRoutes = require('./routes/billwebhook');
-const passwordpinRoutes = require("./routes/passwordpin");
-
-
-
+const DashboardRoutes = require('./routes/dashboard');
+const SwapRoutes = require('./routes/swap');
+const verifypasswordpinRoutes = require('./routes/verifypasswordpin');
+const migrationRoutes = require('./adminRoutes/updatekyc');
+const historyRoutes = require('./routes/transactionhistory');
+const internaltransferRoutes = require('./routes/usernamewithdraw');
+const usernamequeryRoutes = require('./routes/usernamequery');
+const ngnbwithdrawRoutes = require('./routes/nairawithdrawal');
+const ngnbwebhookRoutes = require('./routes/nairawebhook');
+const dollarvalueRoutes = require('./routes/dollarvalue');
+const resendOtpRoutes = require('./routes/resendOtp');
+const verifynin = require('./routes/NINverification');
+const verifypassport = require('./routes/passport');
+const verifydriverslicense = require('./routes/driverslicenseverify');
+const CableplanRoutes = require('./routes/cablepackages');
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -123,24 +139,28 @@ app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
 app.use("/updateuseraddress", updateuseraddressRoutes);
 app.use("/naira-price", nairaPriceRouter);
-app.use("/onramp", onrampRoutes);
-app.use("/offramp", offrampRoutes);
+app.use("/onramp", markupRouter);
+app.use("/offramp", markdownRouter);
 app.use("/fetch-wallet", fetchwalletRoutes);
 app.use("/delete-pin", deletepinRoutes);
-app.use("/add-pin", addpinRoutes);
 app.use("/fetch", fetchtransactionRoutes);
 app.use("/set-fee", SetfeeRoutes);
 app.use("/pending", clearpendingRoutes);
 app.use("/fetching", fetchrefreshtoken);
 app.use("/fund", FunduserRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
+app.use("/baserate", baserateaddRouter);
+app.use("/verifypin", verifypasswordpinRoutes);
+app.use("/fetchuser", fetchuserRoutes);
+app.use("/unlockaccount", unlockaccountRoutes);
+app.use('/migration', migrationRoutes);
+app.use('/ngnbwebhook', migrationRoutes);
 app.use("/passwordpin", passwordpinRoutes);
 
-
 // Protected Routes (JWT Required)
+app.use("/avatar-update", authenticateToken, avatarsRoutes);
 app.use("/logout", authenticateToken, logoutRoutes);
 app.use("/username", authenticateToken, usernameRoutes);
-app.use("/usernamecheck", authenticateToken, usernamecheckRoutes);
 app.use("/balance", authenticateToken, balanceRoutes);
 app.use("/deposit", authenticateToken, depositRoutes);
 app.use("/wallet", authenticateToken, walletRoutes);
@@ -148,16 +168,27 @@ app.use("/withdraw", authenticateToken, withdrawRoutes);
 app.use("/validate-balance", authenticateToken, validatewithdrawRoutes);
 app.use("/2FA", authenticateToken, TwoFARoutes);
 app.use("/airtime", authenticateToken, AirtimeRoutes);
+app.use("/transactionpin", authenticateToken, transactionpinRoutes);
 app.use("/plans", authenticateToken, fetchdataplans);
 app.use("/data", authenticateToken, DataRoutes);
 app.use("/verifybill", authenticateToken, VerifybillRoutes);
 app.use("/electricity", authenticateToken, ElectricityRoutes);
 app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
-app.use("/passwordpin", authenticateToken, passwordpinRoutes);
-
-
-
+app.use("/api", authenticateToken, DashboardRoutes);
+app.use("/swap", authenticateToken, SwapRoutes);
+app.use("/history", authenticateToken, historyRoutes);
+app.use("/transfer", authenticateToken, internaltransferRoutes);
+app.use("/query", authenticateToken, usernamequeryRoutes);
+app.use("/ngnbwithdraw", authenticateToken, ngnbwithdrawRoutes);
+app.use("/ngnbwebhook", authenticateToken, ngnbwebhookRoutes);
+app.use("/dollarvalue", authenticateToken, dollarvalueRoutes);
+app.use("/resend-otp", authenticateToken, resendOtpRoutes);
+app.use("/verifynin", authenticateToken, verifynin);
+app.use("/verifypassport", authenticateToken, verifypassport);
+app.use("/verifydriverslicense", authenticateToken, verifydriverslicense);
+app.use("/packages", authenticateToken, CableplanRoutes);
+app.use("/verify-bill", authenticateToken, VerifybillRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
@@ -170,30 +201,11 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: "Internal Server Error" });
 });
 
-// Launch Server with MongoDB Index Fix
+// Start Server
 const startServer = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
-    
-    // Fix transaction indexes (run once to resolve duplicate key issue)
-    try {
-      console.log("🔧 Checking transaction indexes...");
-      const Transaction = require("./models/transaction");
-      
-      // Drop the problematic index that's causing duplicate key errors
-      await Transaction.collection.dropIndex("transactionId_1").catch(() => {
-        console.log("   Index transactionId_1 not found or already dropped");
-      });
-      
-      // Recreate proper indexes from schema
-      await Transaction.syncIndexes();
-      
-      console.log("✅ Transaction indexes fixed successfully");
-    } catch (indexError) {
-      console.error("❌ Index fix failed (but continuing):", indexError.message);
-      // Don't crash the server if index fix fails
-    }
     
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
