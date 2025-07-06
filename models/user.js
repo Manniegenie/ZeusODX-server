@@ -5,18 +5,18 @@ const SALT_WORK_FACTOR = 10;
 
 const userSchema = new mongoose.Schema({
   // Authentication
-  username: { type: String },
-  email: { type: String, required: true, unique: true },
+  username: { type: String }, // Unique index defined below with sparse
+  email: { type: String, required: true, unique: true }, // Only field-level unique constraint
   password: { type: String },
   passwordpin: { type: String },
-  transactionpin: { type: String }, // ADDED: Missing field
-  securitypin: { type: String }, // ADDED: Missing field
+  transactionpin: { type: String },
+  securitypin: { type: String },
 
   // Personal Information
   firstname: { type: String },
   lastname: { type: String },
-  phonenumber: { type: String },
-  bvn: { type: String },
+  phonenumber: { type: String }, // Unique index defined below with sparse
+  bvn: { type: String }, // Unique index defined below with sparse
   DoB: { type: String },
 
   // Avatar
@@ -70,7 +70,7 @@ const userSchema = new mongoose.Schema({
   failedLoginAttempts: { type: Number, default: 0 },
   lastFailedLogin: { type: Date },
 
-  // Wallet Addresses + Reference IDs
+  // Wallet Addresses + Reference IDs - NO UNIQUE CONSTRAINTS
   wallets: {
     BTC_BTC: { address: String, network: String, walletReferenceId: String },
     ETH_ETH: { address: String, network: String, walletReferenceId: String },
@@ -110,12 +110,12 @@ const userSchema = new mongoose.Schema({
 
   totalPortfolioBalance: { type: Number, default: 0, min: 0 },
 
-  // 2FA
+  // 2FA - NO UNIQUE CONSTRAINTS
   twoFASecret: { type: String, default: null },
   is2FAEnabled: { type: Boolean, default: false },
-  is2FAVerified: { type: Boolean, default: false }, // ADDED: Missing field
+  is2FAVerified: { type: Boolean, default: false },
 
-  // Refresh Tokens
+  // Refresh Tokens - NO UNIQUE CONSTRAINTS
   refreshTokens: [
     {
       token: String,
@@ -124,36 +124,11 @@ const userSchema = new mongoose.Schema({
   ],
 });
 
-// Sparse unique indexes - only enforce uniqueness when values exist
+// UNIQUE INDEXES: Only on username, phonenumber, bvn (sparse allows null values)
 userSchema.index({ username: 1 }, { unique: true, sparse: true });
 userSchema.index({ phonenumber: 1 }, { unique: true, sparse: true });
 userSchema.index({ bvn: 1 }, { unique: true, sparse: true });
-userSchema.index({ twoFASecret: 1 }, { unique: true, sparse: true });
-
-// Wallet address unique indexes (each address type should be unique)
-userSchema.index({ 'wallets.BTC_BTC.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.ETH_ETH.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.SOL_SOL.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDT_ETH.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDT_TRX.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDT_BSC.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDC_ETH.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDC_BSC.address': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.NGNB.address': 1 }, { unique: true, sparse: true });
-
-// Wallet reference ID indexes (should also be unique)
-userSchema.index({ 'wallets.BTC_BTC.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.ETH_ETH.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.SOL_SOL.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDT_ETH.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDT_TRX.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDT_BSC.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDC_ETH.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.USDC_BSC.walletReferenceId': 1 }, { unique: true, sparse: true });
-userSchema.index({ 'wallets.NGNB.walletReferenceId': 1 }, { unique: true, sparse: true });
-
-// Refresh token uniqueness
-userSchema.index({ 'refreshTokens.token': 1 }, { unique: true, sparse: true });
+// Note: email already has unique: true in field definition above
 
 // Virtual 'id' field
 userSchema.virtual('id').get(function () {
@@ -167,7 +142,7 @@ userSchema.set('toJSON', {
     delete ret.password;
     delete ret.passwordpin;
     delete ret.transactionpin;
-    delete ret.securitypin; // ADDED: Also hide security pin
+    delete ret.securitypin;
     delete ret.twoFASecret;
     delete ret.__v;
     return ret;
@@ -192,7 +167,6 @@ userSchema.pre('save', async function (next) {
       this.transactionpin = await bcrypt.hash(this.transactionpin, salt);
     }
 
-    // ADDED: Hash security pin if it exists
     if (this.isModified('securitypin') && this.securitypin) {
       const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
       this.securitypin = await bcrypt.hash(this.securitypin, salt);
@@ -216,19 +190,19 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   return bcrypt.compare(candidatePassword, this.password);
 };
 
-// ADDED: Compare password pin method
+// Compare password pin method
 userSchema.methods.comparePasswordPin = async function (candidatePin) {
   if (!this.passwordpin) return false;
   return bcrypt.compare(candidatePin, this.passwordpin);
 };
 
-// ADDED: Compare transaction pin method
+// Compare transaction pin method
 userSchema.methods.compareTransactionPin = async function (candidatePin) {
   if (!this.transactionpin) return false;
   return bcrypt.compare(candidatePin, this.transactionpin);
 };
 
-// ADDED: Compare security pin method
+// Compare security pin method
 userSchema.methods.compareSecurityPin = async function (candidatePin) {
   if (!this.securitypin) return false;
   return bcrypt.compare(candidatePin, this.securitypin);

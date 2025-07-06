@@ -93,87 +93,42 @@ router.post('/password-pin', async (req, res) => {
       }
     }
 
-    // Add NGNB placeholder wallet as per your schema
-    normalizedWallets["NGNB"] = {
-      address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
-      network: "PLACEHOLDER_FOR_NGNB_NETWORK",
-      walletReferenceId: "PLACEHOLDER_FOR_NGNB_REFERENCE",
-    };
+    // Only add NGNB if you have a real address, otherwise skip it
+    // This prevents setting placeholder values that caused the original error
+    if (generated.ngnbWallet && generated.ngnbWallet.address) {
+      normalizedWallets["NGNB"] = {
+        address: generated.ngnbWallet.address,
+        network: generated.ngnbWallet.network || "NGNB_NETWORK",
+        walletReferenceId: generated.ngnbWallet.referenceId || null,
+      };
+    }
 
-    const now = new Date();
-    
-    // Create user document with KYC Level 1
-    // FIXED: Only destructure fields that exist in pendingUser
+    // Create user document with only essential fields from PendingUser
     const { 
       email, 
       firstname, 
       lastname, 
-      bvn, 
-      DoB, 
-      username, 
       phonenumber 
     } = pendingUser;
 
-    // FIXED: Only include securitypin if it exists in pendingUser
     const userFields = {
-      username: username || null,
       email,
       firstname,
       lastname,
       phonenumber,
-      bvn,
-      DoB,
-      password: null, // Explicitly set to null
       passwordpin: newPin, // Set the PIN - let the model handle hashing
-      transactionpin: null,
-      wallets: normalizedWallets,
-      // Set KYC Level 1 upon successful phone verification
-      kycLevel: 1,
-      kycStatus: 'approved',
-      kyc: {
-        level1: {
-          status: 'approved',
-          submittedAt: now,
-          approvedAt: now,
-          rejectedAt: null,
-          rejectionReason: null
-        },
-        level2: {
-          status: 'not_submitted',
-          submittedAt: null,
-          approvedAt: null,
-          rejectedAt: null,
-          rejectionReason: null,
-          documentType: null,
-          documentNumber: null
-        },
-        level3: {
-          status: 'not_submitted',
-          submittedAt: null,
-          approvedAt: null,
-          rejectedAt: null,
-          rejectionReason: null,
-          addressVerified: false,
-          sourceOfFunds: null
-        }
-      }
+      wallets: normalizedWallets, // Include generated wallets
     };
-
-    // Add securitypin only if it exists in pendingUser
-    if (pendingUser.securitypin) {
-      userFields.securitypin = pendingUser.securitypin;
-    }
 
     const newUser = new User(userFields);
 
-    // FIXED: Use consistent field names that exist in schema
+    // JWT tokens - username not included since it's not set yet
     const accessToken = jwt.sign(
       {
         id: newUser._id,
         email: newUser.email,
-        username: newUser.username,
         is2FAEnabled: newUser.is2FAEnabled || false,
-        is2FAVerified: newUser.is2FAVerified || false, // Now this field exists
+        is2FAVerified: newUser.is2FAVerified || false,
       },
       config.jwtSecret || process.env.JWT_SECRET,
       { expiresIn: "1h" }
@@ -188,7 +143,7 @@ router.post('/password-pin', async (req, res) => {
     // Add refresh token to user before saving
     newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
     
-    // FIXED: Add error handling for save operation
+    // Save user with error handling
     try {
       await newUser.save();
     } catch (saveError) {
@@ -220,29 +175,24 @@ router.post('/password-pin', async (req, res) => {
       throw saveError; // Re-throw if not handled
     }
 
-    logger.info('User created successfully with password PIN and KYC Level 1', {
+    logger.info('User created successfully with password PIN', {
       userId: newUser._id,
-      username: newUser.username,
       email: newUser.email,
       pinLength: newPin.length,
-      source: 'password-pin',
-      kycLevel: newUser.kycLevel
+      source: 'password-pin'
     });
 
     // Remove pending user after successful account creation
     await PendingUser.deleteOne({ _id: pendingUser._id });
 
     res.status(201).json({
-      message: 'Account created successfully with password PIN and KYC Level 1.',
+      message: 'Account created successfully with password PIN.',
       user: {
         id: newUser._id,
-        username: newUser.username,
         email: newUser.email,
         phonenumber: newUser.phonenumber,
         firstname: newUser.firstname,
-        lastname: newUser.lastname,
-        kycLevel: newUser.kycLevel,
-        kycStatus: newUser.kycStatus
+        lastname: newUser.lastname
       },
       accessToken,
       refreshToken,
