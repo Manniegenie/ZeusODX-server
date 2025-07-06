@@ -7,7 +7,11 @@ const pendingUserSchema = new mongoose.Schema({
   phonenumber: { type: String, required: true, unique: true },
   verificationCode: { type: String, required: true },
   verificationCodeCreatedAt: { type: Date, required: true },
-  verificationCodeExpiresAt: { type: Date, required: true, index: { expires: 0 } } // TTL index
+  verificationCodeExpiresAt: { type: Date, required: true, index: { expires: 0 } }, // TTL index
+  
+  // OTP verification status fields
+  otpVerified: { type: Boolean, default: false },
+  otpVerifiedAt: { type: Date, default: null }
 }, { timestamps: true });
 
 /**
