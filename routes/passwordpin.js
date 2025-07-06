@@ -7,6 +7,7 @@ const config = require("./config");
 const logger = require('../utils/logger');
 const generateWallets = require("../utils/generatewallets");
 
+// POST: /api/admin/password-pin
 router.post('/password-pin', async (req, res) => {
   const { newPin, renewPin, pendingUserId } = req.body;
 
@@ -41,6 +42,7 @@ router.post('/password-pin', async (req, res) => {
       return res.status(400).json({ message: 'Phone number must be verified before setting PIN' });
     }
 
+    // Generate wallets
     let generated = {};
     try {
       generated = await generateWallets(pendingUser.email, pendingUser._id);
@@ -57,18 +59,15 @@ router.post('/password-pin', async (req, res) => {
 
     for (const [key, walletData] of Object.entries(rawWallets)) {
       const parts = key.split('_');
-      let normalizedKey;
+      let normalizedKey = key;
 
       if (parts.length === 2) {
-        if (key === 'USDT_BSC' || key === 'USDT_TRX' || key === 'USDT_ETH') {
-          normalizedKey = key;
-        } else if (key === 'USDC_BSC' || key === 'USDC_ETH') {
-          normalizedKey = key;
-        } else {
-          normalizedKey = key;
+        const [token, chain] = parts;
+        const validKeys = ['USDT_BSC', 'USDT_TRX', 'USDT_ETH', 'USDC_BSC', 'USDC_ETH', 'BTC_BTC', 'ETH_ETH', 'SOL_SOL'];
+        const compoundKey = `${token}_${chain}`;
+        if (validKeys.includes(compoundKey)) {
+          normalizedKey = compoundKey;
         }
-      } else {
-        normalizedKey = key;
       }
 
       if (walletData && walletData.address) {
@@ -80,6 +79,7 @@ router.post('/password-pin', async (req, res) => {
       }
     }
 
+    // Add NGNB placeholder
     normalizedWallets["NGNB"] = {
       address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
       network: "PLACEHOLDER_FOR_NGNB_NETWORK",
@@ -87,8 +87,19 @@ router.post('/password-pin', async (req, res) => {
     };
 
     const now = new Date();
-    const { email, firstname, lastname, bvn, DoB, securitypin, username, phonenumber } = pendingUser;
+    const {
+      email,
+      firstname,
+      lastname,
+      bvn,
+      DoB,
+      phonenumber,
+      username,
+      securitypin,
+      twoFASecret
+    } = pendingUser;
 
+    // Build user object
     const userData = {
       email,
       firstname,
@@ -99,10 +110,10 @@ router.post('/password-pin', async (req, res) => {
       password: null,
       passwordpin: newPin,
       transactionpin: null,
-      securitypin,
       wallets: normalizedWallets,
       kycLevel: 1,
       kycStatus: 'approved',
+      refreshTokens: [],
       kyc: {
         level1: {
           status: 'approved',
@@ -132,13 +143,14 @@ router.post('/password-pin', async (req, res) => {
       }
     };
 
-    // ✅ Only assign username if it’s truthy (not null or undefined)
-    if (username) {
-      userData.username = username;
-    }
+    // Conditionally add sparse/unique fields
+    if (username) userData.username = username;
+    if (twoFASecret) userData.twoFASecret = twoFASecret;
+    if (securitypin) userData.securitypin = securitypin;
 
     const newUser = new User(userData);
 
+    // Create JWTs
     const accessToken = jwt.sign(
       {
         id: newUser._id,
