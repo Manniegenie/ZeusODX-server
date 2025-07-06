@@ -7,7 +7,6 @@ const config = require("./config");
 const logger = require('../utils/logger');
 const generateWallets = require("../utils/generatewallets");
 
-// POST: /api/admin/password-pin
 router.post('/password-pin', async (req, res) => {
   const { newPin, renewPin, pendingUserId } = req.body;
 
@@ -31,22 +30,17 @@ router.post('/password-pin', async (req, res) => {
   }
 
   try {
-    // Find the pending user
     const pendingUser = await PendingUser.findById(pendingUserId);
     if (!pendingUser) {
       logger.warn('Pending user not found', { pendingUserId, source: 'password-pin' });
       return res.status(404).json({ message: 'Pending user not found' });
     }
 
-    // Check if OTP was verified
     if (!pendingUser.otpVerified) {
       logger.warn('OTP not verified', { pendingUserId, source: 'password-pin' });
       return res.status(400).json({ message: 'Phone number must be verified before setting PIN' });
     }
 
-    // No need to check if user exists - signup route already handled this
-
-    // Generate wallets
     let generated = {};
     try {
       generated = await generateWallets(pendingUser.email, pendingUser._id);
@@ -59,28 +53,19 @@ router.post('/password-pin', async (req, res) => {
     }
 
     const rawWallets = generated.wallets || {};
-
-    // Normalize wallet keys to match schema
     const normalizedWallets = {};
+
     for (const [key, walletData] of Object.entries(rawWallets)) {
       const parts = key.split('_');
       let normalizedKey;
 
-      if (parts.length === 1) {
-        normalizedKey = key;
-      } else if (parts.length === 2) {
-        if (parts[0] === 'USDT' && parts[1] === 'BSC') {
-          normalizedKey = 'USDT_BSC'; // FIXED: match your schema key
-        } else if (parts[0] === 'USDT' && parts[1] === 'TRX') {
-          normalizedKey = 'USDT_TRX';
-        } else if (parts[0] === 'USDT' && parts[1] === 'ETH') {
-          normalizedKey = 'USDT_ETH';
-        } else if (parts[0] === 'USDC' && parts[1] === 'BSC') {
-          normalizedKey = 'USDC_BSC';
-        } else if (parts[0] === 'USDC' && parts[1] === 'ETH') {
-          normalizedKey = 'USDC_ETH';
+      if (parts.length === 2) {
+        if (key === 'USDT_BSC' || key === 'USDT_TRX' || key === 'USDT_ETH') {
+          normalizedKey = key;
+        } else if (key === 'USDC_BSC' || key === 'USDC_ETH') {
+          normalizedKey = key;
         } else {
-          normalizedKey = key; // e.g., BTC_BTC, ETH_ETH, SOL_SOL
+          normalizedKey = key;
         }
       } else {
         normalizedKey = key;
@@ -95,7 +80,6 @@ router.post('/password-pin', async (req, res) => {
       }
     }
 
-    // Add NGNB placeholder wallet as per your schema
     normalizedWallets["NGNB"] = {
       address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
       network: "PLACEHOLDER_FOR_NGNB_NETWORK",
@@ -103,23 +87,20 @@ router.post('/password-pin', async (req, res) => {
     };
 
     const now = new Date();
-    
-    // Create user document with KYC Level 1
     const { email, firstname, lastname, bvn, DoB, securitypin, username, phonenumber } = pendingUser;
-    const newUser = new User({
-      username: username || null,
+
+    const userData = {
       email,
       firstname,
       lastname,
       phonenumber,
       bvn,
       DoB,
-      password: null, // Explicitly set to null
-      passwordpin: newPin, // Set the PIN - let the model handle hashing
+      password: null,
+      passwordpin: newPin,
       transactionpin: null,
-      securitypin, // Make sure this field exists in your schema or remove it
+      securitypin,
       wallets: normalizedWallets,
-      // Set KYC Level 1 upon successful phone verification
       kycLevel: 1,
       kycStatus: 'approved',
       kyc: {
@@ -149,9 +130,15 @@ router.post('/password-pin', async (req, res) => {
           sourceOfFunds: null
         }
       }
-    });
+    };
 
-    // Generate JWT tokens with 2FA info
+    // ✅ Only assign username if it’s truthy (not null or undefined)
+    if (username) {
+      userData.username = username;
+    }
+
+    const newUser = new User(userData);
+
     const accessToken = jwt.sign(
       {
         id: newUser._id,
@@ -170,7 +157,6 @@ router.post('/password-pin', async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    // Add refresh token to user before saving
     newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
     await newUser.save();
 
@@ -183,7 +169,6 @@ router.post('/password-pin', async (req, res) => {
       kycLevel: newUser.kycLevel
     });
 
-    // Remove pending user after successful account creation
     await PendingUser.deleteOne({ _id: pendingUser._id });
 
     res.status(201).json({
@@ -203,11 +188,11 @@ router.post('/password-pin', async (req, res) => {
     });
 
   } catch (error) {
-    logger.error('Error creating user account with password PIN', { 
-      error: error.message, 
+    logger.error('Error creating user account with password PIN', {
+      error: error.message,
       stack: error.stack,
-      pendingUserId, 
-      source: 'password-pin' 
+      pendingUserId,
+      source: 'password-pin'
     });
     res.status(500).json({ message: 'Server error' });
   }

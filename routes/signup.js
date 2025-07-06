@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const PendingUser = require('../models/pendinguser');
+const User = require('../models/user'); // Added User model import
 const { sendVerificationCode } = require('../utils/verifyAT');
 const logger = require('../utils/logger');
 const validator = require('validator');
@@ -49,13 +50,30 @@ router.post('/add-user', async (req, res) => {
     // Normalize phone number for SMS (remove + if present)
     const normalizedPhone = phonenumber.startsWith('+') ? phonenumber.slice(1) : phonenumber;
 
-    // Check for duplicates
-    const existingUser = await PendingUser.findOne({
+    // Check if user already exists in main User database
+    const existingMainUser = await User.findOne({
       $or: [{ email }, { phonenumber }]
     });
 
-    if (existingUser) {
-      return res.status(409).json({ message: 'User with this email or phone number already exists.' });
+    if (existingMainUser) {
+      logger.info('User already exists in main database', { 
+        email: email.slice(0, 3) + '****',
+        phonenumber: phonenumber.slice(0, 5) + '****'
+      });
+      return res.status(409).json({ message: 'User already Exists' });
+    }
+
+    // Check if user already exists in pending users
+    const existingPendingUser = await PendingUser.findOne({
+      $or: [{ email }, { phonenumber }]
+    });
+
+    if (existingPendingUser) {
+      logger.info('User already exists in pending database', { 
+        email: email.slice(0, 3) + '****',
+        phonenumber: phonenumber.slice(0, 5) + '****'
+      });
+      return res.status(409).json({ message: 'Phone or Email already Exists' });
     }
 
     // Generate OTP and expiration
