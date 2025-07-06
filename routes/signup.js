@@ -73,7 +73,7 @@ router.post('/add-user', async (req, res) => {
         email: email.slice(0, 3) + '****',
         phonenumber: phonenumber.slice(0, 5) + '****'
       });
-      return res.status(409).json({ message: 'Phone or Email already Exists' });
+      return res.status(409).json({ message: 'Phone or already Exists' });
     }
 
     // Generate OTP and expiration
