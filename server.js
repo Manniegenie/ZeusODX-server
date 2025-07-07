@@ -305,6 +305,11 @@ const BettingRoutes = require('./routes/betting');
 const CableTVRoutes = require('./routes/cabletv');
 const fetchdataplans = require('./routes/dataplans');
 const billwebhookRoutes = require('./routes/billwebhook');
+const dashboardRoutes = require('./routes/dashboard');
+
+
+
+
 
 // Public Routes (No Authentication Required)
 app.use("/signin", signinRoutes);
@@ -350,6 +355,7 @@ app.use("/verifybill", authenticateToken, VerifybillRoutes);
 app.use("/electricity", authenticateToken, ElectricityRoutes);
 app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
+app.use("/dashboard", authenticateToken, dashboardRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
