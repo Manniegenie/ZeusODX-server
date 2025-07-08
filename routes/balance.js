@@ -19,14 +19,39 @@ router.post('/balance', async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid "types" array in request body' });
     }
 
-    // List of allowed balance fields
+    // Complete list of allowed balance fields from User schema
     const allowedFields = [
-      'solBalance', 'solBalanceUSD',
-      'btcBalance', 'btcBalanceUSD',
-      'usdtBalance', 'usdtBalanceUSD',
-      'usdcBalance', 'usdcBalanceUSD',
-      'ethBalance', 'ethBalanceUSD',
-      'ngnzBalance', 'ngnbBalanceUSD',
+      // SOL balances
+      'solBalance', 'solBalanceUSD', 'solPendingBalance',
+      
+      // BTC balances
+      'btcBalance', 'btcBalanceUSD', 'btcPendingBalance',
+      
+      // USDT balances
+      'usdtBalance', 'usdtBalanceUSD', 'usdtPendingBalance',
+      
+      // USDC balances
+      'usdcBalance', 'usdcBalanceUSD', 'usdcPendingBalance',
+      
+      // ETH balances
+      'ethBalance', 'ethBalanceUSD', 'ethPendingBalance',
+      
+      // BNB balances
+      'bnbBalance', 'bnbBalanceUSD', 'bnbPendingBalance',
+      
+      // DOGE balances
+      'dogeBalance', 'dogeBalanceUSD', 'dogePendingBalance',
+      
+      // MATIC balances
+      'maticBalance', 'maticBalanceUSD', 'maticPendingBalance',
+      
+      // AVAX balances
+      'avaxBalance', 'avaxBalanceUSD', 'avaxPendingBalance',
+      
+      // NGNB balances
+      'ngnbBalance', 'ngnbBalanceUSD', 'ngnbPendingBalance',
+      
+      // Total portfolio
       'totalPortfolioBalance'
     ];
 
