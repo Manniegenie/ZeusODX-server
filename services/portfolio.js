@@ -1,6 +1,7 @@
 const axios = require('axios');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
+const GlobalMarkdown = require('../models/pricemarkdown'); // Import markdown model
 const logger = require('../utils/logger');
 
 // Configuration for price sources
@@ -12,13 +13,17 @@ const CONFIG = {
   RATE_LIMIT_DELAY: 30000, // 30 seconds wait on rate limit
 };
 
-// ALIGNED WITH USER SCHEMA: Only tokens that exist in user.js
+// ALIGNED WITH USER SCHEMA: All tokens that exist in user.js balance fields
 const SUPPORTED_TOKENS = {
   BTC: { currencyApiSymbol: 'BTC', isStablecoin: false },
   ETH: { currencyApiSymbol: 'ETH', isStablecoin: false },
   SOL: { currencyApiSymbol: 'SOL', isStablecoin: false },
   USDT: { currencyApiSymbol: 'USDT', isStablecoin: true },
   USDC: { currencyApiSymbol: 'USDC', isStablecoin: true },
+  BNB: { currencyApiSymbol: 'BNB', isStablecoin: false },
+  DOGE: { currencyApiSymbol: 'DOGE', isStablecoin: false },
+  MATIC: { currencyApiSymbol: 'MATIC', isStablecoin: false },
+  AVAX: { currencyApiSymbol: 'AVAX', isStablecoin: false },
   NGNB: { currencyApiSymbol: 'NGNB', isStablecoin: true, isNairaPegged: true },
 };
 
@@ -42,6 +47,57 @@ const API_CONFIG = {
   baseUrl: 'https://api.currencyapi.com/v3',
   apiKey: process.env.CURRENCYAPI_KEY
 };
+
+// NEW FUNCTION: Get global markdown percentage
+async function getGlobalMarkdownPercentage() {
+  try {
+    const markdownDoc = await GlobalMarkdown.getCurrentMarkdown();
+    
+    if (!markdownDoc || !markdownDoc.isActive) {
+      return { hasMarkdown: false, percentage: 0 };
+    }
+    
+    return {
+      hasMarkdown: true,
+      percentage: markdownDoc.markdownPercentage,
+      formattedPercentage: markdownDoc.formattedPercentage
+    };
+  } catch (error) {
+    logger.warn('Error fetching global markdown percentage', { error: error.message });
+    return { hasMarkdown: false, percentage: 0 };
+  }
+}
+
+// NEW FUNCTION: Apply markdown to prices
+function applyMarkdownToPrices(priceMap, markdownPercentage) {
+  if (!markdownPercentage || markdownPercentage <= 0) {
+    return priceMap;
+  }
+  
+  const markedDownPrices = new Map();
+  const discountMultiplier = (100 - markdownPercentage) / 100;
+  
+  for (const [token, price] of priceMap.entries()) {
+    // Don't apply markdown to stablecoins or NGNB
+    const tokenInfo = SUPPORTED_TOKENS[token];
+    if (tokenInfo && (tokenInfo.isStablecoin || tokenInfo.isNairaPegged)) {
+      markedDownPrices.set(token, price);
+    } else {
+      const markedDownPrice = price * discountMultiplier;
+      markedDownPrices.set(token, markedDownPrice);
+    }
+  }
+  
+  logger.info(`Applied ${markdownPercentage}% markdown to ${priceMap.size} token prices`, {
+    discountMultiplier,
+    affectedTokens: Array.from(priceMap.keys()).filter(token => {
+      const tokenInfo = SUPPORTED_TOKENS[token];
+      return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
+    })
+  });
+  
+  return markedDownPrices;
+}
 
 // Special handling for NGNB (Naira-pegged stablecoin)
 function handleNGNBPricing(tokens) {
@@ -176,7 +232,7 @@ async function fetchCurrencyApiPrices(tokens) {
   }
 }
 
-// Fallback prices for supported tokens only
+// Fallback prices for supported tokens only - UPDATED with new tokens
 async function getFallbackPrices(tokens) {
   const fallbackPrices = new Map();
   const fallbacks = {
@@ -185,6 +241,10 @@ async function getFallbackPrices(tokens) {
     'SOL': 200,
     'USDT': 1,
     'USDC': 1,
+    'BNB': 580,
+    'DOGE': 0.15,
+    'MATIC': 0.85,
+    'AVAX': 35,
     'NGNB': 1 / 1554.42,
   };
   
@@ -198,7 +258,7 @@ async function getFallbackPrices(tokens) {
   return fallbackPrices;
 }
 
-// Gets cryptocurrency prices with caching
+// Gets cryptocurrency prices with caching and automatic markdown application
 async function getPricesWithCache(tokenSymbols) {
   if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
     logger.warn('Invalid token symbols provided to getPricesWithCache');
@@ -219,7 +279,7 @@ async function getPricesWithCache(tokenSymbols) {
   
   // Check cache validity
   if (isCacheValid(normalizedTokens)) {
-    logger.info('Using cached prices', { tokens: normalizedTokens });
+    logger.debug('Using cached prices with markdown applied', { tokens: normalizedTokens });
     return Object.fromEntries(
       normalizedTokens.map(token => [token, priceCache.data.get(token)])
     );
@@ -234,12 +294,13 @@ async function getPricesWithCache(tokenSymbols) {
     );
   }
   
-  // Start price update
+  // Start price update with markdown integration
   priceCache.isUpdating = true;
   priceCache.updatePromise = (async () => {
     try {
       let priceMap;
       
+      // Fetch original prices from API or fallback
       try {
         priceMap = await withRetry(() => fetchCurrencyApiPrices(normalizedTokens));
       } catch (apiError) {
@@ -247,26 +308,42 @@ async function getPricesWithCache(tokenSymbols) {
         priceMap = await getFallbackPrices(normalizedTokens);
       }
       
-      // Update cache
+      // Apply global markdown percentage automatically
+      const markdownInfo = await getGlobalMarkdownPercentage();
+      
+      if (markdownInfo.hasMarkdown) {
+        logger.info('Applying global markdown to all crypto prices', {
+          markdownPercentage: markdownInfo.percentage,
+          affectedTokens: Array.from(priceMap.keys()).filter(token => {
+            const tokenInfo = SUPPORTED_TOKENS[token];
+            return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
+          })
+        });
+        priceMap = applyMarkdownToPrices(priceMap, markdownInfo.percentage);
+      }
+      
+      // Update cache with marked-down prices
       priceCache.data = priceMap;
       priceCache.lastUpdated = Date.now();
       
-      logger.info('Successfully updated price cache', { 
+      logger.info('Price cache updated successfully', { 
         tokenCount: priceMap.size,
-        tokens: Array.from(priceMap.keys())
+        tokens: Array.from(priceMap.keys()),
+        markdownApplied: markdownInfo.hasMarkdown,
+        markdownPercentage: markdownInfo.hasMarkdown ? `${markdownInfo.percentage}%` : 'None'
       });
       
       return priceMap;
     } catch (error) {
-      logger.error('Failed to fetch prices', { error: error.message });
+      logger.error('Failed to fetch and process prices', { error: error.message });
       
       // Return stale cache if available
       if (priceCache.data.size > 0) {
-        logger.info('Returning stale cache data due to failure');
+        logger.warn('Returning stale cache data due to fetch failure');
         return priceCache.data;
       }
       
-      // Final fallback
+      // Final fallback without markdown
       const fallbackPrices = await getFallbackPrices(normalizedTokens);
       priceCache.data = fallbackPrices;
       priceCache.lastUpdated = Date.now();
@@ -282,6 +359,94 @@ async function getPricesWithCache(tokenSymbols) {
   return Object.fromEntries(
     normalizedTokens.map(token => [token, priceMap.get(token) || 0])
   );
+}
+
+// ====================================================
+// NEW FUNCTION: Updates user balance directly for internal transfers
+// ====================================================
+async function updateUserBalance(userId, currency, amount, session = null) {
+  if (!userId || !currency || typeof amount !== 'number') {
+    throw new Error('Invalid parameters for balance update');
+  }
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Get current price for USD value calculation
+    const prices = await getPricesWithCache([currencyUpper]);
+    const currentPrice = prices[currencyUpper] || 0;
+    const usdAmount = amount * currentPrice;
+    
+    // Map currency to correct balance fields
+    const currencyLower = currencyUpper.toLowerCase();
+    const balanceField = `${currencyLower}Balance`;
+    const usdBalanceField = `${currencyLower}BalanceUSD`;
+    
+    // Build update object
+    const updateFields = {
+      $inc: {
+        [balanceField]: amount,
+        [usdBalanceField]: usdAmount
+      },
+      $set: {
+        lastBalanceUpdate: new Date()
+      }
+    };
+    
+    // Execute update with or without session
+    const updateOptions = { 
+      new: true, 
+      runValidators: true,
+      ...(session && { session })
+    };
+    
+    const user = await User.findByIdAndUpdate(userId, updateFields, updateOptions);
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    // Recalculate total portfolio balance - UPDATED with new tokens
+    const totalPortfolioBalance = 
+      (user.btcBalanceUSD || 0) +
+      (user.ethBalanceUSD || 0) +
+      (user.solBalanceUSD || 0) +
+      (user.usdtBalanceUSD || 0) +
+      (user.usdcBalanceUSD || 0) +
+      (user.bnbBalanceUSD || 0) +
+      (user.dogeBalanceUSD || 0) +
+      (user.maticBalanceUSD || 0) +
+      (user.avaxBalanceUSD || 0) +
+      (user.ngnbBalanceUSD || 0);
+    
+    // Update total portfolio balance
+    await User.findByIdAndUpdate(
+      userId,
+      { 
+        $set: { 
+          totalPortfolioBalance: parseFloat(totalPortfolioBalance.toFixed(2)),
+          portfolioLastUpdated: new Date()
+        }
+      },
+      { session, runValidators: true }
+    );
+    
+    logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper} (${amount > 0 ? '+' : ''}$${usdAmount.toFixed(2)} USD)`);
+    
+    return user;
+  } catch (error) {
+    logger.error(`Failed to update balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
 }
 
 // Calculates user portfolio balance
@@ -359,7 +524,7 @@ async function getUserPortfolioBalance(userId, asOfDate = null) {
       };
     }
     
-    // Get current prices
+    // Get current prices (with markdown applied)
     const prices = await getPricesWithCache(tokens);
     let totalUSD = 0;
     const portfolio = [];
@@ -394,7 +559,7 @@ async function getUserPortfolioBalance(userId, asOfDate = null) {
   }
 }
 
-// Updates user's portfolio balance in the database - ALIGNED with user schema
+// Updates user's portfolio balance in the database - UPDATED with new tokens
 async function updateUserPortfolioBalance(userId, asOfDate = null) {
   if (!userId) {
     throw new Error('User ID is required');
@@ -408,7 +573,7 @@ async function updateUserPortfolioBalance(userId, asOfDate = null) {
       throw new Error(`User not found: ${userId}`);
     }
     
-    // Update fields EXACTLY matching user schema
+    // Update fields EXACTLY matching user schema - UPDATED with new tokens
     const updateFields = {
       totalPortfolioBalance: portfolio.totalPortfolioUSD,
       portfolioLastUpdated: new Date(),
@@ -423,6 +588,14 @@ async function updateUserPortfolioBalance(userId, asOfDate = null) {
       usdcBalanceUSD: 0,
       ethBalance: 0,
       ethBalanceUSD: 0,
+      bnbBalance: 0,
+      bnbBalanceUSD: 0,
+      dogeBalance: 0,
+      dogeBalanceUSD: 0,
+      maticBalance: 0,
+      maticBalanceUSD: 0,
+      avaxBalance: 0,
+      avaxBalanceUSD: 0,
       ngnbBalance: 0,
       ngnbBalanceUSD: 0,
     };
@@ -583,13 +756,56 @@ async function forceRefreshPrices(tokens = []) {
   return await getPricesWithCache(tokensToRefresh);
 }
 
+// NEW FUNCTION: Get prices without markdown (original prices)
+async function getOriginalPricesWithCache(tokenSymbols) {
+  if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
+    logger.warn('Invalid token symbols provided to getOriginalPricesWithCache');
+    return {};
+  }
+  
+  const normalizedTokens = [...new Set(
+    tokenSymbols
+      .map(t => t.toUpperCase())
+      .filter(token => SUPPORTED_TOKENS[token])
+  )];
+  
+  if (normalizedTokens.length === 0) {
+    return {};
+  }
+  
+  try {
+    let priceMap;
+    
+    try {
+      priceMap = await withRetry(() => fetchCurrencyApiPrices(normalizedTokens));
+    } catch (apiError) {
+      logger.warn('CurrencyAPI failed, using fallback prices for original prices', { error: apiError.message });
+      priceMap = await getFallbackPrices(normalizedTokens);
+    }
+    
+    // Return original prices without markdown
+    return Object.fromEntries(
+      normalizedTokens.map(token => [token, priceMap.get(token) || 0])
+    );
+  } catch (error) {
+    logger.error('Failed to fetch original prices', { error: error.message });
+    return {};
+  }
+}
+
 module.exports = {
   // Core functions
   getPricesWithCache,
+  getOriginalPricesWithCache, // NEW: Get prices without markdown
   getUserPortfolioBalance,
   updateUserPortfolioBalance,
+  updateUserBalance,
   reserveUserBalance,
   releaseReservedBalance,
+  
+  // NEW: Markdown functions
+  getGlobalMarkdownPercentage,
+  applyMarkdownToPrices,
   
   // Cache management
   clearPriceCache,
@@ -605,7 +821,7 @@ module.exports = {
   
   // Configuration
   CONFIG,
-  CURRENCY_API_CONFIG: API_CONFIG, // Alias for compatibility
+  CURRENCY_API_CONFIG: API_CONFIG,
   
   // Cache object
   priceCache

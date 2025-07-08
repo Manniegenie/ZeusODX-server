@@ -7,6 +7,99 @@ const config = require("./config");
 const logger = require('../utils/logger');
 const generateWallets = require("../utils/generatewallets");
 
+// Background wallet generation function
+const generateWalletsInBackground = async (userId, email) => {
+  try {
+    logger.info('Starting background wallet generation', { userId, email });
+    
+    // Update user status to in_progress
+    await User.findByIdAndUpdate(userId, {
+      walletGenerationStatus: 'in_progress',
+      walletGenerationStartedAt: new Date()
+    });
+
+    // Generate wallets
+    const generated = await generateWallets(email, userId);
+    const rawWallets = generated.wallets || {};
+
+    // Normalize wallet keys to match schema
+    const normalizedWallets = {};
+    for (const [key, walletData] of Object.entries(rawWallets)) {
+      const parts = key.split('_');
+      let normalizedKey;
+
+      if (parts.length === 1) {
+        normalizedKey = key;
+      } else if (parts.length === 2) {
+        if (parts[0] === 'USDT' && parts[1] === 'BSC') {
+          normalizedKey = 'USDT_BSC';
+        } else if (parts[0] === 'USDT' && parts[1] === 'TRX') {
+          normalizedKey = 'USDT_TRX';
+        } else if (parts[0] === 'USDT' && parts[1] === 'ETH') {
+          normalizedKey = 'USDT_ETH';
+        } else if (parts[0] === 'USDC' && parts[1] === 'BSC') {
+          normalizedKey = 'USDC_BSC';
+        } else if (parts[0] === 'USDC' && parts[1] === 'ETH') {
+          normalizedKey = 'USDC_ETH';
+        } else if (parts[0] === 'BNB' && parts[1] === 'ETH') {
+          normalizedKey = 'BNB_ETH';
+        } else if (parts[0] === 'BNB' && parts[1] === 'BSC') {
+          normalizedKey = 'BNB_BSC';
+        } else if (parts[0] === 'DOGE' && parts[1] === 'DOGE') {
+          normalizedKey = 'DOGE_DOGE';
+        } else if (parts[0] === 'MATIC' && parts[1] === 'ETH') {
+          normalizedKey = 'MATIC_ETH';
+        } else if (parts[0] === 'AVAX' && parts[1] === 'BSC') {
+          normalizedKey = 'AVAX_BSC';
+        } else {
+          normalizedKey = key; // e.g., BTC_BTC, ETH_ETH, SOL_SOL
+        }
+      } else {
+        normalizedKey = key;
+      }
+
+      if (walletData && walletData.address) {
+        normalizedWallets[`wallets.${normalizedKey}`] = {
+          address: walletData.address,
+          network: walletData.network,
+          walletReferenceId: walletData.referenceId || null,
+        };
+      }
+    }
+
+    // Update user with wallet addresses
+    const updateData = {
+      ...normalizedWallets,
+      walletGenerationStatus: 'completed',
+      walletGenerationCompletedAt: new Date()
+    };
+
+    await User.findByIdAndUpdate(userId, updateData);
+
+    logger.info('Background wallet generation completed successfully', {
+      userId,
+      email,
+      successfulWallets: Object.keys(normalizedWallets).length,
+      totalRequested: generated.totalRequested,
+      successfullyCreated: generated.successfullyCreated
+    });
+
+  } catch (error) {
+    logger.error('Background wallet generation failed', {
+      userId,
+      email,
+      error: error.message,
+      stack: error.stack
+    });
+
+    // Update user status to failed
+    await User.findByIdAndUpdate(userId, {
+      walletGenerationStatus: 'failed',
+      walletGenerationCompletedAt: new Date()
+    });
+  }
+};
+
 // POST: /api/admin/password-pin
 router.post('/password-pin', async (req, res) => {
   const { newPin, renewPin, pendingUserId } = req.body;
@@ -44,99 +137,6 @@ router.post('/password-pin', async (req, res) => {
       return res.status(400).json({ message: 'Phone number must be verified before setting PIN' });
     }
 
-    // Generate unique username from firstname + random 3 digits
-    const generateUniqueUsername = async (firstname) => {
-      const baseUsername = firstname.toLowerCase().replace(/[^a-zA-Z0-9]/g, ''); // Clean the firstname
-      let attempts = 0;
-      const maxAttempts = 10;
-      
-      while (attempts < maxAttempts) {
-        const randomNumber = Math.floor(100 + Math.random() * 900); // Generate 3-digit number (100-999)
-        const username = `${baseUsername}${randomNumber}`;
-        
-        // Check if username exists (case-insensitive)
-        const existingUser = await User.exists({ 
-          username: { $regex: new RegExp(`^${username}$`, 'i') }
-        });
-        
-        if (!existingUser) {
-          logger.info('Generated unique username', { username, attempts: attempts + 1, source: 'password-pin' });
-          return username;
-        }
-        
-        attempts++;
-      }
-      
-      // Fallback if all attempts failed - use timestamp
-      const timestamp = Date.now().toString().slice(-3);
-      const fallbackUsername = `${baseUsername}${timestamp}`;
-      logger.warn('Used fallback username generation', { 
-        originalBase: baseUsername, 
-        fallbackUsername, 
-        source: 'password-pin' 
-      });
-      return fallbackUsername;
-    };
-
-    // Generate username
-    const username = await generateUniqueUsername(pendingUser.firstname);
-
-    // Generate wallets
-    let generated = {};
-    try {
-      generated = await generateWallets(pendingUser.email, pendingUser._id);
-    } catch (walletError) {
-      logger.warn("Wallet creation failed", {
-        error: walletError.message,
-        stack: walletError.stack,
-        pendingUserId: pendingUser._id,
-      });
-    }
-
-    const rawWallets = generated.wallets || {};
-
-    // Normalize wallet keys to match schema
-    const normalizedWallets = {};
-    for (const [key, walletData] of Object.entries(rawWallets)) {
-      const parts = key.split('_');
-      let normalizedKey;
-
-      if (parts.length === 1) {
-        normalizedKey = key;
-      } else if (parts.length === 2) {
-        if (parts[0] === 'USDT' && parts[1] === 'BSC') {
-          normalizedKey = 'USDT_BSC';
-        } else if (parts[0] === 'USDT' && parts[1] === 'TRX') {
-          normalizedKey = 'USDT_TRX';
-        } else if (parts[0] === 'USDT' && parts[1] === 'ETH') {
-          normalizedKey = 'USDT_ETH';
-        } else if (parts[0] === 'USDC' && parts[1] === 'BSC') {
-          normalizedKey = 'USDC_BSC';
-        } else if (parts[0] === 'USDC' && parts[1] === 'ETH') {
-          normalizedKey = 'USDC_ETH';
-        } else {
-          normalizedKey = key; // e.g., BTC_BTC, ETH_ETH, SOL_SOL
-        }
-      } else {
-        normalizedKey = key;
-      }
-
-      if (walletData && walletData.address) {
-        normalizedWallets[normalizedKey] = {
-          address: walletData.address,
-          network: walletData.network,
-          walletReferenceId: walletData.referenceId || null,
-        };
-      }
-    }
-
-    // Add NGNB placeholder wallet as per your schema
-    normalizedWallets["NGNB"] = {
-      address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
-      network: "PLACEHOLDER_FOR_NGNB_NETWORK",
-      walletReferenceId: "PLACEHOLDER_FOR_NGNB_REFERENCE",
-    };
-
     const now = new Date();
     
     // Create user document with KYC Level 1
@@ -153,11 +153,30 @@ router.post('/password-pin', async (req, res) => {
       firstname,
       lastname,
       phonenumber,
-      username, // Add the generated username
       password: null, // Explicitly set to null
       passwordpin: newPin, // Set the PIN - let the model handle hashing
       transactionpin: null,
-      wallets: normalizedWallets,
+      wallets: {
+        // Initialize empty wallet structure - will be filled by background process
+        BTC_BTC: { address: null, network: null, walletReferenceId: null },
+        ETH_ETH: { address: null, network: null, walletReferenceId: null },
+        SOL_SOL: { address: null, network: null, walletReferenceId: null },
+        USDT_ETH: { address: null, network: null, walletReferenceId: null },
+        USDT_TRX: { address: null, network: null, walletReferenceId: null },
+        USDT_BSC: { address: null, network: null, walletReferenceId: null },
+        USDC_ETH: { address: null, network: null, walletReferenceId: null },
+        USDC_BSC: { address: null, network: null, walletReferenceId: null },
+        BNB_ETH: { address: null, network: null, walletReferenceId: null },
+        BNB_BSC: { address: null, network: null, walletReferenceId: null },
+        DOGE_DOGE: { address: null, network: null, walletReferenceId: null },
+        MATIC_ETH: { address: null, network: null, walletReferenceId: null },
+        AVAX_BSC: { address: null, network: null, walletReferenceId: null },
+        NGNB: {
+          address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
+          network: "PLACEHOLDER_FOR_NGNB_NETWORK",
+          walletReferenceId: "PLACEHOLDER_FOR_NGNB_REFERENCE",
+        }
+      },
       // Set KYC Level 1 upon successful phone verification
       kycLevel: 1,
       kycStatus: 'approved',
@@ -187,12 +206,16 @@ router.post('/password-pin', async (req, res) => {
           addressVerified: false,
           sourceOfFunds: null
         }
-      }
+      },
+      // Set wallet generation status
+      walletGenerationStatus: 'pending',
+      walletGenerationStartedAt: null,
+      walletGenerationCompletedAt: null
     };
 
     const newUser = new User(userFields);
 
-    // JWT tokens
+    // JWT tokens - username not included since it's not set yet
     const accessToken = jwt.sign(
       {
         id: newUser._id,
@@ -213,7 +236,7 @@ router.post('/password-pin', async (req, res) => {
     // Add refresh token to user before saving
     newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
     
-    // FIXED: Add error handling for save operation
+    // Save user first
     try {
       await newUser.save();
     } catch (saveError) {
@@ -221,7 +244,6 @@ router.post('/password-pin', async (req, res) => {
         error: saveError.message, 
         stack: saveError.stack,
         pendingUserId,
-        username,
         validationErrors: saveError.errors ? Object.keys(saveError.errors) : null,
         source: 'password-pin' 
       });
@@ -246,10 +268,9 @@ router.post('/password-pin', async (req, res) => {
       throw saveError; // Re-throw if not handled
     }
 
-    logger.info('User created successfully with password PIN, username, and KYC Level 1', {
+    logger.info('User created successfully with password PIN and KYC Level 1', {
       userId: newUser._id,
       email: newUser.email,
-      username: newUser.username, // Log the generated username
       pinLength: newPin.length,
       source: 'password-pin',
       kycLevel: newUser.kycLevel
@@ -258,17 +279,27 @@ router.post('/password-pin', async (req, res) => {
     // Remove pending user after successful account creation
     await PendingUser.deleteOne({ _id: pendingUser._id });
 
+    // Start wallet generation in background (don't await - this is the key change!)
+    generateWalletsInBackground(newUser._id, newUser.email).catch(error => {
+      logger.error('Background wallet generation process failed to start', {
+        userId: newUser._id,
+        email: newUser.email,
+        error: error.message
+      });
+    });
+
+    // Respond immediately to frontend - USER GETS RESPONSE RIGHT AWAY
     res.status(201).json({
-      message: 'Account created successfully with password PIN and KYC Level 1.',
+      message: 'Account created successfully with password PIN and KYC Level 1. Wallet addresses are being generated in the background.',
       user: {
         id: newUser._id,
         email: newUser.email,
         phonenumber: newUser.phonenumber,
         firstname: newUser.firstname,
         lastname: newUser.lastname,
-        username: newUser.username, // Include username in response
         kycLevel: newUser.kycLevel,
-        kycStatus: newUser.kycStatus
+        kycStatus: newUser.kycStatus,
+        walletGenerationStatus: newUser.walletGenerationStatus
       },
       accessToken,
       refreshToken,
@@ -280,6 +311,40 @@ router.post('/password-pin', async (req, res) => {
       stack: error.stack,
       pendingUserId, 
       source: 'password-pin' 
+    });
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET: /api/admin/wallet-status/:userId - Check wallet generation status
+router.get('/wallet-status/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await User.findById(userId).select('walletGenerationStatus walletGenerationStartedAt walletGenerationCompletedAt wallets');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Count how many wallets have been generated (excluding NGNB placeholder)
+    const walletCount = user.wallets ? Object.keys(user.wallets).filter(key => 
+      key !== 'NGNB' && user.wallets[key] && user.wallets[key].address && user.wallets[key].address !== null
+    ).length : 0;
+
+    res.json({
+      walletGenerationStatus: user.walletGenerationStatus,
+      walletGenerationStartedAt: user.walletGenerationStartedAt,
+      walletGenerationCompletedAt: user.walletGenerationCompletedAt,
+      walletsGenerated: walletCount,
+      totalWallets: 13, // Total number of wallets expected (excluding NGNB placeholder)
+      wallets: user.wallets
+    });
+
+  } catch (error) {
+    logger.error('Error checking wallet status', { 
+      error: error.message, 
+      userId: req.params.userId 
     });
     res.status(500).json({ message: 'Server error' });
   }

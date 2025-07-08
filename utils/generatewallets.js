@@ -15,16 +15,11 @@ const currenciesToCreate = [
   { currency: 'USDT', network: 'BSC' },
   { currency: 'USDC', network: 'ETH' },
   { currency: 'USDC', network: 'BSC' },
+  { currency: 'BNB', network: 'ETH' },
   { currency: 'BNB', network: 'BSC' },
-  { currency: 'BNB', network: 'BNB' },
-  { currency: 'MATIC', network: 'MATIC' },
-  { currency: 'XRP', network: 'XRP' },
-  { currency: 'ADA', network: 'ADA' },
   { currency: 'DOGE', network: 'DOGE' },
-  { currency: 'TRX', network: 'TRX' },
-  { currency: 'LTC', network: 'LTC' },
-  { currency: 'AVAX', network: 'AVAX' },
-  
+  { currency: 'MATIC', network: 'ETH' },
+  { currency: 'AVAX', network: 'BSC' },
 ];
 
 // Retry wrapper with exponential backoff and jitter
@@ -92,28 +87,38 @@ const generateWallets = async (email, userId) => {
       };
 
       try {
-        logger.info(`Creating wallet: ${key}`, { currency, network });
+        logger.info(`Creating wallet: ${key}`, { currency, network, userId });
         const response = await retryWithBackoff(() => obiexService.createDepositAddress(payload));
+        
+        // Extract all possible response fields
         const address = response?.value || response?.data?.value || null;
         const addressId = response?.id || response?.data?.id || null;
-        const referenceId = response?.reference || response?.data?.reference || null; // Capture reference ID
+        const referenceId = response?.reference || response?.data?.reference || null;
 
         walletResults[key] = {
           address,
           addressId,
-          referenceId,
+          referenceId, // This will be saved as walletReferenceId in the user model
           network,
           currency,
           status: address ? 'success' : 'no_address',
         };
 
-        logger.info(`Wallet created: ${key}`, { address: address || 'Not returned', addressId, referenceId });
+        logger.info(`Wallet created successfully: ${key}`, { 
+          address: address || 'Not returned', 
+          addressId, 
+          referenceId,
+          userId,
+          email 
+        });
       } catch (err) {
         const errorData = err.response?.data || {};
         logger.warn('Wallet creation failed', {
           key,
           email,
+          userId,
           network,
+          currency,
           error: errorData,
           message: errorData?.message || err.message,
           status: err.response?.status,
@@ -145,6 +150,8 @@ const generateWallets = async (email, userId) => {
     email,
     successCount,
     totalCount,
+    successful: Object.keys(walletResults).filter(k => walletResults[k].status === 'success'),
+    failed: Object.keys(walletResults).filter(k => walletResults[k].status === 'failed'),
   });
 
   return {
@@ -155,6 +162,15 @@ const generateWallets = async (email, userId) => {
     summary: {
       successful: Object.keys(walletResults).filter(k => walletResults[k].status === 'success'),
       failed: Object.keys(walletResults).filter(k => walletResults[k].status === 'failed'),
+      successfulWallets: Object.keys(walletResults).filter(k => walletResults[k].status === 'success').map(k => ({
+        key: k,
+        address: walletResults[k].address,
+        referenceId: walletResults[k].referenceId
+      })),
+      failedWallets: Object.keys(walletResults).filter(k => walletResults[k].status === 'failed').map(k => ({
+        key: k,
+        error: walletResults[k].error
+      }))
     },
   };
 };
