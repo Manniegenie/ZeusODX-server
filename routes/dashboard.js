@@ -21,8 +21,8 @@ router.get('/dashboard', async (req, res) => {
     };
     const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
 
-    // Get all supported token symbols for pricing
-    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC'];
+    // Get all supported token symbols for pricing - EXPANDED
+    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'DOGE', 'MATIC', 'AVAX'];
     
     // Fetch current token prices and NGNB rate
     const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
@@ -120,6 +120,38 @@ router.get('/dashboard', async (req, res) => {
             priceChange12h: changes12Hour.ETH ? changes12Hour.ETH.percentageChange : null,
             priceChangeData: changes12Hour.ETH || null
           },
+          BNB: {
+            balance: user.bnbBalance,
+            balanceUSD: user.bnbBalanceUSD,
+            pendingBalance: user.bnbPendingBalance,
+            currentPrice: prices.BNB || 0,
+            priceChange12h: changes12Hour.BNB ? changes12Hour.BNB.percentageChange : null,
+            priceChangeData: changes12Hour.BNB || null
+          },
+          DOGE: {
+            balance: user.dogeBalance,
+            balanceUSD: user.dogeBalanceUSD,
+            pendingBalance: user.dogePendingBalance,
+            currentPrice: prices.DOGE || 0,
+            priceChange12h: changes12Hour.DOGE ? changes12Hour.DOGE.percentageChange : null,
+            priceChangeData: changes12Hour.DOGE || null
+          },
+          MATIC: {
+            balance: user.maticBalance,
+            balanceUSD: user.maticBalanceUSD,
+            pendingBalance: user.maticPendingBalance,
+            currentPrice: prices.MATIC || 0,
+            priceChange12h: changes12Hour.MATIC ? changes12Hour.MATIC.percentageChange : null,
+            priceChangeData: changes12Hour.MATIC || null
+          },
+          AVAX: {
+            balance: user.avaxBalance,
+            balanceUSD: user.avaxBalanceUSD,
+            pendingBalance: user.avaxPendingBalance,
+            currentPrice: prices.AVAX || 0,
+            priceChange12h: changes12Hour.AVAX ? changes12Hour.AVAX.percentageChange : null,
+            priceChangeData: changes12Hour.AVAX || null
+          },
           NGNB: {
             balance: user.ngnbBalance,
             balanceUSD: user.ngnbBalanceUSD,
@@ -169,7 +201,8 @@ router.get('/dashboard', async (req, res) => {
 // Additional endpoints
 router.post('/store-prices', async (req, res) => {
   try {
-    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC'];
+    // Updated to include all supported tokens
+    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'DOGE', 'MATIC', 'AVAX'];
     const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
       getPricesWithCache(tokenSymbols),
       getCurrentRate()
