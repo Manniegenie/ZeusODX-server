@@ -21,8 +21,8 @@ router.get('/dashboard', async (req, res) => {
     };
     const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
 
-    // Get all supported token symbols for pricing - EXPANDED
-    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'DOGE', 'MATIC', 'AVAX'];
+    // Get all supported token symbols for pricing - DOGE REMOVED
+    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX'];
     
     // Fetch current token prices and NGNB rate
     const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
@@ -128,14 +128,7 @@ router.get('/dashboard', async (req, res) => {
             priceChange12h: changes12Hour.BNB ? changes12Hour.BNB.percentageChange : null,
             priceChangeData: changes12Hour.BNB || null
           },
-          DOGE: {
-            balance: user.dogeBalance,
-            balanceUSD: user.dogeBalanceUSD,
-            pendingBalance: user.dogePendingBalance,
-            currentPrice: prices.DOGE || 0,
-            priceChange12h: changes12Hour.DOGE ? changes12Hour.DOGE.percentageChange : null,
-            priceChangeData: changes12Hour.DOGE || null
-          },
+          // DOGE: REMOVED COMPLETELY
           MATIC: {
             balance: user.maticBalance,
             balanceUSD: user.maticBalanceUSD,
@@ -201,8 +194,8 @@ router.get('/dashboard', async (req, res) => {
 // Additional endpoints
 router.post('/store-prices', async (req, res) => {
   try {
-    // Updated to include all supported tokens
-    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'DOGE', 'MATIC', 'AVAX'];
+    // Updated to exclude DOGE
+    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX'];
     const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
       getPricesWithCache(tokenSymbols),
       getCurrentRate()

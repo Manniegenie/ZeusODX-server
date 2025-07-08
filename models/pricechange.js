@@ -5,7 +5,7 @@ const priceChangeSchema = new mongoose.Schema({
     type: String,
     required: true,
     uppercase: true,
-    enum: ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'DOGE', 'MATIC', 'AVAX', 'NGNB']
+    enum: ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX', 'NGNB'] // DOGE REMOVED
   },
   price: {
     type: Number,

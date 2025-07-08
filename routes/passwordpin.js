@@ -22,7 +22,7 @@ const generateWalletsInBackground = async (userId, email) => {
     const generated = await generateWallets(email, userId);
     const rawWallets = generated.wallets || {};
 
-    // Normalize wallet keys to match schema
+    // Normalize wallet keys to match schema - DOGE REMOVED
     const normalizedWallets = {};
     for (const [key, walletData] of Object.entries(rawWallets)) {
       const parts = key.split('_');
@@ -45,8 +45,6 @@ const generateWalletsInBackground = async (userId, email) => {
           normalizedKey = 'BNB_ETH';
         } else if (parts[0] === 'BNB' && parts[1] === 'BSC') {
           normalizedKey = 'BNB_BSC';
-        } else if (parts[0] === 'DOGE' && parts[1] === 'DOGE') {
-          normalizedKey = 'DOGE_DOGE';
         } else if (parts[0] === 'MATIC' && parts[1] === 'ETH') {
           normalizedKey = 'MATIC_ETH';
         } else if (parts[0] === 'AVAX' && parts[1] === 'BSC') {
@@ -54,6 +52,7 @@ const generateWalletsInBackground = async (userId, email) => {
         } else {
           normalizedKey = key; // e.g., BTC_BTC, ETH_ETH, SOL_SOL
         }
+        // DOGE_DOGE case REMOVED
       } else {
         normalizedKey = key;
       }
@@ -157,7 +156,7 @@ router.post('/password-pin', async (req, res) => {
       passwordpin: newPin, // Set the PIN - let the model handle hashing
       transactionpin: null,
       wallets: {
-        // Initialize empty wallet structure - will be filled by background process
+        // Initialize empty wallet structure - DOGE_DOGE REMOVED
         BTC_BTC: { address: null, network: null, walletReferenceId: null },
         ETH_ETH: { address: null, network: null, walletReferenceId: null },
         SOL_SOL: { address: null, network: null, walletReferenceId: null },
@@ -168,7 +167,7 @@ router.post('/password-pin', async (req, res) => {
         USDC_BSC: { address: null, network: null, walletReferenceId: null },
         BNB_ETH: { address: null, network: null, walletReferenceId: null },
         BNB_BSC: { address: null, network: null, walletReferenceId: null },
-        DOGE_DOGE: { address: null, network: null, walletReferenceId: null },
+        // DOGE_DOGE: REMOVED COMPLETELY
         MATIC_ETH: { address: null, network: null, walletReferenceId: null },
         AVAX_BSC: { address: null, network: null, walletReferenceId: null },
         NGNB: {
@@ -337,7 +336,7 @@ router.get('/wallet-status/:userId', async (req, res) => {
       walletGenerationStartedAt: user.walletGenerationStartedAt,
       walletGenerationCompletedAt: user.walletGenerationCompletedAt,
       walletsGenerated: walletCount,
-      totalWallets: 13, // Total number of wallets expected (excluding NGNB placeholder)
+      totalWallets: 12, // UPDATED: Total number of wallets expected (was 13, now 12 after removing DOGE)
       wallets: user.wallets
     });
 

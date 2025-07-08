@@ -6,6 +6,7 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000; // 1 second
 const CONCURRENCY_LIMIT = 3;
 
+// UPDATED: DOGE removed from wallet generation
 const currenciesToCreate = [
   { currency: 'BTC', network: 'BTC' },
   { currency: 'ETH', network: 'ETH' },
@@ -17,7 +18,7 @@ const currenciesToCreate = [
   { currency: 'USDC', network: 'BSC' },
   { currency: 'BNB', network: 'ETH' },
   { currency: 'BNB', network: 'BSC' },
-  { currency: 'DOGE', network: 'DOGE' },
+  // { currency: 'DOGE', network: 'DOGE' }, // REMOVED
   { currency: 'MATIC', network: 'ETH' },
   { currency: 'AVAX', network: 'BSC' },
 ];

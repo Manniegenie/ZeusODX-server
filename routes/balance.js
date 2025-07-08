@@ -19,7 +19,7 @@ router.post('/balance', async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid "types" array in request body' });
     }
 
-    // Complete list of allowed balance fields from User schema
+    // Complete list of allowed balance fields from User schema - DOGE REMOVED
     const allowedFields = [
       // SOL balances
       'solBalance', 'solBalanceUSD', 'solPendingBalance',
@@ -39,8 +39,8 @@ router.post('/balance', async (req, res) => {
       // BNB balances
       'bnbBalance', 'bnbBalanceUSD', 'bnbPendingBalance',
       
-      // DOGE balances
-      'dogeBalance', 'dogeBalanceUSD', 'dogePendingBalance',
+      // DOGE balances - REMOVED
+      // 'dogeBalance', 'dogeBalanceUSD', 'dogePendingBalance',
       
       // MATIC balances
       'maticBalance', 'maticBalanceUSD', 'maticPendingBalance',

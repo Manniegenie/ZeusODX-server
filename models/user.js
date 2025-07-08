@@ -80,10 +80,15 @@ const userSchema = new mongoose.Schema({
     USDT_BSC: { address: String, network: String, walletReferenceId: String },
     USDC_ETH: { address: String, network: String, walletReferenceId: String },
     USDC_BSC: { address: String, network: String, walletReferenceId: String },
+    BNB_ETH: { address: String, network: String, walletReferenceId: String },
+    BNB_BSC: { address: String, network: String, walletReferenceId: String },
+    DOGE_DOGE: { address: String, network: String, walletReferenceId: String },
+    MATIC_ETH: { address: String, network: String, walletReferenceId: String },
+    AVAX_BSC: { address: String, network: String, walletReferenceId: String },
     NGNB: { address: String, network: String, walletReferenceId: String },
   },
 
-  // Wallet Balances
+  // Wallet Balances - Added new balances for new tokens
   solBalance: { type: Number, default: 0, min: 0 },
   solBalanceUSD: { type: Number, default: 0, min: 0 },
   solPendingBalance: { type: Number, default: 0, min: 0 },
@@ -104,11 +109,36 @@ const userSchema = new mongoose.Schema({
   ethBalanceUSD: { type: Number, default: 0, min: 0 },
   ethPendingBalance: { type: Number, default: 0, min: 0 },
 
+  bnbBalance: { type: Number, default: 0, min: 0 },
+  bnbBalanceUSD: { type: Number, default: 0, min: 0 },
+  bnbPendingBalance: { type: Number, default: 0, min: 0 },
+
+  dogeBalance: { type: Number, default: 0, min: 0 },
+  dogeBalanceUSD: { type: Number, default: 0, min: 0 },
+  dogePendingBalance: { type: Number, default: 0, min: 0 },
+
+  maticBalance: { type: Number, default: 0, min: 0 },
+  maticBalanceUSD: { type: Number, default: 0, min: 0 },
+  maticPendingBalance: { type: Number, default: 0, min: 0 },
+
+  avaxBalance: { type: Number, default: 0, min: 0 },
+  avaxBalanceUSD: { type: Number, default: 0, min: 0 },
+  avaxPendingBalance: { type: Number, default: 0, min: 0 },
+
   ngnbBalance: { type: Number, default: 0, min: 0 },
   ngnbBalanceUSD: { type: Number, default: 0, min: 0 },
   ngnbPendingBalance: { type: Number, default: 0, min: 0 },
 
   totalPortfolioBalance: { type: Number, default: 0, min: 0 },
+
+  // Wallet Generation Status
+  walletGenerationStatus: {
+    type: String,
+    enum: ['pending', 'in_progress', 'completed', 'failed'],
+    default: 'pending'
+  },
+  walletGenerationStartedAt: { type: Date, default: null },
+  walletGenerationCompletedAt: { type: Date, default: null },
 
   // 2FA - NO UNIQUE CONSTRAINTS
   twoFASecret: { type: String, default: null },

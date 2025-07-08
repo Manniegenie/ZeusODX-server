@@ -13,18 +13,18 @@ const CONFIG = {
   RATE_LIMIT_DELAY: 30000, // 30 seconds wait on rate limit
 };
 
-// ALIGNED WITH USER SCHEMA: All tokens that exist in user.js balance fields
+// ALIGNED WITH USER SCHEMA: All tokens that exist in user.js balance fields - DOGE REMOVED
 const SUPPORTED_TOKENS = {
-  BTC: { currencyApiSymbol: 'BTC', isStablecoin: false },
-  ETH: { currencyApiSymbol: 'ETH', isStablecoin: false },
-  SOL: { currencyApiSymbol: 'SOL', isStablecoin: false },
-  USDT: { currencyApiSymbol: 'USDT', isStablecoin: true },
-  USDC: { currencyApiSymbol: 'USDC', isStablecoin: true },
-  BNB: { currencyApiSymbol: 'BNB', isStablecoin: false },
-  DOGE: { currencyApiSymbol: 'DOGE', isStablecoin: false },
-  MATIC: { currencyApiSymbol: 'MATIC', isStablecoin: false },
-  AVAX: { currencyApiSymbol: 'AVAX', isStablecoin: false },
-  NGNB: { currencyApiSymbol: 'NGNB', isStablecoin: true, isNairaPegged: true },
+  BTC: { currencyApiSymbol: 'BTC', isStablecoin: false, supportedByCurrencyAPI: true },
+  ETH: { currencyApiSymbol: 'ETH', isStablecoin: false, supportedByCurrencyAPI: true },
+  SOL: { currencyApiSymbol: 'SOL', isStablecoin: false, supportedByCurrencyAPI: true },
+  USDT: { currencyApiSymbol: 'USDT', isStablecoin: true, supportedByCurrencyAPI: false }, // Handle as stablecoin
+  USDC: { currencyApiSymbol: 'USDC', isStablecoin: true, supportedByCurrencyAPI: false }, // Handle as stablecoin
+  BNB: { currencyApiSymbol: 'BNB', isStablecoin: false, supportedByCurrencyAPI: true },
+  // DOGE: REMOVED COMPLETELY
+  MATIC: { currencyApiSymbol: 'MATIC', isStablecoin: false, supportedByCurrencyAPI: true },
+  AVAX: { currencyApiSymbol: 'AVAX', isStablecoin: false, supportedByCurrencyAPI: true },
+  NGNB: { currencyApiSymbol: 'NGNB', isStablecoin: true, isNairaPegged: true, supportedByCurrencyAPI: false },
 };
 
 // Simplified price cache
@@ -153,26 +153,29 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
   throw lastError;
 }
 
-// Fetch prices from CurrencyAPI.com
+// FIXED: Fetch prices from CurrencyAPI.com - only request supported tokens
 async function fetchCurrencyApiPrices(tokens) {
   try {
-    const supportedTokens = tokens.filter(token => {
+    logger.info('Starting CurrencyAPI price fetch', { requestedTokens: tokens });
+    
+    // Filter to only tokens that CurrencyAPI actually supports
+    const currencyApiTokens = tokens.filter(token => {
       const upperToken = token.toUpperCase();
-      return SUPPORTED_TOKENS[upperToken] && upperToken !== 'NGNB';
+      const tokenInfo = SUPPORTED_TOKENS[upperToken];
+      return tokenInfo && tokenInfo.supportedByCurrencyAPI;
     });
     
-    const stablecoins = ['USDT', 'USDC'];
-    const cryptoTokens = supportedTokens
-      .filter(token => !stablecoins.includes(token.toUpperCase()))
-      .join(',');
+    logger.info('Tokens supported by CurrencyAPI', { currencyApiTokens });
     
     const prices = new Map();
     
     // Handle stablecoins (always $1.00)
+    const stablecoins = ['USDT', 'USDC'];
     for (const token of tokens) {
       const upperToken = token.toUpperCase();
       if (stablecoins.includes(upperToken)) {
         prices.set(upperToken, 1.0);
+        logger.debug(`Set stablecoin price: ${upperToken} = $1.00`);
       }
     }
     
@@ -180,11 +183,18 @@ async function fetchCurrencyApiPrices(tokens) {
     const ngnbPrices = handleNGNBPricing(tokens);
     for (const [token, price] of Object.entries(ngnbPrices)) {
       prices.set(token, price);
+      logger.debug(`Set NGNB price: ${token} = $${price}`);
     }
     
-    if (!cryptoTokens) {
+    // Exit early if no tokens to request from CurrencyAPI
+    if (currencyApiTokens.length === 0) {
+      logger.info('No tokens to request from CurrencyAPI, returning early');
       return prices;
     }
+    
+    // Request only supported tokens from CurrencyAPI
+    const cryptoTokens = currencyApiTokens.join(',');
+    logger.info('Requesting from CurrencyAPI', { cryptoTokens });
     
     const config = {
       params: {
@@ -200,6 +210,8 @@ async function fetchCurrencyApiPrices(tokens) {
     
     if (API_CONFIG.hasValidApiKey) {
       config.headers['apikey'] = API_CONFIG.apiKey;
+    } else {
+      logger.warn('No valid CurrencyAPI key found, request may fail');
     }
     
     const response = await axios.get(`${API_CONFIG.baseUrl}/latest`, config);
@@ -208,31 +220,44 @@ async function fetchCurrencyApiPrices(tokens) {
       throw new Error('Invalid response format from CurrencyAPI');
     }
     
-    // Process response - invert rates to get USD price per crypto unit
-    for (const token of supportedTokens) {
+    logger.info('CurrencyAPI response received', { 
+      responseDataKeys: Object.keys(response.data.data),
+      responseStatus: response.status 
+    });
+    
+    // Process response - CurrencyAPI returns rates like EUR: 0.85 (USD to EUR)
+    // We need to invert to get crypto prices in USD
+    for (const token of currencyApiTokens) {
       const upperToken = token.toUpperCase();
+      const rateData = response.data.data[upperToken];
       
-      if (stablecoins.includes(upperToken) || upperToken === 'NGNB') {
-        continue; // Already handled
-      }
-      
-      const rate = response.data.data[upperToken] && response.data.data[upperToken].value;
-      
-      if (typeof rate === 'number' && rate > 0) {
-        const price = 1 / rate;
+      if (rateData && typeof rateData.value === 'number' && rateData.value > 0) {
+        const price = 1 / rateData.value; // Invert to get USD price per crypto unit
         prices.set(upperToken, price);
+        logger.debug(`Set CurrencyAPI price: ${upperToken} = $${price.toFixed(2)}`);
+      } else {
+        logger.warn(`Invalid or missing price data for ${upperToken}`, { rateData });
       }
     }
     
-    logger.info(`Fetched ${prices.size} prices from CurrencyAPI.com`);
+    logger.info(`Successfully fetched ${prices.size} prices from CurrencyAPI`, {
+      totalPrices: prices.size,
+      currencyApiPrices: currencyApiTokens.length
+    });
+    
     return prices;
   } catch (error) {
-    logger.error('CurrencyAPI price fetch failed', { error: error.message });
+    logger.error('CurrencyAPI price fetch failed', { 
+      error: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      responseData: error.response?.data
+    });
     throw error;
   }
 }
 
-// Fallback prices for supported tokens only - UPDATED with new tokens
+// Fallback prices for supported tokens only - DOGE REMOVED
 async function getFallbackPrices(tokens) {
   const fallbackPrices = new Map();
   const fallbacks = {
@@ -242,7 +267,7 @@ async function getFallbackPrices(tokens) {
     'USDT': 1,
     'USDC': 1,
     'BNB': 580,
-    'DOGE': 0.15,
+    // 'DOGE': REMOVED
     'MATIC': 0.85,
     'AVAX': 35,
     'NGNB': 1 / 1554.42,
@@ -252,6 +277,7 @@ async function getFallbackPrices(tokens) {
     const upperToken = token.toUpperCase();
     if (SUPPORTED_TOKENS[upperToken]) {
       fallbackPrices.set(upperToken, fallbacks[upperToken] || 0);
+      logger.debug(`Set fallback price: ${upperToken} = $${fallbacks[upperToken]}`);
     }
   }
   
@@ -362,7 +388,7 @@ async function getPricesWithCache(tokenSymbols) {
 }
 
 // ====================================================
-// NEW FUNCTION: Updates user balance directly for internal transfers
+// UPDATED: Updates user balance directly for internal transfers - DOGE REMOVED
 // ====================================================
 async function updateUserBalance(userId, currency, amount, session = null) {
   if (!userId || !currency || typeof amount !== 'number') {
@@ -411,7 +437,7 @@ async function updateUserBalance(userId, currency, amount, session = null) {
       throw new Error(`User not found: ${userId}`);
     }
     
-    // Recalculate total portfolio balance - UPDATED with new tokens
+    // Recalculate total portfolio balance - DOGE REMOVED
     const totalPortfolioBalance = 
       (user.btcBalanceUSD || 0) +
       (user.ethBalanceUSD || 0) +
@@ -419,7 +445,7 @@ async function updateUserBalance(userId, currency, amount, session = null) {
       (user.usdtBalanceUSD || 0) +
       (user.usdcBalanceUSD || 0) +
       (user.bnbBalanceUSD || 0) +
-      (user.dogeBalanceUSD || 0) +
+      // (user.dogeBalanceUSD || 0) + // REMOVED
       (user.maticBalanceUSD || 0) +
       (user.avaxBalanceUSD || 0) +
       (user.ngnbBalanceUSD || 0);
@@ -559,7 +585,7 @@ async function getUserPortfolioBalance(userId, asOfDate = null) {
   }
 }
 
-// Updates user's portfolio balance in the database - UPDATED with new tokens
+// UPDATED: Updates user's portfolio balance in the database - DOGE REMOVED
 async function updateUserPortfolioBalance(userId, asOfDate = null) {
   if (!userId) {
     throw new Error('User ID is required');
@@ -573,7 +599,7 @@ async function updateUserPortfolioBalance(userId, asOfDate = null) {
       throw new Error(`User not found: ${userId}`);
     }
     
-    // Update fields EXACTLY matching user schema - UPDATED with new tokens
+    // Update fields EXACTLY matching user schema - DOGE REMOVED
     const updateFields = {
       totalPortfolioBalance: portfolio.totalPortfolioUSD,
       portfolioLastUpdated: new Date(),
@@ -590,8 +616,8 @@ async function updateUserPortfolioBalance(userId, asOfDate = null) {
       ethBalanceUSD: 0,
       bnbBalance: 0,
       bnbBalanceUSD: 0,
-      dogeBalance: 0,
-      dogeBalanceUSD: 0,
+      // dogeBalance: 0, // REMOVED
+      // dogeBalanceUSD: 0, // REMOVED
       maticBalance: 0,
       maticBalanceUSD: 0,
       avaxBalance: 0,
