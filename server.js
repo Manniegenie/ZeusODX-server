@@ -109,6 +109,7 @@ const CableTVRoutes = require('./routes/cabletv');
 const fetchdataplans = require('./routes/dataplans');
 const billwebhookRoutes = require('./routes/billwebhook');
 const dashboardRoutes = require('./routes/dashboard');
+const pricemarkdownRoutes = require('./adminRoutes/pricemarkdown');
 
 // Public Routes (No Authentication Required)
 app.use("/signin", signinRoutes);
@@ -132,6 +133,7 @@ app.use("/set-fee", SetfeeRoutes);
 app.use("/pending", clearpendingRoutes);
 app.use("/fetching", fetchrefreshtoken);
 app.use("/fund", FunduserRoutes);
+app.use("/marker", pricemarkdownRoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
