@@ -214,11 +214,12 @@ router.post('/password-pin', async (req, res) => {
 
     const newUser = new User(userFields);
 
-    // JWT tokens - username not included since it's not set yet
+    // JWT tokens - FIXED: Include username even if null
     const accessToken = jwt.sign(
       {
         id: newUser._id,
         email: newUser.email,
+        username: newUser.username || null, // Include username even if null
         is2FAEnabled: newUser.is2FAEnabled || false,
         is2FAVerified: newUser.is2FAVerified || false,
       },
@@ -296,6 +297,7 @@ router.post('/password-pin', async (req, res) => {
         phonenumber: newUser.phonenumber,
         firstname: newUser.firstname,
         lastname: newUser.lastname,
+        username: newUser.username || null, // Include username in response
         kycLevel: newUser.kycLevel,
         kycStatus: newUser.kycStatus,
         walletGenerationStatus: newUser.walletGenerationStatus
