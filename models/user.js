@@ -6,6 +6,7 @@ const SALT_WORK_FACTOR = 10;
 const userSchema = new mongoose.Schema({
   // Authentication
   username: { type: String }, // Unique index defined below with sparse
+  isUsernameCustom: { type: Boolean, default: false }, // Track if username has been customized
   email: { type: String, required: true, unique: true }, // Only field-level unique constraint
   password: { type: String },
   passwordpin: { type: String },
@@ -202,10 +203,20 @@ userSchema.pre('save', async function (next) {
       this.securitypin = await bcrypt.hash(this.securitypin, salt);
     }
 
+    // USERNAME UPDATE LOGIC - Allow one update from auto-generated to custom
     if (!this.isNew && this.isModified('username')) {
-      const err = new Error('Username cannot be changed once set.');
-      err.status = 400;
-      return next(err);
+      // If username is already custom, prevent any further changes
+      if (this.isUsernameCustom) {
+        const err = new Error('Username cannot be changed once customized.');
+        err.status = 400;
+        return next(err);
+      }
+      
+      // If this is the first custom update (from auto-generated), allow it
+      if (!this.isUsernameCustom && this.username) {
+        this.isUsernameCustom = true; // Mark as customized
+        console.log(`Username updated from auto-generated to custom: ${this.username}`);
+      }
     }
 
     next();
@@ -254,6 +265,11 @@ userSchema.methods.getKycLimits = function() {
     3: { daily: 20000000, monthly: 200000000, description: 'Enhanced verification' }
   };
   return limits[this.kycLevel] || limits[0];
+};
+
+// Helper method to check if user can update username
+userSchema.methods.canUpdateUsername = function() {
+  return !this.isUsernameCustom;
 };
 
 module.exports = mongoose.model('User', userSchema);

@@ -7,6 +7,65 @@ const config = require("./config");
 const logger = require('../utils/logger');
 const generateWallets = require("../utils/generatewallets");
 
+// Function to generate unique username from first name
+const generateUniqueUsername = async (firstName) => {
+  try {
+    // Clean and format the first name
+    const baseUsername = firstName
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '') // Remove special characters and spaces
+      .substring(0, 10); // Limit to 10 characters
+    
+    // If baseUsername is empty or too short, use a default
+    const cleanBase = baseUsername.length >= 2 ? baseUsername : 'user';
+    
+    // Try the base username first
+    let attempts = 0;
+    const maxAttempts = 50;
+    
+    while (attempts < maxAttempts) {
+      let candidateUsername;
+      
+      if (attempts === 0) {
+        // First attempt: try just the clean first name
+        candidateUsername = cleanBase;
+      } else {
+        // Subsequent attempts: add random numbers
+        const randomSuffix = Math.floor(Math.random() * 9999) + 1;
+        candidateUsername = `${cleanBase}${randomSuffix}`;
+      }
+      
+      // Check if username already exists
+      const existingUser = await User.findOne({ username: candidateUsername });
+      
+      if (!existingUser) {
+        logger.info('Generated unique username', { 
+          firstName, 
+          generatedUsername: candidateUsername, 
+          attempts: attempts + 1 
+        });
+        return candidateUsername;
+      }
+      
+      attempts++;
+    }
+    
+    // Fallback: use timestamp if all attempts failed
+    const fallbackUsername = `${cleanBase}${Date.now().toString().slice(-6)}`;
+    logger.warn('Using fallback username generation', { 
+      firstName, 
+      fallbackUsername, 
+      attempts 
+    });
+    return fallbackUsername;
+    
+  } catch (error) {
+    logger.error('Error generating username', { firstName, error: error.message });
+    // Ultimate fallback
+    return `user${Date.now().toString().slice(-6)}`;
+  }
+};
+
 // Background wallet generation function
 const generateWalletsInBackground = async (userId, email) => {
   try {
@@ -147,11 +206,16 @@ router.post('/password-pin', async (req, res) => {
       phonenumber 
     } = pendingUser;
 
+    // Generate unique username from first name
+    const generatedUsername = await generateUniqueUsername(firstname);
+
     const userFields = {
       email,
       firstname,
       lastname,
       phonenumber,
+      username: generatedUsername, // Set the generated username
+      isUsernameCustom: false, // Mark as auto-generated (allows one update)
       password: null, // Explicitly set to null
       passwordpin: newPin, // Set the PIN - let the model handle hashing
       transactionpin: null,
@@ -214,15 +278,27 @@ router.post('/password-pin', async (req, res) => {
 
     const newUser = new User(userFields);
 
-    // JWT tokens - FIXED: Include username even if null
+    // JWT payload - Now includes the generated username
+    const jwtPayload = {
+      id: newUser._id,
+      email: newUser.email,
+      username: newUser.username, // Now includes the generated username
+      is2FAEnabled: newUser.is2FAEnabled || false,
+      is2FAVerified: newUser.is2FAVerified || false,
+    };
+
+    // DEBUG: Log JWT payload being used
+    logger.info('JWT payload being generated', {
+      userId: newUser._id,
+      payload: jwtPayload,
+      generatedUsername: generatedUsername,
+      hasUsername: !!jwtPayload.username,
+      source: 'password-pin'
+    });
+
+    // JWT tokens - Now includes username
     const accessToken = jwt.sign(
-      {
-        id: newUser._id,
-        email: newUser.email,
-        username: newUser.username || null, // Include username even if null
-        is2FAEnabled: newUser.is2FAEnabled || false,
-        is2FAVerified: newUser.is2FAVerified || false,
-      },
+      jwtPayload,
       config.jwtSecret || process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
@@ -232,6 +308,18 @@ router.post('/password-pin', async (req, res) => {
       config.refreshjwtSecret || process.env.JWT_REFRESH_SECRET,
       { expiresIn: "7d" }
     );
+
+    // DEBUG: Log generated tokens (for debugging only - remove in production)
+    logger.info('JWT tokens generated', {
+      userId: newUser._id,
+      email: newUser.email,
+      username: generatedUsername,
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+      accessTokenLength: accessToken.length,
+      refreshTokenLength: refreshToken.length,
+      source: 'password-pin'
+    });
 
     // Add refresh token to user before saving
     newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
@@ -268,9 +356,10 @@ router.post('/password-pin', async (req, res) => {
       throw saveError; // Re-throw if not handled
     }
 
-    logger.info('User created successfully with password PIN and KYC Level 1', {
+    logger.info('User created successfully with password PIN and generated username', {
       userId: newUser._id,
       email: newUser.email,
+      username: generatedUsername,
       pinLength: newPin.length,
       source: 'password-pin',
       kycLevel: newUser.kycLevel
@@ -288,6 +377,15 @@ router.post('/password-pin', async (req, res) => {
       });
     });
 
+    // DEBUG: Log tokens being sent in response
+    logger.info('Sending response with tokens', {
+      userId: newUser._id,
+      username: generatedUsername,
+      accessTokenStart: accessToken.substring(0, 20) + '...',
+      refreshTokenStart: refreshToken.substring(0, 20) + '...',
+      source: 'password-pin'
+    });
+
     // Respond immediately to frontend - USER GETS RESPONSE RIGHT AWAY
     res.status(201).json({
       message: 'Account created successfully with password PIN and KYC Level 1. Wallet addresses are being generated in the background.',
@@ -297,7 +395,7 @@ router.post('/password-pin', async (req, res) => {
         phonenumber: newUser.phonenumber,
         firstname: newUser.firstname,
         lastname: newUser.lastname,
-        username: newUser.username || null, // Include username in response
+        username: newUser.username, // Now includes generated username
         kycLevel: newUser.kycLevel,
         kycStatus: newUser.kycStatus,
         walletGenerationStatus: newUser.walletGenerationStatus
