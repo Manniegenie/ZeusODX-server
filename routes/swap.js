@@ -4,7 +4,7 @@ const { attachObiexAuth } = require('../utils/obiexAuth');
 const tradingPairsService = require('../services/tradingPairsService');
 const GlobalSwapMarkdown = require('../models/swapmarkdown'); // Add this import
 const onrampService = require('../services/onramppriceservice'); // Add onramp service
-const offrampService = require('../services/offramppriceserviceervice'); // Add offramp service
+const offrampService = require('../services/offramppriceservice'); // Add offramp service
 const priceService = require('../services/priceService'); // Add price service for crypto prices
 
 const router = express.Router();
