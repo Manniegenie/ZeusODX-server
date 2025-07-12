@@ -2,10 +2,13 @@ const express = require('express');
 const axios = require('axios');
 const { attachObiexAuth } = require('../utils/obiexAuth');
 const tradingPairsService = require('../services/tradingPairsService');
-const GlobalSwapMarkdown = require('../models/swapmarkdown'); // Add this import
-const onrampService = require('../services/onramppriceservice'); // Add onramp service
-const offrampService = require('../services/offramppriceservice'); // Add offramp service
-const priceService = require('../services/priceService'); // Add price service for crypto prices
+const GlobalSwapMarkdown = require('../models/swapmarkdown');
+const onrampService = require('../services/onramppriceservice');
+const offrampService = require('../services/offramppriceservice');
+const priceService = require('../services/priceService');
+const { updateUserBalance, updateUserPortfolioBalance } = require('../services/portfolio');
+const { validateUserBalance, getUserAvailableBalance } = require('../services/balance');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -23,6 +26,9 @@ const TOKEN_MAP = {
   'AVAX': { currency: 'AVAX', name: 'Avalanche' },
   'NGNZ': { currency: 'NGNZ', name: 'Nigerian Naira Bank' }
 };
+
+// Store quote data temporarily (in production, use Redis or database)
+const quoteCache = new Map();
 
 function createApiClient() {
   const client = axios.create({
@@ -112,7 +118,7 @@ async function acceptQuote(quoteId) {
   }
 }
 
-// NEW: Handle NGNZ swaps using onramp/offramp services
+// Handle NGNZ swaps using onramp/offramp services
 async function handleNGNZSwap(req, res, from, to, amount, side) {
   try {
     const fromUpper = from.toUpperCase();
@@ -202,6 +208,9 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
       };
     }
+    
+    // Store quote data for later use in acceptance
+    quoteCache.set(quoteData.id, quoteData);
     
     console.log(`[NGNZ SWAP] ${isOnramp ? 'ONRAMP' : 'OFFRAMP'}: ${from}-${to}, Pay: ${payAmount}, Receive: ${receiveAmount}, Rate: ${quoteData.ngnzRate}`);
     
@@ -305,6 +314,17 @@ router.post('/quote', async (req, res) => {
       // Continue without markdown if there's an error
     }
 
+    // Store quote data with source/target currencies for balance validation
+    const enrichedQuoteData = {
+      ...quoteResult.data,
+      sourceCurrency: from.toUpperCase(),
+      targetCurrency: to.toUpperCase(),
+      originalAmount: amount,
+      side: side
+    };
+    
+    quoteCache.set(quoteResult.data.id, enrichedQuoteData);
+
     res.json({
       success: true,
       message: "Quote created successfully",
@@ -324,6 +344,7 @@ router.post('/quote', async (req, res) => {
 router.post('/quote/:quoteId', async (req, res) => {
   try {
     const { quoteId } = req.params;
+    const { userId } = req.body; // Assuming userId is passed in request body
 
     if (!quoteId) {
       return res.status(400).json({
@@ -332,43 +353,203 @@ router.post('/quote/:quoteId', async (req, res) => {
       });
     }
 
-    // Check if this is a NGNZ quote (doesn't go through Obiex)
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "User ID is required"
+      });
+    }
+
+    // Get quote data from cache
+    const quoteData = quoteCache.get(quoteId);
+    if (!quoteData) {
+      return res.status(404).json({
+        success: false,
+        message: "Quote not found or expired"
+      });
+    }
+
+    // Check if quote has expired
+    if (quoteData.expiresAt && new Date() > new Date(quoteData.expiresAt)) {
+      quoteCache.delete(quoteId);
+      return res.status(410).json({
+        success: false,
+        message: "Quote has expired"
+      });
+    }
+
+    // Check if this is a NGNZ quote
     const isNGNZQuote = quoteId.includes('ngnz_onramp_') || quoteId.includes('ngnz_offramp_');
     
+    let sourceCurrency, targetCurrency, payAmount, receiveAmount;
+    
     if (isNGNZQuote) {
-      // Handle NGNZ quote acceptance
-      return res.json({
+      // NGNZ swap handling
+      sourceCurrency = quoteData.sourceCurrency;
+      targetCurrency = quoteData.targetCurrency;
+      payAmount = quoteData.amount;
+      receiveAmount = quoteData.receiveAmount;
+      
+      logger.info('Processing NGNZ swap', {
+        userId,
+        quoteId,
+        type: quoteData.type,
+        sourceCurrency,
+        targetCurrency,
+        payAmount,
+        receiveAmount
+      });
+    } else {
+      // Regular swap handling
+      sourceCurrency = quoteData.sourceCurrency;
+      targetCurrency = quoteData.targetCurrency;
+      
+      // Determine amounts based on side
+      if (quoteData.side === 'BUY') {
+        // User is buying target currency with source currency
+        payAmount = quoteData.originalAmount;
+        receiveAmount = quoteData.receiveAmount || quoteData.amount;
+      } else {
+        // User is selling source currency for target currency  
+        payAmount = quoteData.originalAmount;
+        receiveAmount = quoteData.receiveAmount || quoteData.amount;
+      }
+      
+      logger.info('Processing regular swap', {
+        userId,
+        quoteId,
+        side: quoteData.side,
+        sourceCurrency,
+        targetCurrency,
+        payAmount,
+        receiveAmount
+      });
+    }
+
+    // Validate user has sufficient balance for the source currency
+    const balanceValidation = await validateUserBalance(userId, sourceCurrency, payAmount);
+    
+    if (!balanceValidation.success) {
+      logger.warn('Swap failed - insufficient balance', {
+        userId,
+        quoteId,
+        sourceCurrency,
+        requiredAmount: payAmount,
+        error: balanceValidation.message
+      });
+      
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient balance: ${balanceValidation.message}`,
+        balanceError: true,
+        availableBalance: balanceValidation.availableBalance,
+        requiredAmount: payAmount,
+        currency: sourceCurrency
+      });
+    }
+
+    let swapResult;
+    
+    if (isNGNZQuote) {
+      // Handle NGNZ quote acceptance (mock processing)
+      swapResult = {
         success: true,
-        message: "NGNZ quote accepted successfully",
         data: {
           id: quoteId,
           status: 'accepted',
           message: 'NGNZ swap quote accepted. Processing will be handled by the trading system.',
           acceptedAt: new Date().toISOString(),
-          type: quoteId.includes('onramp') ? 'onramp' : 'offramp'
+          type: quoteData.type
+        }
+      };
+    } else {
+      // Regular quote acceptance through Obiex
+      swapResult = await acceptQuote(quoteId);
+      
+      if (!swapResult.success) {
+        logger.error('Obiex quote acceptance failed', {
+          userId,
+          quoteId,
+          error: swapResult.error
+        });
+        
+        return res.status(500).json({
+          success: false,
+          message: "Failed to accept quote",
+          error: swapResult.error
+        });
+      }
+    }
+
+    // If swap was successful, update user balances
+    try {
+      logger.info('Updating user balances after successful swap', {
+        userId,
+        quoteId,
+        deducting: `${payAmount} ${sourceCurrency}`,
+        adding: `${receiveAmount} ${targetCurrency}`
+      });
+
+      // Deduct the source currency
+      await updateUserBalance(userId, sourceCurrency, -payAmount);
+      
+      // Add the target currency
+      await updateUserBalance(userId, targetCurrency, receiveAmount);
+      
+      // Update overall portfolio balance
+      await updateUserPortfolioBalance(userId);
+      
+      // Clean up quote from cache
+      quoteCache.delete(quoteId);
+      
+      logger.info('Swap completed successfully', {
+        userId,
+        quoteId,
+        sourceCurrency,
+        targetCurrency,
+        payAmount,
+        receiveAmount
+      });
+
+      res.json({
+        success: true,
+        message: "Swap completed successfully",
+        data: {
+          ...swapResult.data,
+          swapDetails: {
+            sourceCurrency,
+            targetCurrency,
+            payAmount,
+            receiveAmount,
+            completedAt: new Date().toISOString()
+          }
         }
       });
-    }
 
-    // Regular quote acceptance through Obiex
-    const acceptResult = await acceptQuote(quoteId);
-
-    if (!acceptResult.success) {
+    } catch (balanceUpdateError) {
+      logger.error('Failed to update balances after successful swap', {
+        userId,
+        quoteId,
+        error: balanceUpdateError.message
+      });
+      
+      // This is a critical error - the swap succeeded but balance update failed
+      // In production, this should trigger an alert and manual reconciliation
       return res.status(500).json({
         success: false,
-        message: "Failed to accept quote",
-        error: acceptResult.error
+        message: "Swap processed but balance update failed. Please contact support.",
+        error: balanceUpdateError.message,
+        criticalError: true,
+        swapResult: swapResult.data
       });
     }
 
-    res.json({
-      success: true,
-      message: "Quote accepted successfully",
-      data: acceptResult.data
-    });
-
   } catch (error) {
-    console.error('Error accepting quote:', error);
+    logger.error('Error processing swap', {
+      quoteId: req.params.quoteId,
+      error: error.message
+    });
+    
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -436,6 +617,38 @@ router.get('/tokens', (req, res) => {
     res.status(500).json({
       success: false,
       message: "Internal server error",
+      error: error.message
+    });
+  }
+});
+
+// Helper endpoint to get user balance for a specific currency
+router.get('/balance/:userId/:currency', async (req, res) => {
+  try {
+    const { userId, currency } = req.params;
+    
+    const balanceInfo = await getUserAvailableBalance(userId, currency);
+    
+    if (!balanceInfo.success) {
+      return res.status(400).json(balanceInfo);
+    }
+    
+    res.json({
+      success: true,
+      message: "Balance retrieved successfully",
+      data: balanceInfo
+    });
+    
+  } catch (error) {
+    logger.error('Error fetching user balance', {
+      userId: req.params.userId,
+      currency: req.params.currency,
+      error: error.message
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve balance",
       error: error.message
     });
   }
