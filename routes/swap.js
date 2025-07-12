@@ -5,7 +5,6 @@ const tradingPairsService = require('../services/tradingPairsService');
 const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
-const priceService = require('../services/priceService');
 const { updateUserBalance, updateUserPortfolioBalance } = require('../services/portfolio');
 const { validateUserBalance, getUserAvailableBalance } = require('../services/balance');
 const logger = require('../utils/logger');
@@ -143,19 +142,8 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       cryptoCurrency = toUpper;
       payAmount = amount; // Amount of NGNZ user is paying
       
-      // Get current crypto price
-      const cryptoPrices = await priceService.getPricesWithCache([cryptoCurrency]);
-      const cryptoPrice = cryptoPrices[cryptoCurrency];
-      
-      if (!cryptoPrice || cryptoPrice <= 0) {
-        return res.status(500).json({
-          success: false,
-          message: `Unable to get price for ${cryptoCurrency}`
-        });
-      }
-      
-      // Calculate how much crypto user gets for their NGNZ
-      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, cryptoCurrency, cryptoPrice);
+      // Calculate how much crypto user gets for their NGNZ using onramp service
+      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, cryptoCurrency);
       
       quoteData = {
         id: `ngnz_onramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -164,7 +152,6 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         side: side,
         amount: payAmount,
         receiveAmount: receiveAmount,
-        rate: cryptoPrice,
         ngnzRate: (await onrampService.getOnrampRate()).finalPrice,
         type: 'onramp',
         sourceCurrency: fromUpper,
@@ -178,19 +165,8 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       cryptoCurrency = fromUpper;
       payAmount = amount; // Amount of crypto user is selling
       
-      // Get current crypto price
-      const cryptoPrices = await priceService.getPricesWithCache([cryptoCurrency]);
-      const cryptoPrice = cryptoPrices[cryptoCurrency];
-      
-      if (!cryptoPrice || cryptoPrice <= 0) {
-        return res.status(500).json({
-          success: false,
-          message: `Unable to get price for ${cryptoCurrency}`
-        });
-      }
-      
-      // Calculate how much NGNZ user gets for their crypto
-      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, cryptoCurrency, cryptoPrice);
+      // Calculate how much NGNZ user gets for their crypto using offramp service
+      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, cryptoCurrency);
       
       quoteData = {
         id: `ngnz_offramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -199,7 +175,6 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         side: side,
         amount: payAmount,
         receiveAmount: receiveAmount,
-        rate: cryptoPrice,
         ngnzRate: (await offrampService.getCurrentRate()).finalPrice,
         type: 'offramp',
         sourceCurrency: fromUpper,
