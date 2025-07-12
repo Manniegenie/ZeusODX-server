@@ -83,10 +83,9 @@ const userSchema = new mongoose.Schema({
     USDC_BSC: { address: String, network: String, walletReferenceId: String },
     BNB_ETH: { address: String, network: String, walletReferenceId: String },
     BNB_BSC: { address: String, network: String, walletReferenceId: String },
-    DOGE_DOGE: { address: String, network: String, walletReferenceId: String },
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
     AVAX_BSC: { address: String, network: String, walletReferenceId: String },
-    NGNB: { address: String, network: String, walletReferenceId: String },
+    NGNZ: { address: String, network: String, walletReferenceId: String },
   },
 
   // Wallet Balances - Added new balances for new tokens
@@ -114,10 +113,6 @@ const userSchema = new mongoose.Schema({
   bnbBalanceUSD: { type: Number, default: 0, min: 0 },
   bnbPendingBalance: { type: Number, default: 0, min: 0 },
 
-  dogeBalance: { type: Number, default: 0, min: 0 },
-  dogeBalanceUSD: { type: Number, default: 0, min: 0 },
-  dogePendingBalance: { type: Number, default: 0, min: 0 },
-
   maticBalance: { type: Number, default: 0, min: 0 },
   maticBalanceUSD: { type: Number, default: 0, min: 0 },
   maticPendingBalance: { type: Number, default: 0, min: 0 },
@@ -126,9 +121,9 @@ const userSchema = new mongoose.Schema({
   avaxBalanceUSD: { type: Number, default: 0, min: 0 },
   avaxPendingBalance: { type: Number, default: 0, min: 0 },
 
-  ngnbBalance: { type: Number, default: 0, min: 0 },
-  ngnbBalanceUSD: { type: Number, default: 0, min: 0 },
-  ngnbPendingBalance: { type: Number, default: 0, min: 0 },
+  ngnzBalance: { type: Number, default: 0, min: 0 },
+  ngnzBalanceUSD: { type: Number, default: 0, min: 0 },
+  ngnzPendingBalance: { type: Number, default: 0, min: 0 },
 
   totalPortfolioBalance: { type: Number, default: 0, min: 0 },
 

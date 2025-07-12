@@ -3,6 +3,9 @@ const axios = require('axios');
 const { attachObiexAuth } = require('./utils/obiexAuth');
 const tradingPairsService = require('./services/tradingPairsService');
 const GlobalSwapMarkdown = require('./models/GlobalSwapMarkdown'); // Add this import
+const onrampService = require('./services/onrampService'); // Add onramp service
+const offrampService = require('./services/offrampService'); // Add offramp service
+const priceService = require('./services/priceService'); // Add price service for crypto prices
 
 const router = express.Router();
 
@@ -17,9 +20,8 @@ const TOKEN_MAP = {
   'USDC': { currency: 'USDC', name: 'USD Coin' },
   'BNB': { currency: 'BNB', name: 'Binance Coin' },
   'MATIC': { currency: 'MATIC', name: 'Polygon' },
-  'DOGE': { currency: 'DOGE', name: 'Dogecoin' },
   'AVAX': { currency: 'AVAX', name: 'Avalanche' },
-  'NGNB': { currency: 'NGNB', name: 'Nigerian Naira Bank' }
+  'NGNZ': { currency: 'NGNZ', name: 'Nigerian Naira Bank' }
 };
 
 function createApiClient() {
@@ -110,6 +112,115 @@ async function acceptQuote(quoteId) {
   }
 }
 
+// NEW: Handle NGNZ swaps using onramp/offramp services
+async function handleNGNZSwap(req, res, from, to, amount, side) {
+  try {
+    const fromUpper = from.toUpperCase();
+    const toUpper = to.toUpperCase();
+    
+    // Determine if this is onramp (NGNZ -> crypto) or offramp (crypto -> NGNZ)
+    const isOnramp = fromUpper === 'NGNZ' && toUpper !== 'NGNZ';
+    const isOfframp = fromUpper !== 'NGNZ' && toUpper === 'NGNZ';
+    
+    if (!isOnramp && !isOfframp) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid NGNZ swap configuration"
+      });
+    }
+    
+    let cryptoCurrency, receiveAmount, payAmount;
+    let quoteData;
+    
+    if (isOnramp) {
+      // User is paying NGNZ to get crypto (onramp)
+      cryptoCurrency = toUpper;
+      payAmount = amount; // Amount of NGNZ user is paying
+      
+      // Get current crypto price
+      const cryptoPrices = await priceService.getPricesWithCache([cryptoCurrency]);
+      const cryptoPrice = cryptoPrices[cryptoCurrency];
+      
+      if (!cryptoPrice || cryptoPrice <= 0) {
+        return res.status(500).json({
+          success: false,
+          message: `Unable to get price for ${cryptoCurrency}`
+        });
+      }
+      
+      // Calculate how much crypto user gets for their NGNZ
+      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, cryptoCurrency, cryptoPrice);
+      
+      quoteData = {
+        id: `ngnz_onramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        sourceId: 'ngnz_source',
+        targetId: 'crypto_target',
+        side: side,
+        amount: payAmount,
+        receiveAmount: receiveAmount,
+        rate: cryptoPrice,
+        ngnzRate: (await onrampService.getOnrampRate()).finalPrice,
+        type: 'onramp',
+        sourceCurrency: fromUpper,
+        targetCurrency: toUpper,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
+      };
+      
+    } else if (isOfframp) {
+      // User is selling crypto to get NGNZ (offramp)
+      cryptoCurrency = fromUpper;
+      payAmount = amount; // Amount of crypto user is selling
+      
+      // Get current crypto price
+      const cryptoPrices = await priceService.getPricesWithCache([cryptoCurrency]);
+      const cryptoPrice = cryptoPrices[cryptoCurrency];
+      
+      if (!cryptoPrice || cryptoPrice <= 0) {
+        return res.status(500).json({
+          success: false,
+          message: `Unable to get price for ${cryptoCurrency}`
+        });
+      }
+      
+      // Calculate how much NGNZ user gets for their crypto
+      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, cryptoCurrency, cryptoPrice);
+      
+      quoteData = {
+        id: `ngnz_offramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        sourceId: 'crypto_source',
+        targetId: 'ngnz_target',
+        side: side,
+        amount: payAmount,
+        receiveAmount: receiveAmount,
+        rate: cryptoPrice,
+        ngnzRate: (await offrampService.getCurrentRate()).finalPrice,
+        type: 'offramp',
+        sourceCurrency: fromUpper,
+        targetCurrency: toUpper,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
+      };
+    }
+    
+    console.log(`[NGNZ SWAP] ${isOnramp ? 'ONRAMP' : 'OFFRAMP'}: ${from}-${to}, Pay: ${payAmount}, Receive: ${receiveAmount}, Rate: ${quoteData.ngnzRate}`);
+    
+    return res.json({
+      success: true,
+      message: `NGNZ ${isOnramp ? 'onramp' : 'offramp'} quote created successfully`,
+      data: quoteData
+    });
+    
+  } catch (error) {
+    console.error('Error creating NGNZ swap quote:', error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create NGNZ swap quote",
+      error: error.message
+    });
+  }
+}
+
 router.post('/quote', async (req, res) => {
   try {
     const { from, to, amount, side } = req.body;
@@ -157,6 +268,15 @@ router.post('/quote', async (req, res) => {
       });
     }
 
+    // Check if this is a NGNZ swap and handle it differently
+    const isNGNZSwap = from.toUpperCase() === 'NGNZ' || to.toUpperCase() === 'NGNZ';
+    
+    if (isNGNZSwap) {
+      // Handle NGNZ swaps using onramp/offramp services
+      return await handleNGNZSwap(req, res, from, to, amount, side);
+    }
+
+    // Regular non-NGNZ swap logic
     const sourceId = await getCurrencyId(from);
     const targetId = await getCurrencyId(to);
 
@@ -212,6 +332,25 @@ router.post('/quote/:quoteId', async (req, res) => {
       });
     }
 
+    // Check if this is a NGNZ quote (doesn't go through Obiex)
+    const isNGNZQuote = quoteId.includes('ngnz_onramp_') || quoteId.includes('ngnz_offramp_');
+    
+    if (isNGNZQuote) {
+      // Handle NGNZ quote acceptance
+      return res.json({
+        success: true,
+        message: "NGNZ quote accepted successfully",
+        data: {
+          id: quoteId,
+          status: 'accepted',
+          message: 'NGNZ swap quote accepted. Processing will be handled by the trading system.',
+          acceptedAt: new Date().toISOString(),
+          type: quoteId.includes('onramp') ? 'onramp' : 'offramp'
+        }
+      });
+    }
+
+    // Regular quote acceptance through Obiex
     const acceptResult = await acceptQuote(quoteId);
 
     if (!acceptResult.success) {

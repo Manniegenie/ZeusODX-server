@@ -24,7 +24,7 @@ const SUPPORTED_TOKENS = {
   // DOGE: REMOVED COMPLETELY
   MATIC: { currencyApiSymbol: 'MATIC', isStablecoin: false, supportedByCurrencyAPI: true },
   AVAX: { currencyApiSymbol: 'AVAX', isStablecoin: false, supportedByCurrencyAPI: true },
-  NGNB: { currencyApiSymbol: 'NGNB', isStablecoin: true, isNairaPegged: true, supportedByCurrencyAPI: false },
+  NGNZ: { currencyApiSymbol: 'NGNZ', isStablecoin: true, isNairaPegged: true, supportedByCurrencyAPI: false },
 };
 
 // Simplified price cache
@@ -78,7 +78,7 @@ function applyMarkdownToPrices(priceMap, markdownPercentage) {
   const discountMultiplier = (100 - markdownPercentage) / 100;
   
   for (const [token, price] of priceMap.entries()) {
-    // Don't apply markdown to stablecoins or NGNB
+    // Don't apply markdown to stablecoins or NGNZ
     const tokenInfo = SUPPORTED_TOKENS[token];
     if (tokenInfo && (tokenInfo.isStablecoin || tokenInfo.isNairaPegged)) {
       markedDownPrices.set(token, price);
@@ -99,14 +99,14 @@ function applyMarkdownToPrices(priceMap, markdownPercentage) {
   return markedDownPrices;
 }
 
-// Special handling for NGNB (Naira-pegged stablecoin)
-function handleNGNBPricing(tokens) {
-  const ngnbPrices = {};
-  if (tokens.some(token => token.toUpperCase() === 'NGNB')) {
+// Special handling for NGNZ (Naira-pegged stablecoin)
+function handleNGNZPricing(tokens) {
+  const ngnzPrices = {};
+  if (tokens.some(token => token.toUpperCase() === 'NGNZ')) {
     const ngnToUsdRate = 1 / 1554.42; // Approximate NGN to USD rate
-    ngnbPrices['NGNB'] = ngnToUsdRate;
+    ngnzPrices['NGNZ'] = ngnToUsdRate;
   }
-  return ngnbPrices;
+  return ngnzPrices;
 }
 
 // Checks if cache is valid and contains all required tokens
@@ -179,11 +179,11 @@ async function fetchCurrencyApiPrices(tokens) {
       }
     }
     
-    // Handle NGNB separately (Naira-pegged)
-    const ngnbPrices = handleNGNBPricing(tokens);
-    for (const [token, price] of Object.entries(ngnbPrices)) {
+    // Handle NGNZ separately (Naira-pegged)
+    const ngnzPrices = handleNGNZPricing(tokens);
+    for (const [token, price] of Object.entries(ngnzPrices)) {
       prices.set(token, price);
-      logger.debug(`Set NGNB price: ${token} = $${price}`);
+      logger.debug(`Set NGNZ price: ${token} = $${price}`);
     }
     
     // Exit early if no tokens to request from CurrencyAPI
@@ -270,7 +270,7 @@ async function getFallbackPrices(tokens) {
     // 'DOGE': REMOVED
     'MATIC': 0.85,
     'AVAX': 35,
-    'NGNB': 1 / 1554.42,
+    'NGNZ': 1 / 1554.42,
   };
   
   for (const token of tokens) {
@@ -448,7 +448,7 @@ async function updateUserBalance(userId, currency, amount, session = null) {
       // (user.dogeBalanceUSD || 0) + // REMOVED
       (user.maticBalanceUSD || 0) +
       (user.avaxBalanceUSD || 0) +
-      (user.ngnbBalanceUSD || 0);
+      (user.ngnzBalanceUSD || 0);
     
     // Update total portfolio balance
     await User.findByIdAndUpdate(
@@ -566,7 +566,7 @@ async function getUserPortfolioBalance(userId, asOfDate = null) {
         balance: parseFloat(balance.toFixed(8)),
         priceInUSD: parseFloat(price.toFixed(8)),
         valueInUSD: parseFloat(valueInUSD.toFixed(2)),
-        isNairaPegged: token === 'NGNB'
+        isNairaPegged: token === 'NGNZ'
       });
     }
     
@@ -622,8 +622,8 @@ async function updateUserPortfolioBalance(userId, asOfDate = null) {
       maticBalanceUSD: 0,
       avaxBalance: 0,
       avaxBalanceUSD: 0,
-      ngnbBalance: 0,
-      ngnbBalanceUSD: 0,
+      ngnzBalance: 0,
+      ngnzBalanceUSD: 0,
     };
     
     // Update balances for tokens that exist in user schema
@@ -843,7 +843,7 @@ module.exports = {
   isTokenSupported,
   withRetry,
   SUPPORTED_TOKENS,
-  handleNGNBPricing,
+  handleNGNZPricing,
   
   // Configuration
   CONFIG,

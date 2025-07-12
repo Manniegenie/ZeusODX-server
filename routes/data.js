@@ -241,13 +241,13 @@ function validateDataAirtimeRequest(body) {
     }
   }
   
-  // NGNB currency validation
+  // NGNZ currency validation
   if (!body.payment_currency) {
-    errors.push('Payment currency is required and must be NGNB');
-  } else if (body.payment_currency.toUpperCase() !== 'NGNB') {
-    errors.push('Payment currency must be NGNB only');
+    errors.push('Payment currency is required and must be NGNZ');
+  } else if (body.payment_currency.toUpperCase() !== 'NGNZ') {
+    errors.push('Payment currency must be NGNZ only');
   } else {
-    sanitized.payment_currency = 'NGNB';
+    sanitized.payment_currency = 'NGNZ';
   }
   
   // 2FA validation
@@ -261,28 +261,28 @@ function validateDataAirtimeRequest(body) {
 }
 
 /**
- * Validate NGNB limits
+ * Validate NGNZ limits
  */
-function validateNGNBLimits(amount, serviceType) {
-  const MIN_NGNB = serviceType === 'airtime' ? 50 : 100;
-  const MAX_NGNB = 50000;
+function validateNGNZLimits(amount, serviceType) {
+  const MIN_NGNZ = serviceType === 'airtime' ? 50 : 100;
+  const MAX_NGNZ = 50000;
   
-  if (amount < MIN_NGNB) {
+  if (amount < MIN_NGNZ) {
     return {
       isValid: false,
-      error: 'NGNB_MINIMUM_NOT_MET',
-      message: `Minimum NGNB ${serviceType} purchase amount is ${MIN_NGNB} NGNB. Your amount: ${amount} NGNB.`,
-      minimumRequired: MIN_NGNB,
+      error: 'NGNZ_MINIMUM_NOT_MET',
+      message: `Minimum NGNZ ${serviceType} purchase amount is ${MIN_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
+      minimumRequired: MIN_NGNZ,
       providedAmount: amount
     };
   }
   
-  if (amount > MAX_NGNB) {
+  if (amount > MAX_NGNZ) {
     return {
       isValid: false,
-      error: 'NGNB_MAXIMUM_EXCEEDED',
-      message: `Maximum NGNB ${serviceType} purchase amount is ${MAX_NGNB} NGNB. Your amount: ${amount} NGNB.`,
-      maximumAllowed: MAX_NGNB,
+      error: 'NGNZ_MAXIMUM_EXCEEDED',
+      message: `Maximum NGNZ ${serviceType} purchase amount is ${MAX_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
+      maximumAllowed: MAX_NGNZ,
       providedAmount: amount
     };
   }
@@ -418,7 +418,7 @@ router.post('/purchase', async (req, res) => {
     }
     
     const { phone_number, service_id, service_type, variation_id, amount, twoFactorCode } = validation.sanitized;
-    const currency = 'NGNB';
+    const currency = 'NGNZ';
     
     // Step 2: Generate unique IDs
     const uniqueOrderId = generateUniqueOrderId(service_type);
@@ -465,18 +465,18 @@ router.post('/purchase', async (req, res) => {
     // ========================================
     // KYC LIMIT VALIDATION - NEW ADDITION
     // ========================================
-    logger.info(`Validating KYC limits for ${service_type} purchase`, { userId, amount, currency: 'NGNB' });
+    logger.info(`Validating KYC limits for ${service_type} purchase`, { userId, amount, currency: 'NGNZ' });
     
     try {
       // Determine transaction type based on service_type
       const transactionType = service_type === 'data' ? 'DATA' : 'AIRTIME';
-      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', transactionType);
+      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', transactionType);
       
       if (!kycValidation.allowed) {
         logger.warn(`${service_type} purchase blocked by KYC limits`, {
           userId,
           amount,
-          currency: 'NGNB',
+          currency: 'NGNZ',
           phone_number,
           service_id,
           service_type,
@@ -511,7 +511,7 @@ router.post('/purchase', async (req, res) => {
       logger.info(`KYC validation passed for ${service_type} purchase`, {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         phone_number,
         service_id,
         service_type,
@@ -526,7 +526,7 @@ router.post('/purchase', async (req, res) => {
       logger.error(`KYC validation failed with error for ${service_type} purchase`, {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         phone_number,
         service_id,
         service_type,
@@ -588,30 +588,30 @@ router.post('/purchase', async (req, res) => {
       purchaseAmount = customerValidation.expectedAmount;
     }
     
-    // Step 7: Calculate NGNB amount
-    const ngnbAmount = purchaseAmount;
-    const ngnbToUsdRate = 1 / 1554.42;
+    // Step 7: Calculate NGNZ amount
+    const ngnzAmount = purchaseAmount;
+    const ngnzToUsdRate = 1 / 1554.42;
     
-    logger.info(`NGNB amount needed: ₦${purchaseAmount} → ${ngnbAmount} NGNB (1:1 ratio)`);
+    logger.info(`NGNZ amount needed: ₦${purchaseAmount} → ${ngnzAmount} NGNZ (1:1 ratio)`);
     
-    // Step 8: Validate NGNB limits
-    const ngnbLimitValidation = validateNGNBLimits(ngnbAmount, service_type);
-    if (!ngnbLimitValidation.isValid) {
+    // Step 8: Validate NGNZ limits
+    const ngnzLimitValidation = validateNGNZLimits(ngnzAmount, service_type);
+    if (!ngnzLimitValidation.isValid) {
       return res.status(400).json({
         success: false,
-        error: ngnbLimitValidation.error,
-        message: ngnbLimitValidation.message,
+        error: ngnzLimitValidation.error,
+        message: ngnzLimitValidation.message,
         details: {
           currency: currency,
-          providedAmount: ngnbLimitValidation.providedAmount,
-          minimumRequired: ngnbLimitValidation.minimumRequired,
-          maximumAllowed: ngnbLimitValidation.maximumAllowed
+          providedAmount: ngnzLimitValidation.providedAmount,
+          minimumRequired: ngnzLimitValidation.minimumRequired,
+          maximumAllowed: ngnzLimitValidation.maximumAllowed
         }
       });
     }
     
     // Step 9: Validate user balance
-    const balanceValidation = await validateUserBalance(userId, currency, ngnbAmount, {
+    const balanceValidation = await validateUserBalance(userId, currency, ngnzAmount, {
       includeBalanceDetails: true,
       logValidation: true
     });
@@ -623,20 +623,20 @@ router.post('/purchase', async (req, res) => {
         message: balanceValidation.message,
         details: {
           availableBalance: balanceValidation.availableBalance,
-          requiredAmount: ngnbAmount,
+          requiredAmount: ngnzAmount,
           currency: currency,
           shortfall: balanceValidation.shortfall
         }
       });
     }
 
-    logger.info(`${service_type} purchase NGNB balance validation successful`, {
+    logger.info(`${service_type} purchase NGNZ balance validation successful`, {
       userId,
       phone_number,
       amount: purchaseAmount,
       payment_currency: currency,
       availableBalance: balanceValidation.availableBalance,
-      requiredAmount: ngnbAmount,
+      requiredAmount: ngnzAmount,
       timestamp: new Date().toISOString().slice(0, 19).replace('T', ' ')
     });
 
@@ -649,9 +649,9 @@ router.post('/purchase', async (req, res) => {
       quantity: 1,
       amount: purchaseAmount,
       amountNaira: purchaseAmount,
-      amountCrypto: ngnbAmount,
+      amountCrypto: ngnzAmount,
       paymentCurrency: currency,
-      cryptoPrice: ngnbToUsdRate,
+      cryptoPrice: ngnzToUsdRate,
       requestId: uniqueRequestId, // Guaranteed unique request ID
       metaData: {
         phone_number,
@@ -661,8 +661,8 @@ router.post('/purchase', async (req, res) => {
         user_id: userId,
         payment_currency: currency,
         balance_reserved: false,
-        purchase_amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
-        is_ngnb_transaction: true,
+        purchase_amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
+        is_ngnz_transaction: true,
         twofa_validated: true,
         kyc_validated: true, // Track that KYC was validated
         price_verified: service_type === 'data',
@@ -684,7 +684,7 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
     logger.info(`Created ${service_type} transaction ${pendingTransaction._id} with unique OrderID: ${uniqueOrderId}, RequestID: ${uniqueRequestId}`);
     
     // Step 11: Call eBills API FIRST (before reserving balance) - FIXED to use VTUAuth
@@ -767,7 +767,7 @@ router.post('/purchase', async (req, res) => {
     try {
       logger.info(`eBills ${service_type} API successful for ${uniqueRequestId}. Now reserving balance...`);
       
-      await reserveUserBalance(userId, currency, ngnbAmount);
+      await reserveUserBalance(userId, currency, ngnzAmount);
       reservationMade = true;
       
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
@@ -775,8 +775,8 @@ router.post('/purchase', async (req, res) => {
         'metaData.balance_reserved_at': new Date()
       });
       
-      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ✅ Reserved`);
-      logger.info(`Successfully reserved ${ngnbAmount} ${currency} for user ${userId} after eBills ${service_type} API success`);
+      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | ${service_type} | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ✅ Reserved`);
+      logger.info(`Successfully reserved ${ngnzAmount} ${currency} for user ${userId} after eBills ${service_type} API success`);
       
     } catch (balanceError) {
       logger.error(`CRITICAL: Balance reservation failed after successful eBills ${service_type} API call:`, {
@@ -784,7 +784,7 @@ router.post('/purchase', async (req, res) => {
         unique_request_id: uniqueRequestId,
         userId,
         currency,
-        ngnbAmount,
+        ngnzAmount,
         error: balanceError.message,
         ebills_order_id: ebillsResponse.data?.order_id
       });
@@ -862,8 +862,8 @@ router.post('/purchase', async (req, res) => {
       network: service_id.toUpperCase(),
       payment_details: {
         currency: currency,
-        ngnb_amount: ngnbAmount,
-        amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2)
+        ngnz_amount: ngnzAmount,
+        amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2)
       },
       security_info: {
         price_verified: service_type === 'data',

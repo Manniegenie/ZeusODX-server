@@ -45,7 +45,7 @@ function validatePhoneNumber(phone) {
 }
 
 /**
- * Sanitize and validate airtime request body - SIMPLIFIED for NGNB only
+ * Sanitize and validate airtime request body - SIMPLIFIED for NGNZ only
  * @param {Object} body - Request body to validate
  * @returns {Object} - Validation result with isValid, errors, and sanitized data
  */
@@ -96,16 +96,16 @@ function validateAirtimeRequest(body) {
       if (sanitized.amount <= 0) {
         errors.push('Amount must be greater than zero');
       } else {
-        // Enforce 100 NGNB minimum and 50,000 NGNB maximum for ALL networks
-        const minAmount = 100; // 100 NGNB minimum
-        const maxAmount = 50000; // 50,000 NGNB maximum (hardcoded)
+        // Enforce 100 NGNZ minimum and 50,000 NGNZ maximum for ALL networks
+        const minAmount = 100; // 100 NGNZ minimum
+        const maxAmount = 50000; // 50,000 NGNZ maximum (hardcoded)
         
         if (sanitized.amount < minAmount) {
-          errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNB`);
+          errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNZ`);
         }
         
         if (sanitized.amount > maxAmount) {
-          errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNB`);
+          errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNZ`);
         }
       }
     }
@@ -118,8 +118,8 @@ function validateAirtimeRequest(body) {
     sanitized.twoFactorCode = String(body.twoFactorCode).trim();
   }
   
-  // NGNB is the only accepted payment currency - no validation needed, just set it
-  sanitized.payment_currency = 'NGNB';
+  // NGNZ is the only accepted payment currency - no validation needed, just set it
+  sanitized.payment_currency = 'NGNZ';
   
   return {
     isValid: errors.length === 0,
@@ -202,7 +202,7 @@ async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) 
 }
 
 /**
- * Main airtime purchase endpoint - SIMPLIFIED for NGNB only with 2FA and KYC
+ * Main airtime purchase endpoint - SIMPLIFIED for NGNZ only with 2FA and KYC
  * Note: Global auth middleware provides req.user.id
  */
 router.post('/purchase', async (req, res) => {
@@ -230,7 +230,7 @@ router.post('/purchase', async (req, res) => {
     
     // Use sanitized data instead of raw request body
     const { phone, service_id, amount, payment_currency, twoFactorCode } = validation.sanitized;
-    const currency = 'NGNB'; // Always NGNB - no other currency accepted
+    const currency = 'NGNZ'; // Always NGNZ - no other currency accepted
     
     // Step 2: Validate user and 2FA
     const user = await User.findById(userId);
@@ -264,16 +264,16 @@ router.post('/purchase', async (req, res) => {
     // ========================================
     // KYC LIMIT VALIDATION - NEW ADDITION
     // ========================================
-    logger.info('Validating KYC limits for airtime purchase', { userId, amount, currency: 'NGNB' });
+    logger.info('Validating KYC limits for airtime purchase', { userId, amount, currency: 'NGNZ' });
     
     try {
-      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', 'AIRTIME');
+      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'AIRTIME');
       
       if (!kycValidation.allowed) {
         logger.warn('Airtime purchase blocked by KYC limits', {
           userId,
           amount,
-          currency: 'NGNB',
+          currency: 'NGNZ',
           phone,
           service_id,
           kycCode: kycValidation.code,
@@ -306,7 +306,7 @@ router.post('/purchase', async (req, res) => {
       logger.info('KYC validation passed for airtime purchase', {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         phone,
         service_id,
         kycLevel: kycValidation.data?.kycLevel,
@@ -319,7 +319,7 @@ router.post('/purchase', async (req, res) => {
       logger.error('KYC validation failed with error for airtime purchase', {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         phone,
         service_id,
         error: kycError.message,
@@ -358,24 +358,24 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`Using userId as request_id: ${finalRequestId}, orderId: ${uniqueOrderId}`);
     
-    // Step 5: SIMPLIFIED - No conversion needed, NGNB amount equals Naira amount
-    const ngnbAmount = amount; // 1:1 ratio since NGNB is pegged to Naira
+    // Step 5: SIMPLIFIED - No conversion needed, NGNZ amount equals Naira amount
+    const ngnzAmount = amount; // 1:1 ratio since NGNZ is pegged to Naira
     
-    logger.info(`NGNB amount needed: ₦${amount} → ${ngnbAmount} NGNB (1:1 ratio)`);
+    logger.info(`NGNZ amount needed: ₦${amount} → ${ngnzAmount} NGNZ (1:1 ratio)`);
     
-    // Step 6: Validate user NGNB balance
-    const balanceValidation = await validateUserBalance(userId, currency, ngnbAmount, {
+    // Step 6: Validate user NGNZ balance
+    const balanceValidation = await validateUserBalance(userId, currency, ngnzAmount, {
       includeBalanceDetails: true,
       logValidation: true
     });
     
     if (!balanceValidation.success) {
-      logger.warn('Airtime purchase NGNB balance validation failed', {
+      logger.warn('Airtime purchase NGNZ balance validation failed', {
         userId,
         phone,
         amount,
         payment_currency: currency,
-        ngnbAmount,
+        ngnzAmount,
         reason: balanceValidation.message,
         availableBalance: balanceValidation.availableBalance,
         requiredAmount: balanceValidation.requiredAmount,
@@ -388,20 +388,20 @@ router.post('/purchase', async (req, res) => {
         message: balanceValidation.message,
         details: {
           availableBalance: balanceValidation.availableBalance,
-          requiredAmount: ngnbAmount,
+          requiredAmount: ngnzAmount,
           currency: currency,
           shortfall: balanceValidation.shortfall
         }
       });
     }
 
-    logger.info('Airtime purchase NGNB balance validation successful', {
+    logger.info('Airtime purchase NGNZ balance validation successful', {
       userId,
       phone,
       amount,
       payment_currency: currency,
       availableBalance: balanceValidation.availableBalance,
-      requiredAmount: ngnbAmount,
+      requiredAmount: ngnzAmount,
       timestamp: new Date().toISOString().slice(0, 19).replace('T', ' ')
     });
 
@@ -414,7 +414,7 @@ router.post('/purchase', async (req, res) => {
       quantity: 1,
       amount: amount,
       amountNaira: amount,
-      amountCrypto: ngnbAmount, // Legacy field for backward compatibility
+      amountCrypto: ngnzAmount, // Legacy field for backward compatibility
       paymentCurrency: currency,
       cryptoPrice: 1, // 1:1 ratio with Naira
       requestId: finalRequestId, // userId as request_id
@@ -424,7 +424,7 @@ router.post('/purchase', async (req, res) => {
         service_id,
         user_id: userId,
         payment_currency: currency,
-        ngnb_amount: ngnbAmount,
+        ngnz_amount: ngnzAmount,
         exchange_rate: 1, // 1:1 ratio
         balance_reserved: false, // Track that balance isn't reserved yet
         twofa_validated: true, // Track that 2FA was validated
@@ -448,7 +448,7 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
     logger.info(`Created pending transaction ${pendingTransaction._id} for request ${finalRequestId}`);
     
     // Step 8: Call eBills API FIRST (before reserving balance) - FIXED to use VTUAuth
@@ -500,25 +500,25 @@ router.post('/purchase', async (req, res) => {
       });
     }
     
-    // Step 9: eBills API SUCCESS! Now reserve user NGNB balance
+    // Step 9: eBills API SUCCESS! Now reserve user NGNZ balance
     try {
-      logger.info(`eBills API successful for ${finalRequestId}. Now reserving NGNB balance...`);
+      logger.info(`eBills API successful for ${finalRequestId}. Now reserving NGNZ balance...`);
       
-      await reserveUserBalance(userId, currency, ngnbAmount);
+      await reserveUserBalance(userId, currency, ngnzAmount);
       reservationMade = true;
       
       // Update transaction to mark balance as reserved using the new method
       await pendingTransaction.markBalanceReserved();
       
-      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ✅ Reserved`);
-      logger.info(`Successfully reserved ${ngnbAmount} ${currency} for user ${userId}`);
+      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ✅ Reserved`);
+      logger.info(`Successfully reserved ${ngnzAmount} ${currency} for user ${userId}`);
       
     } catch (balanceError) {
-      logger.error('CRITICAL: NGNB balance reservation failed after successful eBills API call:', {
+      logger.error('CRITICAL: NGNZ balance reservation failed after successful eBills API call:', {
         request_id: finalRequestId,
         userId,
         currency,
-        ngnbAmount,
+        ngnzAmount,
         error: balanceError.message,
         ebills_order_id: ebillsResponse.data?.order_id
       });
@@ -528,7 +528,7 @@ router.post('/purchase', async (req, res) => {
         { 
           status: 'failed',
           processingErrors: [{
-            error: `NGNB balance reservation failed after eBills success: ${balanceError.message}`,
+            error: `NGNZ balance reservation failed after eBills success: ${balanceError.message}`,
             timestamp: new Date(),
             phase: 'balance_reservation',
             ebills_order_id: ebillsResponse.data?.order_id
@@ -539,7 +539,7 @@ router.post('/purchase', async (req, res) => {
       return res.status(500).json({
         success: false,
         error: 'BALANCE_RESERVATION_FAILED',
-        message: 'eBills transaction succeeded but NGNB balance reservation failed. Please contact support immediately.',
+        message: 'eBills transaction succeeded but NGNZ balance reservation failed. Please contact support immediately.',
         details: {
           ebills_order_id: ebillsResponse.data?.order_id,
           ebills_status: ebillsResponse.data?.status,
@@ -596,7 +596,7 @@ router.post('/purchase', async (req, res) => {
           request_id: finalRequestId,
           payment_details: {
             currency: currency,
-            ngnb_amount: ngnbAmount,
+            ngnz_amount: ngnzAmount,
             exchange_rate: 1,
             amount_naira: amount
           }
@@ -621,7 +621,7 @@ router.post('/purchase', async (req, res) => {
           request_id: finalRequestId,
           payment_details: {
             currency: currency,
-            ngnb_amount: ngnbAmount,
+            ngnz_amount: ngnzAmount,
             exchange_rate: 1,
             amount_naira: amount
           }
@@ -640,7 +640,7 @@ router.post('/purchase', async (req, res) => {
           request_id: finalRequestId,
           payment_details: {
             currency: currency,
-            ngnb_amount: ngnbAmount,
+            ngnz_amount: ngnzAmount,
             exchange_rate: 1,
             amount_naira: amount
           }
@@ -661,19 +661,19 @@ router.post('/purchase', async (req, res) => {
       ebillsApiCalled: !!ebillsResponse
     });
 
-    // Cleanup: Release reserved NGNB balance if reservation was made
+    // Cleanup: Release reserved NGNZ balance if reservation was made
     if (reservationMade) {
       try {
-        await releaseReservedBalance(req.user.id, 'NGNB', validation?.sanitized?.amount || 0);
-        logger.info('🔄 Released reserved NGNB balance due to error', { 
+        await releaseReservedBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0);
+        logger.info('🔄 Released reserved NGNZ balance due to error', { 
           userId: req.user.id, 
-          currency: 'NGNB', 
+          currency: 'NGNZ', 
           amount: validation?.sanitized?.amount || 0 
         });
       } catch (releaseError) {
-        logger.error('❌ Failed to release reserved NGNB balance after error', {
+        logger.error('❌ Failed to release reserved NGNZ balance after error', {
           userId: req.user.id,
-          currency: 'NGNB',
+          currency: 'NGNZ',
           amount: validation?.sanitized?.amount || 0,
           error: releaseError.message
         });

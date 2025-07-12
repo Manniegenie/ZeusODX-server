@@ -73,7 +73,7 @@ function validatePhoneNumber(phone) {
 }
 
 /**
- * Validate electricity purchase request - NGNB ONLY with 2FA
+ * Validate electricity purchase request - NGNZ ONLY with 2FA
  */
 function validateElectricityRequest(body) {
   const errors = [];
@@ -119,13 +119,13 @@ function validateElectricityRequest(body) {
     }
   }
   
-  // NGNB is now the only accepted currency
+  // NGNZ is now the only accepted currency
   if (!body.payment_currency) {
-    errors.push('Payment currency is required and must be NGNB');
-  } else if (body.payment_currency.toUpperCase() !== 'NGNB') {
-    errors.push('Payment currency must be NGNB only');
+    errors.push('Payment currency is required and must be NGNZ');
+  } else if (body.payment_currency.toUpperCase() !== 'NGNZ') {
+    errors.push('Payment currency must be NGNZ only');
   } else {
-    sanitized.payment_currency = 'NGNB';
+    sanitized.payment_currency = 'NGNZ';
   }
   
   // Validate 2FA code
@@ -143,28 +143,28 @@ function validateElectricityRequest(body) {
 }
 
 /**
- * Validate NGNB transaction limits for electricity
+ * Validate NGNZ transaction limits for electricity
  */
-function validateNGNBLimits(amount) {
-  const MIN_NGNB = 1000; // Higher minimum for electricity purchases
-  const MAX_NGNB = 100000; // Higher limit for electricity purchases
+function validateNGNZLimits(amount) {
+  const MIN_NGNZ = 1000; // Higher minimum for electricity purchases
+  const MAX_NGNZ = 100000; // Higher limit for electricity purchases
   
-  if (amount < MIN_NGNB) {
+  if (amount < MIN_NGNZ) {
     return {
       isValid: false,
-      error: 'NGNB_MINIMUM_NOT_MET',
-      message: `Minimum NGNB electricity purchase amount is ${MIN_NGNB} NGNB. Your amount: ${amount} NGNB.`,
-      minimumRequired: MIN_NGNB,
+      error: 'NGNZ_MINIMUM_NOT_MET',
+      message: `Minimum NGNZ electricity purchase amount is ${MIN_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
+      minimumRequired: MIN_NGNZ,
       providedAmount: amount
     };
   }
   
-  if (amount > MAX_NGNB) {
+  if (amount > MAX_NGNZ) {
     return {
       isValid: false,
-      error: 'NGNB_MAXIMUM_EXCEEDED',
-      message: `Maximum NGNB electricity purchase amount is ${MAX_NGNB} NGNB. Your amount: ${amount} NGNB.`,
-      maximumAllowed: MAX_NGNB,
+      error: 'NGNZ_MAXIMUM_EXCEEDED',
+      message: `Maximum NGNZ electricity purchase amount is ${MAX_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
+      maximumAllowed: MAX_NGNZ,
       providedAmount: amount
     };
   }
@@ -257,7 +257,7 @@ async function callEBillsElectricityAPI({ customer_id, service_id, variation_id,
 }
 
 /**
- * Main electricity purchase endpoint with guaranteed unique order IDs - NGNB ONLY with 2FA and KYC
+ * Main electricity purchase endpoint with guaranteed unique order IDs - NGNZ ONLY with 2FA and KYC
  */
 router.post('/purchase', async (req, res) => {
   let reservationMade = false;
@@ -282,7 +282,7 @@ router.post('/purchase', async (req, res) => {
     }
     
     const { customer_id, service_id, variation_id, amount, payment_currency, twoFactorCode } = validation.sanitized;
-    const currency = 'NGNB'; // Force NGNB as the only currency
+    const currency = 'NGNZ'; // Force NGNZ as the only currency
     
     // Step 2: Generate unique IDs
     const uniqueOrderId = generateUniqueElectricityOrderId();
@@ -332,16 +332,16 @@ router.post('/purchase', async (req, res) => {
     // ========================================
     // KYC LIMIT VALIDATION - NEW ADDITION
     // ========================================
-    logger.info('Validating KYC limits for electricity purchase', { userId, amount, currency: 'NGNB' });
+    logger.info('Validating KYC limits for electricity purchase', { userId, amount, currency: 'NGNZ' });
     
     try {
-      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', 'ELECTRICITY');
+      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'ELECTRICITY');
       
       if (!kycValidation.allowed) {
         logger.warn('Electricity purchase blocked by KYC limits', {
           userId,
           amount,
-          currency: 'NGNB',
+          currency: 'NGNZ',
           customer_id,
           service_id,
           variation_id,
@@ -375,7 +375,7 @@ router.post('/purchase', async (req, res) => {
       logger.info('KYC validation passed for electricity purchase', {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         customer_id,
         service_id,
         variation_id,
@@ -389,7 +389,7 @@ router.post('/purchase', async (req, res) => {
       logger.error('KYC validation failed with error for electricity purchase', {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         customer_id,
         service_id,
         variation_id,
@@ -408,24 +408,24 @@ router.post('/purchase', async (req, res) => {
     // END KYC VALIDATION
     // ========================================
     
-    // Step 5: Calculate NGNB amount needed (1:1 with Naira)
-    const ngnbAmount = amount; // NGNB is 1:1 with Naira
-    const ngnbToUsdRate = 1 / 1554.42; // Approximate NGNB to USD rate
+    // Step 5: Calculate NGNZ amount needed (1:1 with Naira)
+    const ngnzAmount = amount; // NGNZ is 1:1 with Naira
+    const ngnzToUsdRate = 1 / 1554.42; // Approximate NGNZ to USD rate
     
-    logger.info(`NGNB calculation: ₦${amount} = ${ngnbAmount} NGNB (1:1 rate)`);
+    logger.info(`NGNZ calculation: ₦${amount} = ${ngnzAmount} NGNZ (1:1 rate)`);
     
-    // Step 6: Validate NGNB limits
-    const ngnbLimitValidation = validateNGNBLimits(ngnbAmount);
-    if (!ngnbLimitValidation.isValid) {
+    // Step 6: Validate NGNZ limits
+    const ngnzLimitValidation = validateNGNZLimits(ngnzAmount);
+    if (!ngnzLimitValidation.isValid) {
       return res.status(400).json({
         success: false,
-        error: ngnbLimitValidation.error,
-        message: ngnbLimitValidation.message,
+        error: ngnzLimitValidation.error,
+        message: ngnzLimitValidation.message,
         details: {
           currency: currency,
-          providedAmount: ngnbLimitValidation.providedAmount,
-          minimumRequired: ngnbLimitValidation.minimumRequired,
-          maximumAllowed: ngnbLimitValidation.maximumAllowed,
+          providedAmount: ngnzLimitValidation.providedAmount,
+          minimumRequired: ngnzLimitValidation.minimumRequired,
+          maximumAllowed: ngnzLimitValidation.maximumAllowed,
           electricityAmount: amount,
           serviceProvider: service_id,
           meterType: variation_id
@@ -434,7 +434,7 @@ router.post('/purchase', async (req, res) => {
     }
     
     // Step 7: Validate user balance ONLY (don't reserve yet!)
-    const balanceValidation = await validateUserBalance(userId, currency, ngnbAmount, {
+    const balanceValidation = await validateUserBalance(userId, currency, ngnzAmount, {
       includeBalanceDetails: true,
       logValidation: true
     });
@@ -446,24 +446,24 @@ router.post('/purchase', async (req, res) => {
         message: balanceValidation.message,
         details: {
           availableBalance: balanceValidation.availableBalance,
-          requiredAmount: ngnbAmount,
+          requiredAmount: ngnzAmount,
           currency: currency,
           shortfall: balanceValidation.shortfall,
           electricityAmount: amount,
-          electricityAmountUSD: (ngnbAmount * ngnbToUsdRate).toFixed(2),
+          electricityAmountUSD: (ngnzAmount * ngnzToUsdRate).toFixed(2),
           serviceProvider: service_id,
           meterType: variation_id
         }
       });
     }
 
-    logger.info('Electricity purchase NGNB balance validation successful', {
+    logger.info('Electricity purchase NGNZ balance validation successful', {
       userId,
       customer_id,
       amount,
       payment_currency: currency,
       availableBalance: balanceValidation.availableBalance,
-      requiredAmount: ngnbAmount,
+      requiredAmount: ngnzAmount,
       timestamp: new Date().toISOString().slice(0, 19).replace('T', ' ')
     });
 
@@ -476,9 +476,9 @@ router.post('/purchase', async (req, res) => {
       quantity: 1,
       amount: amount,
       amountNaira: amount,
-      amountCrypto: ngnbAmount,
+      amountCrypto: ngnzAmount,
       paymentCurrency: currency,
-      cryptoPrice: ngnbToUsdRate,
+      cryptoPrice: ngnzToUsdRate,
       requestId: uniqueRequestId, // Guaranteed unique request ID
       metaData: {
         customer_id,
@@ -487,10 +487,10 @@ router.post('/purchase', async (req, res) => {
         meter_type: variation_id,
         user_id: userId,
         payment_currency: currency,
-        crypto_price: ngnbToUsdRate,
+        crypto_price: ngnzToUsdRate,
         balance_reserved: false,
-        purchase_amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
-        is_ngnb_transaction: true,
+        purchase_amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
+        is_ngnz_transaction: true,
         twofa_validated: true,
         kyc_validated: true, // Track that KYC was validated
         unique_order_id: uniqueOrderId,
@@ -514,7 +514,7 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | electricity | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | electricity | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
     logger.info(`Created electricity transaction ${pendingTransaction._id} with unique OrderID: ${uniqueOrderId}, RequestID: ${uniqueRequestId}`);
     
     // Step 9: Call eBills API FIRST (before reserving balance) - FIXED to use VTUAuth
@@ -634,7 +634,7 @@ router.post('/purchase', async (req, res) => {
           service_id,
           variation_id,
           amount,
-          amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
+          amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
           meter_type: variation_id
         }
       });
@@ -644,7 +644,7 @@ router.post('/purchase', async (req, res) => {
     try {
       logger.info(`eBills Electricity API successful for ${uniqueRequestId}. Now reserving balance...`);
       
-      await reserveUserBalance(userId, currency, ngnbAmount);
+      await reserveUserBalance(userId, currency, ngnzAmount);
       reservationMade = true;
       
       await BillTransaction.findByIdAndUpdate(
@@ -655,8 +655,8 @@ router.post('/purchase', async (req, res) => {
         }
       );
       
-      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | electricity | ${ngnbAmount} NGNB | ✅ 2FA | ✅ KYC | ✅ Reserved`);
-      logger.info(`Successfully reserved ${ngnbAmount} ${currency} for user ${userId} after eBills Electricity API success`);
+      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | electricity | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ✅ Reserved`);
+      logger.info(`Successfully reserved ${ngnzAmount} ${currency} for user ${userId} after eBills Electricity API success`);
       
     } catch (balanceError) {
       logger.error('CRITICAL: Balance reservation failed after successful eBills Electricity API call:', {
@@ -664,7 +664,7 @@ router.post('/purchase', async (req, res) => {
         unique_request_id: uniqueRequestId,
         userId,
         currency,
-        ngnbAmount,
+        ngnzAmount,
         error: balanceError.message,
         ebills_order_id: ebillsResponse.data?.order_id
       });
@@ -694,7 +694,7 @@ router.post('/purchase', async (req, res) => {
           service_name: ebillsResponse.data?.service_name,
           customer_name: ebillsResponse.data?.customer_name,
           amount: amount,
-          amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
+          amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
           customer_id: customer_id
         },
         transaction: pendingTransaction,
@@ -756,9 +756,9 @@ router.post('/purchase', async (req, res) => {
       meter_type: variation_id,
       payment_details: {
         currency: currency,
-        ngnb_amount: ngnbAmount,
-        ngnb_to_usd_rate: ngnbToUsdRate,
-        amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2)
+        ngnz_amount: ngnzAmount,
+        ngnz_to_usd_rate: ngnzToUsdRate,
+        amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2)
       },
       security_info: {
         twofa_validated: true,

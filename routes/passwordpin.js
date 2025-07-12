@@ -234,10 +234,10 @@ router.post('/password-pin', async (req, res) => {
         // DOGE_DOGE: REMOVED COMPLETELY
         MATIC_ETH: { address: null, network: null, walletReferenceId: null },
         AVAX_BSC: { address: null, network: null, walletReferenceId: null },
-        NGNB: {
-          address: "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS",
-          network: "PLACEHOLDER_FOR_NGNB_NETWORK",
-          walletReferenceId: "PLACEHOLDER_FOR_NGNB_REFERENCE",
+        NGNZ: {
+          address: "PLACEHOLDER_FOR_NGNZ_WALLET_ADDRESS",
+          network: "PLACEHOLDER_FOR_NGNZ_NETWORK",
+          walletReferenceId: "PLACEHOLDER_FOR_NGNZ_REFERENCE",
         }
       },
       // Set KYC Level 1 upon successful phone verification
@@ -426,9 +426,9 @@ router.get('/wallet-status/:userId', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Count how many wallets have been generated (excluding NGNB placeholder)
+    // Count how many wallets have been generated (excluding NGNZ placeholder)
     const walletCount = user.wallets ? Object.keys(user.wallets).filter(key => 
-      key !== 'NGNB' && user.wallets[key] && user.wallets[key].address && user.wallets[key].address !== null
+      key !== 'NGNZ' && user.wallets[key] && user.wallets[key].address && user.wallets[key].address !== null
     ).length : 0;
 
     res.json({
