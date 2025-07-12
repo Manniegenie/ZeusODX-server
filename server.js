@@ -110,6 +110,7 @@ const fetchdataplans = require('./routes/dataplans');
 const billwebhookRoutes = require('./routes/billwebhook');
 const dashboardRoutes = require('./routes/dashboard');
 const pricemarkdownRoutes = require('./adminRoutes/pricemarkdown');
+const swapRoutes = require('./routes/swap');
 
 // Public Routes (No Authentication Required)
 app.use("/signin", signinRoutes);
@@ -157,6 +158,7 @@ app.use("/electricity", authenticateToken, ElectricityRoutes);
 app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
 app.use("/dashboard", authenticateToken, dashboardRoutes);
+app.use("/swap", authenticateToken, swapRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
