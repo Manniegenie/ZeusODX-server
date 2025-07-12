@@ -17,12 +17,9 @@ const TOKEN_MAP = {
   'USDC': { currency: 'USDC', name: 'USD Coin' },
   'BNB': { currency: 'BNB', name: 'Binance Coin' },
   'MATIC': { currency: 'MATIC', name: 'Polygon' },
-  'XRP': { currency: 'XRP', name: 'Ripple' },
-  'ADA': { currency: 'ADA', name: 'Cardano' },                                                                                                                                                                                                    
   'DOGE': { currency: 'DOGE', name: 'Dogecoin' },
-  'TRX': { currency: 'TRX', name: 'TRON' },
-  'LTC': { currency: 'LTC', name: 'Litecoin' },
-  'AVAX': { currency: 'AVAX', name: 'Avalanche' }
+  'AVAX': { currency: 'AVAX', name: 'Avalanche' },
+  'NGNB': { currency: 'NGNB', name: 'Nigerian Naira Bank' }
 };
 
 function createApiClient() {
