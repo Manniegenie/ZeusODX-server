@@ -273,19 +273,12 @@ router.post('/quote', async (req, res) => {
 router.post('/quote/:quoteId', async (req, res) => {
   try {
     const { quoteId } = req.params;
-    const { userId } = req.body; // Assuming userId is passed in request body
+    const userId = req.user.id; // Get userId from JWT token like withdrawal route
 
     if (!quoteId) {
       return res.status(400).json({
         success: false,
         message: "Quote ID is required"
-      });
-    }
-
-    if (!userId) {
-      return res.status(400).json({
-        success: false,
-        message: "User ID is required"
       });
     }
 
@@ -534,9 +527,10 @@ router.get('/tokens', (req, res) => {
 });
 
 // Helper endpoint to get user balance for a specific currency
-router.get('/balance/:userId/:currency', async (req, res) => {
+router.get('/balance/:currency', async (req, res) => {
   try {
-    const { userId, currency } = req.params;
+    const { currency } = req.params;
+    const userId = req.user.id; // Get userId from JWT token
     
     const balanceInfo = await getUserAvailableBalance(userId, currency);
     
@@ -552,7 +546,7 @@ router.get('/balance/:userId/:currency', async (req, res) => {
     
   } catch (error) {
     logger.error('Error fetching user balance', {
-      userId: req.params.userId,
+      userId: req.user?.id,
       currency: req.params.currency,
       error: error.message
     });
