@@ -6,6 +6,79 @@ const { updateUserPortfolioBalance, releaseReservedBalance } = require('../servi
 const webhookAuth = require('../auth/webhookauth');
 const logger = require('../utils/logger');
 
+// Token mapping based on your User schema balance fields
+const CURRENCY_BALANCE_MAP = {
+  'BTC': 'btcBalance',
+  'ETH': 'ethBalance',
+  'SOL': 'solBalance',
+  'USDT': 'usdtBalance',
+  'USDC': 'usdcBalance',
+  'BNB': 'bnbBalance',
+  'MATIC': 'maticBalance',
+  'AVAX': 'avaxBalance',
+  'NGNZ': 'ngnzBalance'
+};
+
+const PENDING_BALANCE_MAP = {
+  'BTC': 'btcPendingBalance',
+  'ETH': 'ethPendingBalance', 
+  'SOL': 'solPendingBalance',
+  'USDT': 'usdtPendingBalance',
+  'USDC': 'usdcPendingBalance',
+  'BNB': 'bnbPendingBalance',
+  'MATIC': 'maticPendingBalance',
+  'AVAX': 'avaxPendingBalance',
+  'NGNZ': 'ngnzPendingBalance'
+};
+
+/**
+ * Updates user balance for a specific currency
+ * @param {Object} user - User document
+ * @param {String} currency - Currency code (e.g., 'BTC', 'ETH')
+ * @param {Number} amount - Amount to add (positive) or subtract (negative)
+ */
+async function updateUserBalance(user, currency, amount) {
+  const normalizedCurrency = currency.toUpperCase();
+  const balanceField = CURRENCY_BALANCE_MAP[normalizedCurrency];
+  
+  if (!balanceField) {
+    logger.warn(`No balance field mapping found for currency: ${normalizedCurrency}`);
+    return;
+  }
+  
+  const currentBalance = user[balanceField] || 0;
+  const newBalance = Math.max(0, currentBalance + amount); // Ensure no negative balances
+  
+  user[balanceField] = newBalance;
+  await user.save();
+  
+  logger.info(`Updated ${user._id} ${balanceField}: ${currentBalance} -> ${newBalance} (${amount >= 0 ? '+' : ''}${amount})`);
+}
+
+/**
+ * Updates user pending balance for a specific currency
+ * @param {Object} user - User document
+ * @param {String} currency - Currency code
+ * @param {Number} amount - Amount to subtract from pending balance
+ */
+async function updatePendingBalance(user, currency, amount) {
+  const normalizedCurrency = currency.toUpperCase();
+  const pendingBalanceField = PENDING_BALANCE_MAP[normalizedCurrency];
+  
+  if (!pendingBalanceField) {
+    logger.warn(`No pending balance field mapping found for currency: ${normalizedCurrency}`);
+    return;
+  }
+  
+  const currentPending = user[pendingBalanceField] || 0;
+  const newPending = Math.max(0, currentPending - Math.abs(amount));
+  
+  user[pendingBalanceField] = newPending;
+  await user.save();
+  
+  logger.info(`Updated ${user._id} ${pendingBalanceField}: ${currentPending} -> ${newPending} (-${Math.abs(amount)})`);
+}
+
 router.post('/transaction', webhookAuth, async (req, res) => {
   const body = req.body;
 
@@ -170,56 +243,28 @@ router.post('/transaction', webhookAuth, async (req, res) => {
       }
     }
 
-    // Reduce user's pending balance on SUCCESSFUL withdrawal
-    if (type === 'WITHDRAWAL' && status === 'SUCCESSFUL') {
+    // UPDATED: Handle successful deposit - add to user balance
+    if (type === 'DEPOSIT' && status === 'CONFIRMED') {
       try {
-        // Determine the field name for pending balance based on currency
-        const currencyKey = normalizedCurrency.toLowerCase();
-        let pendingBalanceField;
-
-        if (currencyKey.startsWith('usdt')) {
-          pendingBalanceField = 'usdtPendingBalance';
-        } else if (currencyKey.startsWith('usdc')) {
-          pendingBalanceField = 'usdcPendingBalance';
-        } else if (currencyKey.startsWith('btc')) {
-          pendingBalanceField = 'btcPendingBalance';
-        } else if (currencyKey.startsWith('sol')) {
-          pendingBalanceField = 'solPendingBalance';
-        } else if (currencyKey.startsWith('eth')) {
-          pendingBalanceField = 'ethPendingBalance';
-        } else if (currencyKey.startsWith('bnb')) {
-          pendingBalanceField = 'bnbPendingBalance';
-        } else if (currencyKey.startsWith('matic')) {
-          pendingBalanceField = 'maticPendingBalance';
-        } else if (currencyKey.startsWith('avax')) {
-          pendingBalanceField = 'avaxPendingBalance';
-        } else if (currencyKey.startsWith('ngnz')) {
-          pendingBalanceField = 'ngnzPendingBalance';
-        } else {
-          logger.warn(`Unknown currency for pending balance adjustment: ${normalizedCurrency}`);
-          pendingBalanceField = null;
-        }
-
-        if (pendingBalanceField) {
-          // Get the total amount that was reserved (withdrawal amount + fee)
-          const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
-          
-          // Calculate new pending balance safely, ensure no negatives
-          let newPendingBalance = Math.max(0, (user[pendingBalanceField] || 0) - totalReservedAmount);
-
-          // Update user document
-          user[pendingBalanceField] = newPendingBalance;
-          await user.save();
-
-          logger.info(`Reduced user ${user._id} pending balance field ${pendingBalanceField} by ${totalReservedAmount} (amount: ${amount} + fee: ${transaction.fee || 0}). New value: ${newPendingBalance}`);
-        }
+        await updateUserBalance(user, normalizedCurrency, parseFloat(amount));
+        logger.info(`Added deposit to user balance: ${amount} ${normalizedCurrency}`);
       } catch (err) {
-        logger.error(`Error reducing pending balance for user ${user._id}:`, err);
-        // Do NOT block the webhook response; just log the error
+        logger.error(`Error updating balance for deposit:`, err);
       }
     }
 
-    // Handle successful swap completion
+    // Handle successful withdrawal - reduce pending balance
+    if (type === 'WITHDRAWAL' && status === 'SUCCESSFUL') {
+      try {
+        const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
+        await updatePendingBalance(user, normalizedCurrency, totalReservedAmount);
+        logger.info(`Reduced pending balance for successful withdrawal: ${totalReservedAmount} ${normalizedCurrency}`);
+      } catch (err) {
+        logger.error(`Error reducing pending balance for withdrawal:`, err);
+      }
+    }
+
+    // UPDATED: Handle successful swap completion with balance updates
     if (['SWAP_IN', 'SWAP_OUT', 'ONRAMP', 'OFFRAMP'].includes(type) && status === 'SUCCESSFUL') {
       try {
         if (swapDetails && swapDetails.swapId) {
@@ -227,24 +272,32 @@ router.post('/transaction', webhookAuth, async (req, res) => {
           await Transaction.updateSwapStatus(swapDetails.swapId, 'SUCCESSFUL');
           logger.info(`Updated all swap transactions with swapId ${swapDetails.swapId} to SUCCESSFUL`);
           
-          // For SWAP_OUT/ONRAMP (source currency), reduce pending balance
+          // Handle balance updates for different swap transaction types
           if (type === 'SWAP_OUT' || type === 'ONRAMP') {
-            const currencyKey = normalizedCurrency.toLowerCase();
-            const pendingBalanceField = `${currencyKey}PendingBalance`;
+            // SWAP_OUT/ONRAMP: Deduct source currency from user balance and reduce pending balance
+            const deductAmount = Math.abs(parseFloat(amount));
+            const totalReservedAmount = deductAmount + (swapDetails.swapFee || 0);
             
-            if (user[pendingBalanceField] !== undefined) {
-              const totalReservedAmount = Math.abs(parseFloat(amount)) + (swapDetails.swapFee || 0);
-              const newPendingBalance = Math.max(0, (user[pendingBalanceField] || 0) - totalReservedAmount);
-              
-              user[pendingBalanceField] = newPendingBalance;
-              await user.save();
-              
-              logger.info(`Reduced user ${user._id} pending balance for successful ${type}: ${pendingBalanceField} by ${totalReservedAmount}. New value: ${newPendingBalance}`);
-            }
+            // Deduct from actual balance (the amount being swapped out)
+            await updateUserBalance(user, normalizedCurrency, -deductAmount);
+            
+            // Reduce pending balance (amount that was reserved)
+            await updatePendingBalance(user, normalizedCurrency, totalReservedAmount);
+            
+            logger.info(`SWAP_OUT: Deducted ${deductAmount} ${normalizedCurrency} from balance and reduced pending by ${totalReservedAmount}`);
+            
+          } else if (type === 'SWAP_IN' || type === 'OFFRAMP') {
+            // SWAP_IN/OFFRAMP: Add target currency to user balance
+            const addAmount = Math.abs(parseFloat(amount));
+            
+            // Add received currency to user balance
+            await updateUserBalance(user, normalizedCurrency, addAmount);
+            
+            logger.info(`SWAP_IN: Added ${addAmount} ${normalizedCurrency} to user balance`);
           }
         }
       } catch (err) {
-        logger.error(`Error handling successful swap for user ${user._id}:`, err);
+        logger.error(`Error handling successful swap balance update for user ${user._id}:`, err);
         // Do NOT block the webhook response; just log the error
       }
     }
@@ -300,7 +353,7 @@ router.post('/transaction', webhookAuth, async (req, res) => {
   }
 });
 
-// NEW: Webhook endpoint specifically for swap status updates
+// UPDATED: Webhook endpoint specifically for swap status updates with balance handling
 router.post('/swap-status', webhookAuth, async (req, res) => {
   try {
     const { swapId, status, metadata } = req.body;
@@ -326,6 +379,32 @@ router.post('/swap-status', webhookAuth, async (req, res) => {
       const user = await User.findById(swapOutTransaction.userId);
       
       if (user) {
+        // Handle successful swaps with balance updates
+        if (status === 'SUCCESSFUL') {
+          try {
+            // SWAP_OUT: Deduct source currency
+            const sourceCurrency = swapOutTransaction.currency;
+            const sourceAmount = Math.abs(swapOutTransaction.amount);
+            const swapFee = swapOutTransaction.swapDetails?.swapFee || 0;
+            
+            // Deduct from actual balance and reduce pending balance
+            await updateUserBalance(user, sourceCurrency, -sourceAmount);
+            await updatePendingBalance(user, sourceCurrency, sourceAmount + swapFee);
+            
+            // SWAP_IN: Add target currency
+            const targetCurrency = swapInTransaction.currency;
+            const targetAmount = Math.abs(swapInTransaction.amount);
+            
+            // Add to user balance
+            await updateUserBalance(user, targetCurrency, targetAmount);
+            
+            logger.info(`Swap balance updated - Deducted ${sourceAmount} ${sourceCurrency}, Added ${targetAmount} ${targetCurrency}`);
+            
+          } catch (balanceError) {
+            logger.error(`Error updating swap balances:`, balanceError);
+          }
+        }
+        
         // Handle failed swaps
         if (['FAILED', 'REJECTED'].includes(status)) {
           const sourceCurrency = swapOutTransaction.currency;

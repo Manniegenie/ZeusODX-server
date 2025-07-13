@@ -96,7 +96,7 @@ transactionSchema.pre('save', function(next) {
   next();
 });
 
-// NEW: Static method to create swap transaction pair
+// UPDATED: Static method to create swap transaction pair with obiexTransactionId support
 transactionSchema.statics.createSwapTransactions = async function(swapData) {
   const {
     userId,
@@ -111,7 +111,8 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
     markdownApplied = 0,
     swapFee = 0,
     quoteExpiresAt,
-    status = 'PENDING'
+    status = 'PENDING',
+    obiexTransactionId = null // ADDED: Support for obiexTransactionId
   } = swapData;
   
   const swapId = `swap_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -140,6 +141,7 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
     status,
     source: 'INTERNAL',
     narration: `Swap ${sourceCurrency} to ${targetCurrency}`,
+    obiexTransactionId: obiexTransactionId, // ADDED: Store obiexTransactionId
     swapDetails: {
       ...baseSwapDetails,
     }
@@ -154,6 +156,7 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
     status,
     source: 'INTERNAL',
     narration: `Swap ${sourceCurrency} to ${targetCurrency}`,
+    obiexTransactionId: obiexTransactionId, // ADDED: Store obiexTransactionId
     swapDetails: {
       ...baseSwapDetails,
     }
@@ -203,6 +206,26 @@ transactionSchema.statics.getSwapTransactions = async function(swapId) {
     swapOutTransaction: swapOut,
     swapInTransaction: swapIn,
     transactions
+  };
+};
+
+// NEW: Static method to find swap transactions by obiexTransactionId
+transactionSchema.statics.findSwapByObiexId = async function(obiexTransactionId) {
+  const transactions = await this.find({ obiexTransactionId });
+  
+  if (transactions.length === 0) {
+    return null;
+  }
+  
+  // If there are multiple transactions with the same obiexTransactionId (swap pair)
+  const swapOut = transactions.find(tx => ['SWAP_OUT', 'ONRAMP'].includes(tx.type));
+  const swapIn = transactions.find(tx => ['SWAP_IN', 'OFFRAMP'].includes(tx.type));
+  
+  return {
+    swapOutTransaction: swapOut,
+    swapInTransaction: swapIn,
+    transactions,
+    swapId: swapOut?.swapDetails?.swapId || swapIn?.swapDetails?.swapId
   };
 };
 

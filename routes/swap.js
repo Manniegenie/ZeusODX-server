@@ -4,11 +4,16 @@ const { attachObiexAuth } = require('../utils/obiexAuth');
 const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
-const { updateUserBalance, updateUserPortfolioBalance } = require('../services/portfolio');
 const { validateUserBalance, getUserAvailableBalance } = require('../services/balance');
+const { updateUserPortfolioBalance } = require('../services/portfolio');
+const Transaction = require('../models/transaction'); // Add Transaction model
+const User = require('../models/user'); // Add User model for NGNZ balance updates
 const logger = require('../utils/logger');
 
 const router = express.Router();
+
+// NOTE: Authentication is handled globally in server.js via authenticateToken middleware
+// No need for additional authentication here since req.user.id is already available
 
 const BASE_URL = process.env.OBIEX_BASE_URL || 'https://api.obiex.finance';
 const REQUEST_TIMEOUT = 10000;
@@ -25,8 +30,50 @@ const TOKEN_MAP = {
   'NGNZ': { currency: 'NGNZ', name: 'Nigerian Naira Bank' }
 };
 
+// Balance field mapping for NGNZ swaps
+const CURRENCY_BALANCE_MAP = {
+  'BTC': 'btcBalance',
+  'ETH': 'ethBalance',
+  'SOL': 'solBalance',
+  'USDT': 'usdtBalance',
+  'USDC': 'usdcBalance',
+  'BNB': 'bnbBalance',
+  'MATIC': 'maticBalance',
+  'AVAX': 'avaxBalance',
+  'NGNZ': 'ngnzBalance'
+};
+
 // Store quote data temporarily (in production, use Redis or database)
 const quoteCache = new Map();
+
+/**
+ * Updates user balance for NGNZ swaps
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code
+ * @param {Number} amount - Amount to add (positive) or subtract (negative)
+ */
+async function updateUserBalanceForNGNZ(userId, currency, amount) {
+  const normalizedCurrency = currency.toUpperCase();
+  const balanceField = CURRENCY_BALANCE_MAP[normalizedCurrency];
+  
+  if (!balanceField) {
+    logger.warn(`No balance field mapping found for currency: ${normalizedCurrency}`);
+    return;
+  }
+  
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new Error('User not found');
+  }
+  
+  const currentBalance = user[balanceField] || 0;
+  const newBalance = Math.max(0, currentBalance + amount); // Ensure no negative balances
+  
+  user[balanceField] = newBalance;
+  await user.save();
+  
+  logger.info(`NGNZ Swap: Updated ${userId} ${balanceField}: ${currentBalance} -> ${newBalance} (${amount >= 0 ? '+' : ''}${amount})`);
+}
 
 function createApiClient() {
   const client = axios.create({
@@ -131,7 +178,7 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         sourceCurrency: fromUpper,
         targetCurrency: toUpper,
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
+        expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
       };
       
     } else if (isOfframp) {
@@ -154,7 +201,7 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         sourceCurrency: fromUpper,
         targetCurrency: toUpper,
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
+        expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
       };
     }
     
@@ -249,7 +296,8 @@ router.post('/quote', async (req, res) => {
       sourceCurrency: from.toUpperCase(),
       targetCurrency: to.toUpperCase(),
       originalAmount: amount,
-      side: side
+      side: side,
+      expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
     };
     
     quoteCache.set(quoteResult.data.id, enrichedQuoteData);
@@ -273,7 +321,7 @@ router.post('/quote', async (req, res) => {
 router.post('/quote/:quoteId', async (req, res) => {
   try {
     const { quoteId } = req.params;
-    const userId = req.user.id; // Get userId from JWT token like withdrawal route
+    const userId = req.user.id; // Get userId from JWT token
 
     if (!quoteId) {
       return res.status(400).json({
@@ -303,7 +351,7 @@ router.post('/quote/:quoteId', async (req, res) => {
     // Check if this is a NGNZ quote
     const isNGNZQuote = quoteId.includes('ngnz_onramp_') || quoteId.includes('ngnz_offramp_');
     
-    let sourceCurrency, targetCurrency, payAmount, receiveAmount;
+    let sourceCurrency, targetCurrency, payAmount, receiveAmount, swapType;
     
     if (isNGNZQuote) {
       // NGNZ swap handling
@@ -311,6 +359,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       targetCurrency = quoteData.targetCurrency;
       payAmount = quoteData.amount;
       receiveAmount = quoteData.receiveAmount;
+      swapType = quoteData.type === 'onramp' ? 'ONRAMP' : 'OFFRAMP';
       
       logger.info('Processing NGNZ swap', {
         userId,
@@ -325,14 +374,13 @@ router.post('/quote/:quoteId', async (req, res) => {
       // Regular swap handling
       sourceCurrency = quoteData.sourceCurrency;
       targetCurrency = quoteData.targetCurrency;
+      swapType = 'CRYPTO_TO_CRYPTO';
       
       // Determine amounts based on side
       if (quoteData.side === 'BUY') {
-        // User is buying target currency with source currency
         payAmount = quoteData.originalAmount;
         receiveAmount = quoteData.receiveAmount || quoteData.amount;
       } else {
-        // User is selling source currency for target currency  
         payAmount = quoteData.originalAmount;
         receiveAmount = quoteData.receiveAmount || quoteData.amount;
       }
@@ -370,22 +418,11 @@ router.post('/quote/:quoteId', async (req, res) => {
       });
     }
 
-    let swapResult;
+    let swapResult = null;
+    let obiexTransactionId = null;
     
-    if (isNGNZQuote) {
-      // Handle NGNZ quote acceptance (mock processing)
-      swapResult = {
-        success: true,
-        data: {
-          id: quoteId,
-          status: 'accepted',
-          message: 'NGNZ swap quote accepted. Processing will be handled by the trading system.',
-          acceptedAt: new Date().toISOString(),
-          type: quoteData.type
-        }
-      };
-    } else {
-      // Regular quote acceptance through Obiex
+    if (!isNGNZQuote) {
+      // For regular swaps, accept quote through Obiex
       swapResult = await acceptQuote(quoteId);
       
       if (!swapResult.success) {
@@ -401,75 +438,186 @@ router.post('/quote/:quoteId', async (req, res) => {
           error: swapResult.error
         });
       }
+
+      // Extract Obiex transaction ID for webhook integration
+      if (swapResult?.data) {
+        obiexTransactionId = swapResult.data.id || swapResult.data.transactionId || swapResult.data.reference;
+      }
     }
 
-    // If swap was successful, update user balances
+    // Create swap transactions in PENDING status (webhooks will update balances for Obiex, direct update for NGNZ)
     try {
-      logger.info('Updating user balances after successful swap', {
-        userId,
-        quoteId,
-        deducting: `${payAmount} ${sourceCurrency}`,
-        adding: `${receiveAmount} ${targetCurrency}`
-      });
-
-      // Deduct the source currency
-      await updateUserBalance(userId, sourceCurrency, -payAmount);
-      
-      // Add the target currency
-      await updateUserBalance(userId, targetCurrency, receiveAmount);
-      
-      // Update overall portfolio balance
-      await updateUserPortfolioBalance(userId);
-      
-      // Clean up quote from cache
-      quoteCache.delete(quoteId);
-      
-      logger.info('Swap completed successfully', {
+      logger.info('Creating swap transactions in PENDING status', {
         userId,
         quoteId,
         sourceCurrency,
         targetCurrency,
         payAmount,
-        receiveAmount
+        receiveAmount,
+        swapType,
+        obiexTransactionId
+      });
+
+      // Calculate exchange rate
+      const exchangeRate = receiveAmount / payAmount;
+
+      // Get markdown info if available
+      let markdownApplied = 0;
+      try {
+        const markdownConfig = await GlobalSwapMarkdown.getGlobalMarkdown();
+        markdownApplied = markdownConfig.markdownPercentage || 0;
+      } catch (err) {
+        console.warn('Could not get markdown config:', err.message);
+      }
+
+      // Create swap transaction pair using your Transaction model
+      const swapTransactions = await Transaction.createSwapTransactions({
+        userId,
+        quoteId,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount: payAmount,
+        targetAmount: receiveAmount,
+        exchangeRate,
+        swapType,
+        provider: isNGNZQuote ? (swapType === 'ONRAMP' ? 'ONRAMP_SERVICE' : 'OFFRAMP_SERVICE') : 'OBIEX',
+        markdownApplied,
+        swapFee: 0, // You can calculate this if needed
+        quoteExpiresAt: new Date(quoteData.expiresAt),
+        status: 'PENDING',
+        obiexTransactionId // Pass obiexTransactionId for webhook integration
+      });
+
+      // UPDATED: For NGNZ swaps, update balances directly and mark as SUCCESSFUL
+      if (isNGNZQuote) {
+        try {
+          logger.info('Processing NGNZ swap balance updates directly', {
+            userId,
+            swapId: swapTransactions.swapId,
+            sourceCurrency,
+            targetCurrency,
+            payAmount,
+            receiveAmount
+          });
+
+          // Update transaction status to SUCCESSFUL for NGNZ swaps
+          await Transaction.updateSwapStatus(swapTransactions.swapId, 'SUCCESSFUL');
+
+          // Deduct source currency (amount being paid)
+          await updateUserBalanceForNGNZ(userId, sourceCurrency, -payAmount);
+          logger.info(`NGNZ Swap: Deducted ${payAmount} ${sourceCurrency} from user ${userId}`);
+
+          // Add target currency (amount being received)
+          await updateUserBalanceForNGNZ(userId, targetCurrency, receiveAmount);
+          logger.info(`NGNZ Swap: Added ${receiveAmount} ${targetCurrency} to user ${userId}`);
+
+          // Update portfolio balance
+          await updateUserPortfolioBalance(userId);
+          logger.info(`NGNZ Swap: Updated portfolio balance for user ${userId}`);
+
+          logger.info('NGNZ swap completed successfully with direct balance updates', {
+            userId,
+            swapId: swapTransactions.swapId,
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount: payAmount,
+            targetAmount: receiveAmount,
+            exchangeRate
+          });
+
+        } catch (balanceError) {
+          logger.error('Failed to update balances for NGNZ swap', {
+            userId,
+            swapId: swapTransactions.swapId,
+            error: balanceError.message,
+            stack: balanceError.stack
+          });
+
+          // Update transactions to FAILED status
+          await Transaction.updateSwapStatus(swapTransactions.swapId, 'FAILED');
+
+          return res.status(500).json({
+            success: false,
+            message: "NGNZ swap failed during balance update. Please contact support.",
+            error: balanceError.message
+          });
+        }
+      }
+
+      // Clean up quote from cache
+      quoteCache.delete(quoteId);
+      
+      logger.info('Swap transactions created successfully', {
+        userId,
+        quoteId,
+        swapId: swapTransactions.swapId,
+        swapOutTransactionId: swapTransactions.swapOutTransaction._id,
+        swapInTransactionId: swapTransactions.swapInTransaction._id,
+        obiexTransactionId,
+        finalStatus: isNGNZQuote ? 'SUCCESSFUL' : 'PENDING'
       });
 
       res.json({
         success: true,
-        message: "Swap completed successfully",
+        message: isNGNZQuote 
+          ? "NGNZ swap completed successfully with balance updates." 
+          : "Swap initiated successfully. Transactions created in pending status.",
         data: {
-          ...swapResult.data,
+          swapId: swapTransactions.swapId,
+          quoteId,
+          status: isNGNZQuote ? 'SUCCESSFUL' : 'PENDING',
           swapDetails: {
             sourceCurrency,
             targetCurrency,
-            payAmount,
-            receiveAmount,
-            completedAt: new Date().toISOString()
-          }
+            sourceAmount: payAmount,
+            targetAmount: receiveAmount,
+            exchangeRate,
+            swapType,
+            createdAt: new Date().toISOString(),
+            completedAt: isNGNZQuote ? new Date().toISOString() : null
+          },
+          transactions: {
+            swapOut: {
+              id: swapTransactions.swapOutTransaction._id,
+              type: swapTransactions.swapOutTransaction.type,
+              currency: sourceCurrency,
+              amount: -payAmount,
+              obiexTransactionId
+            },
+            swapIn: {
+              id: swapTransactions.swapInTransaction._id,
+              type: swapTransactions.swapInTransaction.type,
+              currency: targetCurrency,
+              amount: receiveAmount,
+              obiexTransactionId
+            }
+          },
+          obiexData: swapResult?.data || null,
+          balanceUpdated: isNGNZQuote // Indicates if balance was updated directly
         }
       });
 
-    } catch (balanceUpdateError) {
-      logger.error('Failed to update balances after successful swap', {
+    } catch (transactionError) {
+      logger.error('Failed to create swap transactions', {
         userId,
         quoteId,
-        error: balanceUpdateError.message
+        error: transactionError.message,
+        stack: transactionError.stack
       });
       
-      // This is a critical error - the swap succeeded but balance update failed
-      // In production, this should trigger an alert and manual reconciliation
       return res.status(500).json({
         success: false,
-        message: "Swap processed but balance update failed. Please contact support.",
-        error: balanceUpdateError.message,
-        criticalError: true,
-        swapResult: swapResult.data
+        message: "Failed to create swap transactions. Please contact support.",
+        error: transactionError.message
       });
     }
 
   } catch (error) {
     logger.error('Error processing swap', {
       quoteId: req.params.quoteId,
-      error: error.message
+      userId: req.user?.id,
+      error: error.message,
+      stack: error.stack
     });
     
     res.status(500).json({
@@ -554,130 +702,6 @@ router.get('/balance/:currency', async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to retrieve balance",
-      error: error.message
-    });
-  }
-});
-
-// Get user's transaction history
-router.get('/transactions/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { 
-      page = 1, 
-      limit = 20, 
-      type, 
-      currency, 
-      status,
-      startDate,
-      endDate 
-    } = req.query;
-
-    // Build query filter
-    const filter = { userId };
-    
-    if (type) {
-      if (Array.isArray(type)) {
-        filter.type = { $in: type };
-      } else {
-        filter.type = type;
-      }
-    }
-    
-    if (currency) filter.currency = currency.toUpperCase();
-    if (status) filter.status = status;
-    
-    // Date range filter
-    if (startDate || endDate) {
-      filter.createdAt = {};
-      if (startDate) filter.createdAt.$gte = new Date(startDate);
-      if (endDate) filter.createdAt.$lte = new Date(endDate);
-    }
-
-    const Transaction = require('../models/transaction');
-    
-    // Execute query with pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const transactions = await Transaction.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .lean();
-
-    // Get total count for pagination
-    const total = await Transaction.countDocuments(filter);
-    const totalPages = Math.ceil(total / parseInt(limit));
-
-    res.json({
-      success: true,
-      message: "Transaction history retrieved successfully",
-      data: transactions,
-      pagination: {
-        currentPage: parseInt(page),
-        totalPages,
-        totalItems: total,
-        itemsPerPage: parseInt(limit),
-        hasNext: parseInt(page) < totalPages,
-        hasPrev: parseInt(page) > 1
-      }
-    });
-
-  } catch (error) {
-    logger.error('Error fetching transaction history', {
-      userId: req.params.userId,
-      error: error.message
-    });
-    
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve transaction history",
-      error: error.message
-    });
-  }
-});
-
-// Get specific swap transactions by swapId
-router.get('/swap/:swapId/transactions', async (req, res) => {
-  try {
-    const { swapId } = req.params;
-    
-    const Transaction = require('../models/transaction');
-    
-    // Get all transactions related to this swap
-    const transactions = await Transaction.find({
-      'swapDetails.swapId': swapId
-    }).sort({ createdAt: -1 });
-
-    if (transactions.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No transactions found for this swap"
-      });
-    }
-
-    // Organize transactions by type
-    const swapData = {
-      swapId,
-      swapOut: transactions.find(t => ['SWAP_OUT', 'ONRAMP'].includes(t.type)),
-      swapIn: transactions.find(t => ['SWAP_IN', 'OFFRAMP'].includes(t.type)),
-      allTransactions: transactions
-    };
-
-    res.json({
-      success: true,
-      message: "Swap transactions retrieved successfully",
-      data: swapData
-    });
-
-  } catch (error) {
-    logger.error('Error fetching swap transactions', {
-      swapId: req.params.swapId,
-      error: error.message
-    });
-    
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve swap transactions",
       error: error.message
     });
   }
