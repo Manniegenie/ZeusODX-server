@@ -458,7 +458,7 @@ router.post('/quote', async (req, res) => {
 
     // Apply global markdown to reduce the amount user receives
     try {
-      const originalReceiveAmount = quoteResult.data.amountReceived || quoteResult.data.amount;
+      const originalReceiveAmount = quoteResult.data.data.amountReceived || quoteResult.data.data.amount;
       const markedDownAmount = await GlobalSwapMarkdown.applyGlobalMarkdown(originalReceiveAmount);
       
       // Server-side logging for internal monitoring
@@ -472,6 +472,7 @@ router.post('/quote', async (req, res) => {
         markdownPercentage: markdownConfig.markdownPercentage
       });
       
+      // Set receiveAmount at the level frontend expects (data.receiveAmount)
       quoteResult.data.receiveAmount = markedDownAmount;
     } catch (markdownError) {
       logger.error('POST /swap/quote - Markdown error', {
