@@ -185,19 +185,19 @@ function calculateUSDValue(swapData, cryptoPrice = null, exchangeRate = null) {
  */
 async function getObiexQuote(fromCurrency, toCurrency, amount) {
   try {
-    // Call Obiex API for quote
+    // Call Obiex API for quote using correct endpoint and fields
     const obiexApiUrl = process.env.OBIEX_API_URL || 'https://api.obiex.finance';
-    const response = await fetch(`${obiexApiUrl}/swap/quote`, {
+    const response = await fetch(`${obiexApiUrl}/trades/quote`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.OBIEX_API_KEY}`,
       },
       body: JSON.stringify({
-        from: fromCurrency,
-        to: toCurrency,
-        amount: amount,
-        side: 'SELL' // Selling fromCurrency to get toCurrency
+        sourceId: fromCurrency, // source currency id or code
+        targetId: toCurrency,   // target currency id or code
+        side: 'SELL',          // BUY or SELL
+        amount: amount
       })
     });
 
@@ -207,23 +207,28 @@ async function getObiexQuote(fromCurrency, toCurrency, amount) {
 
     const obiexData = await response.json();
     
-    if (!obiexData.success || !obiexData.data) {
-      throw new Error(`Obiex quote failed: ${obiexData.message || 'Unknown error'}`);
+    if (!obiexData || !obiexData.id) {
+      throw new Error(`Obiex quote failed: ${obiexData?.message || 'Invalid response format'}`);
     }
 
-    const { quote } = obiexData.data;
+    // Extract data from Obiex response
+    const quoteId = obiexData.id;
+    const receiveAmount = obiexData.receiveAmount || obiexData.targetAmount || 0;
+    const sourcePrice = obiexData.sourcePrice || 0;
+    const targetPrice = obiexData.targetPrice || 0;
+    const validUntil = obiexData.validUntil || obiexData.expiresAt;
     
     return {
       success: true,
       data: {
         fromAmount: amount,
-        toAmount: parseFloat(quote.receive_amount),
-        fromPrice: parseFloat(quote.from_price || 0),
-        toPrice: parseFloat(quote.to_price || 0),
-        conversionRate: parseFloat((quote.receive_amount / amount).toFixed(8)),
-        quoteId: quote.quote_id,
-        validUntil: quote.valid_until,
-        obiexQuote: quote
+        toAmount: parseFloat(receiveAmount),
+        fromPrice: parseFloat(sourcePrice),
+        toPrice: parseFloat(targetPrice),
+        conversionRate: parseFloat((receiveAmount / amount).toFixed(8)),
+        quoteId: quoteId,
+        validUntil: validUntil,
+        obiexQuote: obiexData
       }
     };
 
@@ -248,14 +253,14 @@ async function getObiexQuote(fromCurrency, toCurrency, amount) {
 async function executeObiexSwap(quoteId) {
   try {
     const obiexApiUrl = process.env.OBIEX_API_URL || 'https://api.obiex.finance';
-    const response = await fetch(`${obiexApiUrl}/swap/execute`, {
+    const response = await fetch(`${obiexApiUrl}/trades/${quoteId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.OBIEX_API_KEY}`,
       },
       body: JSON.stringify({
-        quote_id: quoteId
+        // Execute the trade using the quote ID
       })
     });
 
@@ -265,13 +270,13 @@ async function executeObiexSwap(quoteId) {
 
     const obiexData = await response.json();
     
-    if (!obiexData.success) {
-      throw new Error(`Obiex execution failed: ${obiexData.message || 'Unknown error'}`);
+    if (!obiexData) {
+      throw new Error(`Obiex execution failed: Invalid response`);
     }
 
     return {
       success: true,
-      data: obiexData.data
+      data: obiexData
     };
 
   } catch (error) {
