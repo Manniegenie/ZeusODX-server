@@ -15,7 +15,7 @@ const router = express.Router();
 // NOTE: Authentication is handled globally in server.js via authenticateToken middleware
 // No need for additional authentication here since req.user.id is already available
 
-const BASE_URL = process.env.OBIEX_BASE_URL || 'https://api.obiex.finance';
+const BASE_URL = process.env.OBIEX_BASE_URL || 'https://staging.api.obiex.finance/v1/';
 const REQUEST_TIMEOUT = 10000;
 
 const TOKEN_MAP = {
@@ -107,7 +107,7 @@ async function createQuote(sourceId, targetId, side, amount) {
 
     const apiClient = createApiClient();
     
-    const response = await apiClient.post('/v1/trades/quote', {
+    const response = await apiClient.post('/trades/quote', {
       sourceId: sourceId,
       targetId: targetId,
       side: side,
@@ -150,7 +150,7 @@ async function acceptQuote(quoteId) {
     });
 
     const apiClient = createApiClient();
-    const response = await apiClient.post(`/v1/trades/quote/${quoteId}`);
+    const response = await apiClient.post(`/trades/quote/${quoteId}`);
 
     logger.info('acceptQuote - Obiex quote accepted successfully', {
       quoteId,
@@ -439,7 +439,7 @@ router.post('/quote', async (req, res) => {
     // Use Obiex API directly to create quote
     const apiClient = createApiClient();
     
-    const response = await apiClient.post('/v1/trades/quote', {
+    const response = await apiClient.post('/trades/quote', {
       source: from.toUpperCase(),
       target: to.toUpperCase(),
       side: side,
@@ -959,62 +959,6 @@ router.post('/quote/:quoteId', async (req, res) => {
   }
 });
 
-router.get('/pairs', async (req, res) => {
-  try {
-    // LOG: Request received
-    logger.info('GET /swap/pairs - Request received', {
-      userId: req.user?.id,
-      userAgent: req.get('User-Agent'),
-      ip: req.ip
-    });
-
-    const apiClient = createApiClient();
-    
-    logger.info('GET /swap/pairs - Calling Obiex API', {
-      userId: req.user?.id
-    });
-    
-    const response = await apiClient.get('/trades/pairs');
-
-    logger.info('GET /swap/pairs - Obiex API response received', {
-      userId: req.user?.id,
-      dataLength: response.data ? response.data.length : 0,
-      obiexResponse: response.data
-    });
-
-    const finalResponse = {
-      success: true,
-      message: "Trading pairs retrieved successfully",
-      data: response.data,
-      total: response.data ? response.data.length : 0
-    };
-
-    logger.info('GET /swap/pairs - Success response sent', {
-      userId: req.user?.id,
-      total: finalResponse.total,
-      response: finalResponse
-    });
-
-    res.json(finalResponse);
-
-  } catch (error) {
-    const errorResponse = {
-      success: false,
-      message: "Failed to fetch trading pairs",
-      error: error.response?.data || error.message
-    };
-    
-    logger.error('GET /swap/pairs - Error fetching pairs from Obiex', {
-      userId: req.user?.id,
-      error: error.message,
-      obiexError: error.response?.data,
-      response: errorResponse
-    });
-    
-    res.status(500).json(errorResponse);
-  }
-});
-
 router.get('/tokens', (req, res) => {
   try {
     // LOG: Request received
@@ -1144,7 +1088,6 @@ logger.info('Swap router initialized', {
   endpoints: [
     'POST /swap/quote',
     'POST /swap/quote/:quoteId', 
-    'GET /swap/pairs',
     'GET /swap/tokens',
     'GET /swap/balance/:currency'
   ],
