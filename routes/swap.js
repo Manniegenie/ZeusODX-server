@@ -482,7 +482,8 @@ router.post('/quote', async (req, res) => {
       // Continue without markdown if there's an error
     }
 
-    // Store quote data with source/target currencies for balance validation
+    // FIXED: Store quote data with correct quote ID path
+    const quoteId = quoteResult.data.data.id;
     const enrichedQuoteData = {
       ...quoteResult.data,
       sourceCurrency: from.toUpperCase(),
@@ -492,11 +493,13 @@ router.post('/quote', async (req, res) => {
       expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
     };
     
-    quoteCache.set(quoteResult.data.id, enrichedQuoteData);
+    // FIXED: Use correct quote ID path for cache storage
+    console.log('🔍 Storing quote with ID:', quoteId);
+    quoteCache.set(quoteId, enrichedQuoteData);
 
     logger.info('POST /swap/quote - Quote cached and response ready', {
       userId: req.user?.id,
-      quoteId: quoteResult.data.id,
+      quoteId: quoteId,
       cacheSize: quoteCache.size,
       response: quoteResult.data
     });
