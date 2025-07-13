@@ -1,7 +1,6 @@
 const express = require('express');
 const axios = require('axios');
 const { attachObiexAuth } = require('../utils/obiexAuth');
-const tradingPairsService = require('../services/tradingPairsService');
 const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
@@ -48,31 +47,6 @@ function createApiClient() {
   );
 
   return client;
-}
-
-async function getCurrencyId(currencyCode) {
-  const normalizedCode = currencyCode.toUpperCase();
-  
-  if (!TOKEN_MAP[normalizedCode]) {
-    throw new Error(`Currency ${normalizedCode} not supported`);
-  }
-
-  const pairsResult = await tradingPairsService.getAllPairs();
-  
-  if (!pairsResult.success) {
-    throw new Error('Failed to fetch trading pairs');
-  }
-
-  for (const pair of pairsResult.data) {
-    if (pair.source?.code === normalizedCode) {
-      return pair.source.id;
-    }
-    if (pair.target?.code === normalizedCode) {
-      return pair.target.id;
-    }
-  }
-
-  throw new Error(`Currency ID not found for ${normalizedCode}`);
 }
 
 async function createQuote(sourceId, targetId, side, amount) {
@@ -230,28 +204,6 @@ router.post('/quote', async (req, res) => {
       });
     }
 
-    const pairCheck = await tradingPairsService.isPairAvailable(from, to);
-    if (!pairCheck.success || !pairCheck.data.available) {
-      return res.status(400).json({
-        success: false,
-        message: `Trading pair ${from}-${to} not available`
-      });
-    }
-
-    if (side === 'BUY' && !pairCheck.data.buyable) {
-      return res.status(400).json({
-        success: false,
-        message: `Buy operation not supported for ${from}-${to}`
-      });
-    }
-
-    if (side === 'SELL' && !pairCheck.data.sellable) {
-      return res.status(400).json({
-        success: false,
-        message: `Sell operation not supported for ${from}-${to}`
-      });
-    }
-
     // Check if this is a NGNZ swap and handle it differently
     const isNGNZSwap = from.toUpperCase() === 'NGNZ' || to.toUpperCase() === 'NGNZ';
     
@@ -261,18 +213,20 @@ router.post('/quote', async (req, res) => {
     }
 
     // Regular non-NGNZ swap logic
-    const sourceId = await getCurrencyId(from);
-    const targetId = await getCurrencyId(to);
+    // Use Obiex API directly to create quote
+    const apiClient = createApiClient();
+    
+    const response = await apiClient.post('/v1/trades/quote', {
+      source: from.toUpperCase(),
+      target: to.toUpperCase(),
+      side: side,
+      amount: amount
+    });
 
-    const quoteResult = await createQuote(sourceId, targetId, side, amount);
-
-    if (!quoteResult.success) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to create quote",
-        error: quoteResult.error
-      });
-    }
+    const quoteResult = {
+      success: true,
+      data: response.data
+    };
 
     // Apply global markdown to reduce the amount user receives
     try {
@@ -535,40 +489,22 @@ router.post('/quote/:quoteId', async (req, res) => {
 
 router.get('/pairs', async (req, res) => {
   try {
-    const pairsResult = await tradingPairsService.getActivePairs();
-
-    if (!pairsResult.success) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch trading pairs"
-      });
-    }
-
-    const swapPairs = pairsResult.data
-      .filter(pair => pair.isBuyable || pair.isSellable)
-      .map(pair => ({
-        id: pair.id,
-        from: pair.source.code,
-        to: pair.target.code,
-        fromName: pair.source.name,
-        toName: pair.target.name,
-        buyable: pair.isBuyable,
-        sellable: pair.isSellable
-      }));
+    const apiClient = createApiClient();
+    const response = await apiClient.get('/trades/pairs');
 
     res.json({
       success: true,
       message: "Trading pairs retrieved successfully",
-      data: swapPairs,
-      total: swapPairs.length
+      data: response.data,
+      total: response.data ? response.data.length : 0
     });
 
   } catch (error) {
-    console.error('Error fetching pairs:', error);
+    console.error('Error fetching pairs from Obiex:', error);
     res.status(500).json({
       success: false,
-      message: "Internal server error",
-      error: error.message
+      message: "Failed to fetch trading pairs",
+      error: error.response?.data || error.message
     });
   }
 });
@@ -624,6 +560,130 @@ router.get('/balance/:userId/:currency', async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to retrieve balance",
+      error: error.message
+    });
+  }
+});
+
+// Get user's transaction history
+router.get('/transactions/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { 
+      page = 1, 
+      limit = 20, 
+      type, 
+      currency, 
+      status,
+      startDate,
+      endDate 
+    } = req.query;
+
+    // Build query filter
+    const filter = { userId };
+    
+    if (type) {
+      if (Array.isArray(type)) {
+        filter.type = { $in: type };
+      } else {
+        filter.type = type;
+      }
+    }
+    
+    if (currency) filter.currency = currency.toUpperCase();
+    if (status) filter.status = status;
+    
+    // Date range filter
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate);
+    }
+
+    const Transaction = require('../models/transaction');
+    
+    // Execute query with pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const transactions = await Transaction.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    // Get total count for pagination
+    const total = await Transaction.countDocuments(filter);
+    const totalPages = Math.ceil(total / parseInt(limit));
+
+    res.json({
+      success: true,
+      message: "Transaction history retrieved successfully",
+      data: transactions,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalItems: total,
+        itemsPerPage: parseInt(limit),
+        hasNext: parseInt(page) < totalPages,
+        hasPrev: parseInt(page) > 1
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error fetching transaction history', {
+      userId: req.params.userId,
+      error: error.message
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve transaction history",
+      error: error.message
+    });
+  }
+});
+
+// Get specific swap transactions by swapId
+router.get('/swap/:swapId/transactions', async (req, res) => {
+  try {
+    const { swapId } = req.params;
+    
+    const Transaction = require('../models/transaction');
+    
+    // Get all transactions related to this swap
+    const transactions = await Transaction.find({
+      'swapDetails.swapId': swapId
+    }).sort({ createdAt: -1 });
+
+    if (transactions.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No transactions found for this swap"
+      });
+    }
+
+    // Organize transactions by type
+    const swapData = {
+      swapId,
+      swapOut: transactions.find(t => ['SWAP_OUT', 'ONRAMP'].includes(t.type)),
+      swapIn: transactions.find(t => ['SWAP_IN', 'OFFRAMP'].includes(t.type)),
+      allTransactions: transactions
+    };
+
+    res.json({
+      success: true,
+      message: "Swap transactions retrieved successfully",
+      data: swapData
+    });
+
+  } catch (error) {
+    logger.error('Error fetching swap transactions', {
+      swapId: req.params.swapId,
+      error: error.message
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve swap transactions",
       error: error.message
     });
   }
