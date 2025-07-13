@@ -1,460 +1,1129 @@
 const express = require('express');
-const axios = require('axios');
-const { attachObiexAuth } = require('../utils/obiexAuth');
-const GlobalSwapMarkdown = require('../models/swapmarkdown');
-const onrampService = require('../services/onramppriceservice');
-const offrampService = require('../services/offramppriceservice');
-const { validateUserBalance } = require('../services/balance');
-const portfolioService = require('../services/portfolio');
-const Transaction = require('../models/transaction');
-const User = require('../models/user');
-const logger = require('../utils/logger');
-
 const router = express.Router();
 
-const BASE_URL = process.env.OBIEX_BASE_URL || 'https://staging.api.obiex.finance/v1/';
-const REQUEST_TIMEOUT = 10000;
+const User = require('../models/user');
+const Transaction = require('../models/transaction');
+const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 
-const TOKEN_MAP = {
-  'BTC': { currency: 'BTC', name: 'Bitcoin' },
-  'ETH': { currency: 'ETH', name: 'Ethereum' },
-  'SOL': { currency: 'SOL', name: 'Solana' },
-  'USDT': { currency: 'USDT', name: 'Tether' },
-  'USDC': { currency: 'USDC', name: 'USD Coin' },
-  'BNB': { currency: 'BNB', name: 'Binance Coin' },
-  'MATIC': { currency: 'MATIC', name: 'Polygon' },
-  'AVAX': { currency: 'AVAX', name: 'Avalanche' },
-  'NGNZ': { currency: 'NGNZ', name: 'Nigerian Naira Bank' }
+// Import balance validation service
+const { 
+  validateUserBalance,
+  getUserAvailableBalance,
+  VALIDATION_CONFIG 
+} = require('../services/balance');
+
+// Import only used functions from offramp service
+const { 
+  calculateNairaFromCrypto,
+  getCurrentRate
+} = require('../services/offramppriceservice');
+
+// Import only used functions from onramp service
+const { 
+  calculateCryptoFromNaira,
+  getOnrampRate
+} = require('../services/onramppriceservice');
+
+// Import NGNB rate models for naira USD value calculation
+const NairaMarkdown = require('../models/offramp'); // For offramp (buy NGNB)
+const NairaMarkup = require('../models/onramp');     // For onramp (sell NGNB)
+
+const logger = require('../utils/logger');
+
+// Swap configuration constants
+const SWAP_CONFIG = {
+  MAX_PENDING_SWAPS: 3,
+  DUPLICATE_CHECK_WINDOW: 5 * 60 * 1000, // 5 minutes
+  AMOUNT_PRECISION: 8,
+  MAX_DECIMAL_PLACES: 8 // Maximum decimal places allowed
+  // Removed MAX_USD_VALUE - no limits on swap amounts
 };
 
-const quoteCache = new Map();
-
-function createApiClient() {
-  const client = axios.create({
-    baseURL: BASE_URL,
-    timeout: REQUEST_TIMEOUT,
-    headers: {
-      'Content-Type': 'application/json'
-    }
-  });
-
-  client.interceptors.request.use(attachObiexAuth);
-  client.interceptors.response.use(
-    response => response,
-    error => {
-      console.error('API Error:', error.response?.data || error.message);
-      return Promise.reject(error);
-    }
-  );
-
-  return client;
-}
-
-async function createQuote(sourceId, targetId, side, amount) {
-  try {
-    const apiClient = createApiClient();
-    const response = await apiClient.post('/trades/quote', {
-      sourceId,
-      targetId,
-      side,
-      amount
-    });
-
-    return {
-      success: true,
-      data: response.data
-    };
-  } catch (error) {
-    logger.error('createQuote - Failed', { error: error.response?.data || error.message });
-    return {
-      success: false,
-      error: error.response?.data || error.message
-    };
-  }
-}
-
-async function acceptQuote(quoteId) {
-  try {
-    const apiClient = createApiClient();
-    const response = await apiClient.post(`/trades/quote/${quoteId}`);
-    return {
-      success: true,
-      data: response.data
-    };
-  } catch (error) {
-    logger.error('acceptQuote - Failed', { quoteId, error: error.response?.data || error.message });
-    return {
-      success: false,
-      error: error.response?.data || error.message
-    };
-  }
-}
-
-async function handleNGNZSwap(req, res, from, to, amount, side) {
-  try {
-    const userId = req.user?.id;
-    const fromUpper = from.toUpperCase();
-    const toUpper = to.toUpperCase();
-    
-    const isOnramp = fromUpper === 'NGNZ' && toUpper !== 'NGNZ';
-    const isOfframp = fromUpper !== 'NGNZ' && toUpper === 'NGNZ';
-    
-    if (!isOnramp && !isOfframp) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid NGNZ swap configuration"
-      });
-    }
-    
-    let cryptoCurrency, receiveAmount, payAmount;
-    let quoteData;
-    
-    if (isOnramp) {
-      cryptoCurrency = toUpper;
-      payAmount = amount;
-      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, cryptoCurrency);
-      const onrampRate = await onrampService.getOnrampRate();
+/**
+ * Helper function to count decimal places in a string representation
+ * @param {string} value - String representation of number to check
+ * @returns {number} Number of decimal places
+ */
+function countDecimalPlaces(value) {
+  // Convert to string if not already
+  const str = String(value).trim();
+  
+  // Check for scientific notation
+  if (str.includes('e') || str.includes('E')) {
+    // Handle scientific notation (e.g., "1e-8" or "1.23e-5")
+    const parts = str.toLowerCase().split('e');
+    if (parts.length === 2) {
+      const exponent = parseInt(parts[1], 10);
+      const basePart = parts[0];
       
-      quoteData = {
-        id: `ngnz_onramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        sourceId: 'ngnz_source',
-        targetId: 'crypto_target',
-        side: side,
-        amount: payAmount,
-        receiveAmount: receiveAmount,
-        ngnzRate: onrampRate.finalPrice,
-        type: 'onramp',
-        sourceCurrency: fromUpper,
-        targetCurrency: toUpper,
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 10 * 1000).toISOString()
-      };
-    } else if (isOfframp) {
-      cryptoCurrency = fromUpper;
-      payAmount = amount;
-      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, cryptoCurrency);
-      const offrampRate = await offrampService.getCurrentRate();
-      
-      quoteData = {
-        id: `ngnz_offramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        sourceId: 'crypto_source',
-        targetId: 'ngnz_target',
-        side: side,
-        amount: payAmount,
-        receiveAmount: receiveAmount,
-        ngnzRate: offrampRate.finalPrice,
-        type: 'offramp',
-        sourceCurrency: fromUpper,
-        targetCurrency: toUpper,
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 10 * 1000).toISOString()
-      };
+      if (exponent < 0) {
+        // Negative exponent means decimal places
+        const baseDecimals = basePart.includes('.') ? basePart.split('.')[1].length : 0;
+        return Math.abs(exponent) + baseDecimals;
+      } else {
+        // Positive exponent might eliminate decimal places
+        const baseDecimals = basePart.includes('.') ? basePart.split('.')[1].length : 0;
+        return Math.max(0, baseDecimals - exponent);
+      }
     }
-    
-    quoteCache.set(quoteData.id, quoteData);
-    
-    return res.json({
+  }
+  
+  // Handle normal decimal notation
+  if (str.includes('.')) {
+    return str.split('.')[1].length;
+  }
+  
+  // No decimal point means 0 decimal places
+  return 0;
+}
+
+/**
+ * Gets the NGNB to USD rate for calculating naira dollar value
+ * @param {string} swapType - "offramp" or "onramp"
+ * @returns {Promise<Object>} Rate data
+ */
+async function getNairaUSDRate(swapType) {
+  try {
+    let rateData;
+    let rateType;
+    let effectiveRate;
+
+    if (swapType === 'offramp') {
+      // Offramp (crypto to NGNB) - use NairaMarkdown
+      rateData = await NairaMarkdown.findOne().sort({ createdAt: -1 });
+      rateType = 'offramp';
+      effectiveRate = rateData?.offrampRate;
+    } else {
+      // Onramp (NGNB to crypto) - use NairaMarkup  
+      rateData = await NairaMarkup.findOne().sort({ createdAt: -1 });
+      rateType = 'onramp';
+      effectiveRate = rateData?.onrampRate;
+    }
+
+    if (!rateData || !effectiveRate || effectiveRate <= 0) {
+      throw new Error(`No valid ${rateType} rate found for naira USD conversion`);
+    }
+
+    // NGNB to USD conversion (1 USD = effectiveRate NGNB)
+    const ngnbToUsdRate = 1 / effectiveRate;
+
+    return {
       success: true,
-      message: `NGNZ ${isOnramp ? 'onramp' : 'offramp'} quote created successfully`,
-      data: quoteData
-    });
-    
+      data: {
+        ngnbToUsdRate: parseFloat(ngnbToUsdRate.toFixed(8)),
+        usdToNgnbRate: parseFloat(effectiveRate.toFixed(2)),
+        rateType,
+        lastUpdated: rateData.updatedAt
+      }
+    };
+
   } catch (error) {
-    logger.error('handleNGNZSwap - Error', {
-      userId: req.user?.id,
+    logger.error('Error fetching naira USD rate for swap', {
+      swapType,
       error: error.message
     });
     
-    return res.status(500).json({
+    return {
       success: false,
-      message: "Failed to create NGNZ swap quote",
-      error: error.message
-    });
+      message: error.message
+    };
   }
 }
 
-router.post('/quote', async (req, res) => {
+/**
+ * Calculates USD value for swap (for tracking purposes only - no limits enforced)
+ * @param {Object} swapData - Swap parameters
+ * @param {number} cryptoPrice - Current crypto price (for offramp)
+ * @param {Object} exchangeRate - Exchange rate object (for onramp)
+ * @returns {Object} USD calculation result
+ */
+function calculateUSDValue(swapData, cryptoPrice = null, exchangeRate = null) {
+  const { fromCurrency, toCurrency, amount, swapType } = swapData;
+
   try {
-    const { from, to, amount, side } = req.body;
+    let usdValue = 0;
 
-    if (!from || !to || !amount || !side) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required fields: from, to, amount, side"
-      });
+    if (swapType === 'onramp') {
+      // NGNB to Crypto: Convert NGNB amount to USD
+      if (!exchangeRate || !exchangeRate.finalPrice) {
+        throw new Error('Exchange rate required for onramp USD calculation');
+      }
+      usdValue = amount / exchangeRate.finalPrice;
+    } else if (swapType === 'offramp') {
+      // Crypto to NGNB: Convert crypto amount to USD
+      if (!cryptoPrice || cryptoPrice <= 0) {
+        throw new Error('Crypto price required for offramp USD calculation');
+      }
+      usdValue = amount * cryptoPrice;
     }
 
-    if (typeof amount !== 'number' || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Amount must be a positive number"
-      });
-    }
-
-    if (side !== 'BUY' && side !== 'SELL') {
-      return res.status(400).json({
-        success: false,
-        message: "Side must be BUY or SELL"
-      });
-    }
-
-    const isNGNZSwap = from.toUpperCase() === 'NGNZ' || to.toUpperCase() === 'NGNZ';
-    
-    if (isNGNZSwap) {
-      return await handleNGNZSwap(req, res, from, to, amount, side);
-    }
-
-    const apiClient = createApiClient();
-    const response = await apiClient.post('/trades/quote', {
-      sourceId: from.toUpperCase(),
-      targetId: to.toUpperCase(),
-      side: side,
-      amount: amount
+    logger.debug('USD value calculation', {
+      swapType,
+      amount,
+      cryptoPrice,
+      exchangeRate: exchangeRate?.finalPrice,
+      calculatedUSDValue: usdValue
     });
 
-    const quoteResult = {
+    return {
       success: true,
-      data: response.data
+      usdValue: parseFloat(usdValue.toFixed(2))
     };
-
-    try {
-      const originalReceiveAmount = quoteResult.data.data.amountReceived || quoteResult.data.data.amount;
-      const markedDownAmount = await GlobalSwapMarkdown.applyGlobalMarkdown(originalReceiveAmount);
-      quoteResult.data.receiveAmount = markedDownAmount;
-    } catch (markdownError) {
-      logger.error('POST /swap/quote - Markdown error', { error: markdownError.message });
-    }
-
-    const quoteId = quoteResult.data.data.id;
-    const enrichedQuoteData = {
-      ...quoteResult.data,
-      sourceCurrency: from.toUpperCase(),
-      targetCurrency: to.toUpperCase(),
-      originalAmount: amount,
-      side: side,
-      expiresAt: new Date(Date.now() + 10 * 1000).toISOString()
-    };
-    
-    quoteCache.set(quoteId, enrichedQuoteData);
-
-    res.json({
-      success: true,
-      message: "Quote created successfully",
-      data: quoteResult.data
-    });
 
   } catch (error) {
-    logger.error('POST /swap/quote - Server error', { error: error.message });
+    logger.error('USD value calculation error', { 
+      swapData, 
+      error: error.message 
+    });
+    return {
+      success: false,
+      message: `Failed to calculate USD value: ${error.message}`,
+      usdValue: 0
+    };
+  }
+}
+
+/**
+ * Validates swap request parameters
+ * @param {Object} body - Request body
+ * @returns {Object} Validation result
+ */
+function validateSwapRequest(body) {
+  const { fromCurrency, toCurrency, amount, swapType } = body;
+
+  const errors = [];
+
+  // Helper function to safely convert to string and trim
+  const safeStringTrim = (value) => {
+    if (value === null || value === undefined) return '';
+    return String(value).trim();
+  };
+
+  // Convert values to strings safely
+  const fromCurrencyStr = safeStringTrim(fromCurrency);
+  const toCurrencyStr = safeStringTrim(toCurrency);
+  const swapTypeStr = safeStringTrim(swapType);
+
+  // Required fields validation
+  if (!fromCurrencyStr) {
+    errors.push('From currency is required');
+  }
+  if (!toCurrencyStr) {
+    errors.push('To currency is required');
+  }
+  if (!amount && amount !== 0) {
+    errors.push('Swap amount is required');
+  }
+  if (!swapTypeStr) {
+    errors.push('Swap type is required (onramp/offramp)');
+  }
+
+  // Convert amount to string for validation
+  const amountStr = String(amount).trim();
+  
+  // Validate amount format using regex (allows integers and decimals)
+  const amountRegex = /^(\d+\.?\d*|\.\d+)$/;
+  if (!amountRegex.test(amountStr)) {
+    errors.push('Invalid swap amount format. Amount must be a positive number.');
+  } else {
+    // Check decimal places on the original string representation
+    const decimalPlaces = countDecimalPlaces(amountStr);
+    if (decimalPlaces > SWAP_CONFIG.MAX_DECIMAL_PLACES) {
+      errors.push(`Amount cannot have more than ${SWAP_CONFIG.MAX_DECIMAL_PLACES} decimal places.`);
+    }
+
+    // Convert to number and validate value
+    const numericAmount = parseFloat(amountStr);
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      errors.push('Invalid swap amount. Amount must be a positive number.');
+    }
+  }
+
+  // Swap type validation
+  const validSwapTypes = ['onramp', 'offramp'];
+  if (swapTypeStr && !validSwapTypes.includes(swapTypeStr.toLowerCase())) {
+    errors.push('Invalid swap type. Must be either "onramp" or "offramp"');
+  }
+
+  // Currency validation
+  const upperFromCurrency = fromCurrencyStr.toUpperCase();
+  const upperToCurrency = toCurrencyStr.toUpperCase();
+
+  // For onramp: NGNB to crypto
+  if (swapTypeStr.toLowerCase() === 'onramp') {
+    if (upperFromCurrency !== 'NGNB') {
+      errors.push('For onramp swaps, from currency must be NGNB');
+    }
+    if (upperToCurrency === 'NGNB' || !SUPPORTED_TOKENS[upperToCurrency]) {
+      errors.push(`For onramp swaps, to currency must be a supported crypto: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
+    }
+  }
+
+  // For offramp: crypto to NGNB
+  if (swapTypeStr.toLowerCase() === 'offramp') {
+    if (upperToCurrency !== 'NGNB') {
+      errors.push('For offramp swaps, to currency must be NGNB');
+    }
+    if (upperFromCurrency === 'NGNB' || !SUPPORTED_TOKENS[upperFromCurrency]) {
+      errors.push(`For offramp swaps, from currency must be a supported crypto: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
+    }
+  }
+
+  // Same currency check
+  if (upperFromCurrency === upperToCurrency) {
+    errors.push('From and to currencies cannot be the same');
+  }
+
+  if (errors.length > 0) {
+    return {
+      success: false,
+      errors,
+      message: errors.join('; ')
+    };
+  }
+
+  // Parse the final numeric amount
+  const finalAmount = parseFloat(amountStr);
+
+  return {
+    success: true,
+    validatedData: {
+      fromCurrency: upperFromCurrency,
+      toCurrency: upperToCurrency,
+      amount: finalAmount,
+      swapType: swapTypeStr.toLowerCase()
+    }
+  };
+}
+
+/**
+ * Checks for duplicate pending swaps
+ * @param {string} userId - User ID
+ * @param {string} fromCurrency - From currency
+ * @param {string} toCurrency - To currency
+ * @param {number} amount - Amount
+ * @returns {Promise<Object>} Check result
+ */
+async function checkDuplicateSwap(userId, fromCurrency, toCurrency, amount) {
+  try {
+    const checkTime = new Date(Date.now() - SWAP_CONFIG.DUPLICATE_CHECK_WINDOW);
+    
+    const existingTransaction = await Transaction.findOne({
+      userId,
+      type: 'SWAP', // Updated to use 'SWAP' type
+      fromCurrency,
+      toCurrency,
+      fromAmount: amount, // Use fromAmount field instead of amount
+      status: { $in: ['PENDING', 'PROCESSING'] },
+      createdAt: { $gte: checkTime }
+    });
+
+    if (existingTransaction) {
+      return {
+        isDuplicate: true,
+        message: `A similar swap request is already pending. Transaction ID: ${existingTransaction._id}`,
+        existingTransactionId: existingTransaction._id
+      };
+    }
+
+    // Check for too many pending swaps
+    const pendingCount = await Transaction.countDocuments({
+      userId,
+      type: 'SWAP', // Updated to use 'SWAP' type
+      status: { $in: ['PENDING', 'PROCESSING'] }
+    });
+
+    if (pendingCount >= SWAP_CONFIG.MAX_PENDING_SWAPS) {
+      return {
+        isDuplicate: true,
+        message: `Too many pending swaps. Maximum allowed: ${SWAP_CONFIG.MAX_PENDING_SWAPS}`,
+        pendingCount
+      };
+    }
+
+    return { isDuplicate: false };
+  } catch (error) {
+    logger.error('Error checking duplicate swap', { userId, error: error.message });
+    throw new Error('Failed to validate swap request');
+  }
+}
+
+/**
+ * Calculates swap rates and amounts with USD tracking and naira USD value
+ * @param {Object} swapData - Swap parameters
+ * @returns {Promise<Object>} Calculation result
+ */
+async function calculateSwapRates(swapData) {
+  const { fromCurrency, toCurrency, amount, swapType } = swapData;
+
+  try {
+    let result = {};
+    let usdCalculation = {};
+    let nairaUsdValue = 0;
+    let nairaAmount = 0;
+    let cryptoUsdValue = 0;
+    let cryptoAmount = 0;
+
+    if (swapType === 'onramp') {
+      // NGNB to Crypto (onramp)
+      const prices = await getPricesWithCache([toCurrency]);
+      const cryptoPrice = prices[toCurrency];
+      
+      if (!cryptoPrice || cryptoPrice <= 0) {
+        throw new Error(`Unable to fetch current price for ${toCurrency}`);
+      }
+
+      // Get onramp rate and calculate USD value for tracking
+      const onrampRate = await getOnrampRate();
+      
+      // Calculate USD value (no limit validation)
+      usdCalculation = calculateUSDValue(swapData, null, onrampRate);
+
+      cryptoAmount = await calculateCryptoFromNaira(amount, toCurrency, cryptoPrice);
+
+      // Calculate naira USD value for onramp (NGNB is the source)
+      nairaAmount = amount; // The NGNB amount being swapped
+      const nairaRateResult = await getNairaUSDRate('onramp');
+      
+      if (nairaRateResult.success) {
+        nairaUsdValue = nairaAmount * nairaRateResult.data.ngnbToUsdRate;
+      } else {
+        logger.warn('Could not get naira USD rate for onramp', { error: nairaRateResult.message });
+        nairaUsdValue = 0; // fallback
+      }
+
+      // Calculate crypto USD value (crypto is the destination)
+      cryptoUsdValue = cryptoAmount * cryptoPrice;
+
+      result = {
+        fromAmount: amount,
+        toAmount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
+        cryptoPrice,
+        exchangeRate: onrampRate,
+        usdValue: usdCalculation.usdValue || 0,
+        nairaInvolved: {
+          amount: nairaAmount,
+          usdValue: parseFloat(nairaUsdValue.toFixed(2)),
+          currency: 'NGNB',
+          role: 'source', // NGNB is being spent
+          rate: nairaRateResult.success ? {
+            ngnbToUsdRate: nairaRateResult.data.ngnbToUsdRate,
+            usdToNgnbRate: nairaRateResult.data.usdToNgnbRate,
+            rateType: nairaRateResult.data.rateType,
+            lastUpdated: nairaRateResult.data.lastUpdated
+          } : null
+        },
+        cryptoInvolved: {
+          amount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
+          usdValue: parseFloat(cryptoUsdValue.toFixed(2)),
+          currency: toCurrency,
+          role: 'destination', // Crypto is being received
+          price: parseFloat(cryptoPrice.toFixed(2))
+        }
+      };
+
+    } else if (swapType === 'offramp') {
+      // Crypto to NGNB (offramp)
+      const prices = await getPricesWithCache([fromCurrency]);
+      const cryptoPrice = prices[fromCurrency];
+      
+      if (!cryptoPrice || cryptoPrice <= 0) {
+        throw new Error(`Unable to fetch current price for ${fromCurrency}`);
+      }
+
+      // Calculate USD value for tracking (no limit validation)
+      usdCalculation = calculateUSDValue(swapData, cryptoPrice, null);
+
+      // Get offramp rate and calculate NGNB amount
+      const offrampRate = await getCurrentRate();
+      nairaAmount = await calculateNairaFromCrypto(amount, fromCurrency, cryptoPrice);
+
+      // Calculate naira USD value for offramp (NGNB is the destination)
+      const nairaRateResult = await getNairaUSDRate('offramp');
+      
+      if (nairaRateResult.success) {
+        nairaUsdValue = nairaAmount * nairaRateResult.data.ngnbToUsdRate;
+      } else {
+        logger.warn('Could not get naira USD rate for offramp', { error: nairaRateResult.message });
+        nairaUsdValue = 0; // fallback
+      }
+
+      // Calculate crypto USD value (crypto is the source)
+      cryptoAmount = amount; // The crypto amount being swapped
+      cryptoUsdValue = cryptoAmount * cryptoPrice;
+
+      result = {
+        fromAmount: amount,
+        toAmount: parseFloat(nairaAmount.toFixed(2)),
+        cryptoPrice,
+        exchangeRate: offrampRate,
+        usdValue: usdCalculation.usdValue || 0,
+        nairaInvolved: {
+          amount: parseFloat(nairaAmount.toFixed(2)),
+          usdValue: parseFloat(nairaUsdValue.toFixed(2)),
+          currency: 'NGNB',
+          role: 'destination', // NGNB is being received
+          rate: nairaRateResult.success ? {
+            ngnbToUsdRate: nairaRateResult.data.ngnbToUsdRate,
+            usdToNgnbRate: nairaRateResult.data.usdToNgnbRate,
+            rateType: nairaRateResult.data.rateType,
+            lastUpdated: nairaRateResult.data.lastUpdated
+          } : null
+        },
+        cryptoInvolved: {
+          amount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
+          usdValue: parseFloat(cryptoUsdValue.toFixed(2)),
+          currency: fromCurrency,
+          role: 'source', // Crypto is being spent
+          price: parseFloat(cryptoPrice.toFixed(2))
+        }
+      };
+    }
+
+    return {
+      success: true,
+      data: result
+    };
+
+  } catch (error) {
+    logger.error('Error calculating swap rates', { swapData, error: error.message });
+    return {
+      success: false,
+      message: error.message
+    };
+  }
+}
+
+/**
+ * Creates swap transaction record with naira and crypto USD values
+ * @param {Object} transactionData - Transaction parameters
+ * @returns {Promise<Object>} Created transaction
+ */
+async function createSwapTransaction(transactionData) {
+  const {
+    userId,
+    fromCurrency,
+    toCurrency,
+    fromAmount,
+    toAmount,
+    swapType,
+    exchangeRate,
+    cryptoPrice,
+    usdValue,
+    nairaInvolved,
+    cryptoInvolved
+  } = transactionData;
+
+  try {
+    const transaction = await Transaction.create({
+      userId,
+      type: 'SWAP', // Now supported in the updated schema
+      currency: fromCurrency, // Required currency field (source currency)
+      fromCurrency, // Swap-specific field
+      toCurrency, // Swap-specific field
+      amount: fromAmount, // Required amount field (source amount)
+      fromAmount, // Swap-specific field
+      toAmount, // Swap-specific field
+      swapType, // Swap-specific field (onramp/offramp)
+      status: 'PENDING',
+      metadata: {
+        initiatedAt: new Date(),
+        exchangeRate: exchangeRate?.finalPrice || exchangeRate,
+        cryptoPrice,
+        priceSource: exchangeRate?.source,
+        usdValue,
+        nairaInvolved, // Add naira USD value to metadata
+        cryptoInvolved, // Add crypto USD value to metadata
+        twoFactorRequired: false
+      }
+    });
+
+    logger.info('Swap transaction created with naira and crypto USD values', {
+      transactionId: transaction._id,
+      userId,
+      fromCurrency,
+      toCurrency,
+      fromAmount,
+      toAmount,
+      swapType,
+      usdValue,
+      nairaUsdValue: nairaInvolved?.usdValue,
+      cryptoUsdValue: cryptoInvolved?.usdValue
+    });
+
+    return transaction;
+  } catch (error) {
+    logger.error('Failed to create swap transaction', {
+      userId,
+      fromCurrency,
+      toCurrency,
+      error: error.message
+    });
+    throw error;
+  }
+}
+
+/**
+ * Updates user balances for swap using atomic operations
+ * @param {Object} swapData - Swap parameters
+ * @returns {Promise<Object>} Processing result
+ */
+async function updateSwapBalances(swapData) {
+  const { userId, fromCurrency, toCurrency, fromAmount, toAmount, transactionId } = swapData;
+
+  try {
+    // Helper function to get balance field name
+    const getBalanceField = (currency) => {
+      const currencyLower = currency.toLowerCase();
+      return `${currencyLower}Balance`;
+    };
+
+    // Get balance field names
+    const fromBalanceField = getBalanceField(fromCurrency);
+    const toBalanceField = getBalanceField(toCurrency);
+
+    // Prepare atomic update query
+    const updateQuery = {
+      $inc: {
+        [fromBalanceField]: -fromAmount, // Debit source currency
+        [toBalanceField]: toAmount // Credit destination currency
+      }
+    };
+
+    // Add conditions to prevent negative balances
+    const conditions = {
+      _id: userId,
+      [fromBalanceField]: { $gte: fromAmount } // Ensure sufficient balance
+    };
+
+    // Perform atomic balance update
+    const updateResult = await User.findOneAndUpdate(
+      conditions,
+      updateQuery,
+      { 
+        new: true, 
+        runValidators: true,
+        select: `${fromBalanceField} ${toBalanceField}` // Only return balance fields for efficiency
+      }
+    );
+
+    if (!updateResult) {
+      throw new Error(`Failed to update balances - insufficient ${fromCurrency} balance or user not found`);
+    }
+
+    logger.info('Swap balances updated successfully', {
+      userId,
+      transactionId,
+      fromCurrency,
+      toCurrency,
+      fromAmount,
+      toAmount,
+      newFromBalance: updateResult[fromBalanceField],
+      newToBalance: updateResult[toBalanceField]
+    });
+
+    return { 
+      success: true,
+      balances: {
+        [fromCurrency]: updateResult[fromBalanceField],
+        [toCurrency]: updateResult[toBalanceField]
+      }
+    };
+
+  } catch (error) {
+    logger.error('Failed to update swap balances', { 
+      swapData, 
+      error: error.message,
+      stack: error.stack 
+    });
+    throw error;
+  }
+}
+
+/**
+ * GET /swap/limits - Get current swap limits and restrictions
+ */
+router.get('/limits', async (req, res) => {
+  try {
+    res.status(200).json({
+      success: true,
+      data: {
+        maxDecimalPlaces: SWAP_CONFIG.MAX_DECIMAL_PLACES,
+        maxPendingSwaps: SWAP_CONFIG.MAX_PENDING_SWAPS,
+        duplicateCheckWindow: SWAP_CONFIG.DUPLICATE_CHECK_WINDOW / 1000, // in seconds
+        supportedTokens: Object.keys(SUPPORTED_TOKENS),
+        restrictions: {
+          onramp: "NGNB → Crypto",
+          offramp: "Crypto → NGNB",
+          maxValue: "No limits", // Updated to reflect no USD limit
+          precision: `Maximum ${SWAP_CONFIG.MAX_DECIMAL_PLACES} decimal places`
+        }
+      },
+      message: 'Swap limits and restrictions retrieved successfully'
+    });
+  } catch (error) {
+    logger.error('Error fetching swap limits', { error: error.message });
     res.status(500).json({
       success: false,
-      message: "Internal server error",
-      error: error.message
+      message: 'Failed to fetch swap limits'
     });
   }
 });
 
-router.post('/quote/:quoteId', async (req, res) => {
-  try {
-    const { quoteId } = req.params;
-    const userId = req.user.id;
+/**
+ * Main swap endpoint
+ */
+router.post('/crypto', async (req, res) => {
+  const startTime = Date.now();
+  let transaction = null;
 
-    if (!quoteId) {
+  try {
+    const userId = req.user.id;
+    
+    // Validate request parameters
+    const validation = validateSwapRequest(req.body);
+    if (!validation.success) {
       return res.status(400).json({
         success: false,
-        message: "Quote ID is required"
+        message: validation.message,
+        errors: validation.errors
       });
     }
 
-    const quoteData = quoteCache.get(quoteId);
-    
-    if (!quoteData) {
+    const { fromCurrency, toCurrency, amount, swapType } = validation.validatedData;
+
+    logger.info('Processing swap request', {
+      userId,
+      fromCurrency,
+      toCurrency,
+      amount,
+      swapType
+    });
+
+    // Validate user exists
+    const user = await User.findById(userId);
+    if (!user) {
       return res.status(404).json({
         success: false,
-        message: "Quote not found or expired"
+        message: 'User not found'
       });
     }
 
-    if (quoteData.expiresAt && new Date() > new Date(quoteData.expiresAt)) {
-      quoteCache.delete(quoteId);
-      return res.status(410).json({
+    // Check for duplicate swaps
+    const duplicateCheck = await checkDuplicateSwap(userId, fromCurrency, toCurrency, amount);
+    if (duplicateCheck.isDuplicate) {
+      return res.status(400).json({
         success: false,
-        message: "Quote has expired"
+        message: duplicateCheck.message
       });
     }
 
-    const isNGNZQuote = quoteId.includes('ngnz_onramp_') || quoteId.includes('ngnz_offramp_');
-    let sourceCurrency, targetCurrency, payAmount, receiveAmount, swapType;
-    
-    if (isNGNZQuote) {
-      sourceCurrency = quoteData.sourceCurrency;
-      targetCurrency = quoteData.targetCurrency;
-      payAmount = quoteData.amount;
-      receiveAmount = quoteData.receiveAmount;
-      swapType = quoteData.type === 'onramp' ? 'ONRAMP' : 'OFFRAMP';
-    } else {
-      sourceCurrency = quoteData.sourceCurrency;
-      targetCurrency = quoteData.targetCurrency;
-      swapType = 'CRYPTO_TO_CRYPTO';
-      payAmount = quoteData.originalAmount;
-      receiveAmount = quoteData.receiveAmount || quoteData.amountReceived || quoteData.amount;
-    }
-
-    const balanceValidation = await validateUserBalance(userId, sourceCurrency, payAmount);
+    // Validate user balance using balance service
+    const balanceValidation = await validateUserBalance(userId, fromCurrency, amount, {
+      includeBalanceDetails: true,
+      logValidation: true
+    });
     
     if (!balanceValidation.success) {
       return res.status(400).json({
         success: false,
-        message: `Insufficient balance: ${balanceValidation.message}`,
-        balanceError: true,
+        message: balanceValidation.message,
         availableBalance: balanceValidation.availableBalance,
-        requiredAmount: payAmount,
-        currency: sourceCurrency
+        shortfall: balanceValidation.shortfall
       });
     }
 
-    let swapResult = null;
-    let transactionId = null;
-    
-    if (!isNGNZQuote) {
-      swapResult = await acceptQuote(quoteId);
-      
-      if (!swapResult.success) {
-        return res.status(500).json({
-          success: false,
-          message: "Failed to accept quote",
-          error: swapResult.error
-        });
-      }
+    // Calculate swap rates and amounts (includes USD tracking and naira USD value)
+    const rateCalculation = await calculateSwapRates({
+      fromCurrency,
+      toCurrency,
+      amount,
+      swapType
+    });
 
-      if (swapResult?.data) {
-        transactionId = swapResult.data.id || swapResult.data.transactionId || swapResult.data.reference;
-      }
-      // Fallback to generated ID if Obiex response lacks a valid transactionId
-      if (!transactionId) {
-        transactionId = `obiex_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        logger.warn('Obiex API returned no valid transaction ID, using fallback', { quoteId, transactionId });
-      }
-    } else {
-      transactionId = `ngnz_${swapType.toLowerCase()}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    }
-
-    try {
-      const exchangeRate = receiveAmount / payAmount;
-      let markdownApplied = 0;
-      try {
-        const markdownConfig = await GlobalSwapMarkdown.getGlobalMarkdown();
-        markdownApplied = markdownConfig.markdownPercentage || 0;
-      } catch (err) {
-        logger.warn('POST /swap/quote/:quoteId - Could not get markdown config', { error: err.message });
-      }
-
-      const swapTransactions = await Transaction.createSwapTransactions({
-        userId,
-        quoteId,
-        sourceCurrency,
-        targetCurrency,
-        sourceAmount: payAmount,
-        targetAmount: receiveAmount,
-        exchangeRate,
-        swapType,
-        provider: isNGNZQuote ? (swapType === 'ONRAMP' ? 'ONRAMP_SERVICE' : 'OFFRAMP_SERVICE') : 'OBIEX',
-        markdownApplied,
-        swapFee: 0,
-        quoteExpiresAt: new Date(quoteData.expiresAt),
-        status: 'PENDING',
-        obiexTransactionId: transactionId
-      });
-
-      if (isNGNZQuote) {
-        try {
-          await Transaction.updateSwapStatus(swapTransactions.swapId, 'SUCCESSFUL');
-          await portfolioService.updateUserBalance(userId, sourceCurrency, -payAmount);
-          await portfolioService.updateUserBalance(userId, targetCurrency, receiveAmount);
-          await portfolioService.updateUserPortfolioBalance(userId);
-        } catch (balanceError) {
-          await Transaction.updateSwapStatus(swapTransactions.swapId, 'FAILED');
-          logger.error('POST /swap/quote/:quoteId - Failed to update NGNZ balances', {
-            userId,
-            swapId: swapTransactions.swapId,
-            error: balanceError.message
-          });
-          return res.status(500).json({
-            success: false,
-            message: "NGNZ swap failed during balance update. Please contact support.",
-            error: balanceError.message
-          });
-        }
-      }
-
-      quoteCache.delete(quoteId);
-      
-      res.json({
-        success: true,
-        message: isNGNZQuote 
-          ? "NGNZ swap completed successfully with balance updates." 
-          : "Swap initiated successfully. Transactions created in pending status.",
-        data: {
-          swapId: swapTransactions.swapId,
-          quoteId,
-          status: isNGNZQuote ? 'SUCCESSFUL' : 'PENDING',
-          swapDetails: {
-            sourceCurrency,
-            targetCurrency,
-            sourceAmount: payAmount,
-            targetAmount: receiveAmount,
-            exchangeRate,
-            swapType,
-            createdAt: new Date().toISOString(),
-            completedAt: isNGNZQuote ? new Date().toISOString() : null
-          },
-          transactions: {
-            swapOut: {
-              id: swapTransactions.swapOutTransaction._id,
-              type: swapTransactions.swapOutTransaction.type,
-              currency: sourceCurrency,
-              amount: -payAmount,
-              transactionId
-            },
-            swapIn: {
-              id: swapTransactions.swapInTransaction._id,
-              type: swapTransactions.swapInTransaction.type,
-              currency: targetCurrency,
-              amount: receiveAmount,
-              transactionId
-            }
-          },
-          obiexData: swapResult?.data || null,
-          balanceUpdated: isNGNZQuote
-        }
-      });
-
-    } catch (transactionError) {
-      logger.error('POST /swap/quote/:quoteId - Failed to create swap transactions', {
-        userId,
-        quoteId,
-        error: transactionError.message
-      });
-      
-      return res.status(500).json({
+    if (!rateCalculation.success) {
+      return res.status(400).json({
         success: false,
-        message: "Failed to create swap transactions. Please contact support.",
-        error: transactionError.message
+        message: rateCalculation.message
       });
     }
+
+    const { toAmount, exchangeRate, cryptoPrice, usdValue, nairaInvolved, cryptoInvolved } = rateCalculation.data;
+
+    // Create transaction record
+    transaction = await createSwapTransaction({
+      userId,
+      fromCurrency,
+      toCurrency,
+      fromAmount: amount,
+      toAmount,
+      swapType,
+      exchangeRate,
+      cryptoPrice,
+      usdValue,
+      nairaInvolved,
+      cryptoInvolved
+    });
+
+    // Update balances using atomic operations
+    await updateSwapBalances({
+      userId,
+      fromCurrency,
+      toCurrency,
+      fromAmount: amount,
+      toAmount,
+      transactionId: transaction._id
+    });
+
+    // Update transaction status to completed
+    transaction.status = 'COMPLETED';
+    transaction.completedAt = new Date();
+    await transaction.save();
+
+    const processingTime = Date.now() - startTime;
+    logger.info('Swap processed successfully', {
+      userId,
+      transactionId: transaction._id,
+      fromCurrency,
+      toCurrency,
+      fromAmount: amount,
+      toAmount,
+      usdValue,
+      nairaUsdValue: nairaInvolved?.usdValue,
+      cryptoUsdValue: cryptoInvolved?.usdValue,
+      processingTime
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Swap completed successfully',
+      data: {
+        transactionId: transaction._id,
+        fromCurrency,
+        toCurrency,
+        fromAmount: amount,
+        toAmount,
+        swapType,
+        exchangeRate: exchangeRate?.finalPrice || exchangeRate,
+        cryptoPrice,
+        usdValue,
+        nairaInvolved, // Include naira USD value in response
+        cryptoInvolved, // Include crypto USD value in response
+        status: 'COMPLETED',
+        completedAt: transaction.completedAt
+      }
+    });
 
   } catch (error) {
-    logger.error('POST /swap/quote/:quoteId - Server error', {
-      quoteId: req.params.quoteId,
-      userId: req.user?.id,
-      error: error.message
-    });
+    const processingTime = Date.now() - startTime;
     
-    return res.status(500).json({
+    // Mark transaction as failed if it was created
+    if (transaction) {
+      try {
+        transaction.status = 'FAILED';
+        transaction.failedAt = new Date();
+        transaction.metadata.error = error.message;
+        await transaction.save();
+      } catch (saveError) {
+        logger.error('Failed to update transaction status to FAILED', {
+          transactionId: transaction._id,
+          error: saveError.message
+        });
+      }
+    }
+
+    logger.error('Swap processing failed', {
+      userId: req.user?.id,
+      transactionId: transaction?._id,
+      error: error.message,
+      stack: error.stack,
+      processingTime
+    });
+
+    res.status(500).json({
       success: false,
-      message: "Internal server error",
-      error: error.message
+      message: 'Internal server error during swap processing. Please contact support if this persists.',
+      transactionId: transaction?._id
     });
   }
 });
 
+/**
+ * Get swap quote endpoint (preview without executing)
+ */
+router.post('/quote', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Validate request parameters
+    const validation = validateSwapRequest(req.body);
+    
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+        errors: validation.errors
+      });
+    }
+
+    const { fromCurrency, toCurrency, amount, swapType } = validation.validatedData;
+
+    // Calculate swap rates (includes USD tracking and naira USD value)
+    const rateCalculation = await calculateSwapRates({
+      fromCurrency,
+      toCurrency,
+      amount,
+      swapType
+    });
+
+    if (!rateCalculation.success) {
+      return res.status(400).json({
+        success: false,
+        message: rateCalculation.message
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Swap quote calculated successfully',
+      data: {
+        ...rateCalculation.data,
+        fromCurrency,
+        toCurrency,
+        swapType,
+        quoteValidFor: '2 minutes',
+        quotedAt: new Date()
+      }
+    });
+
+  } catch (error) {
+    logger.error('Swap quote calculation failed', {
+      userId: req.user?.id,
+      error: error.message
+    });
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to calculate swap quote'
+    });
+  }
+});
+
+/**
+ * Get swap status endpoint
+ */
+router.get('/status/:transactionId', async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const userId = req.user.id;
+
+    const transaction = await Transaction.findOne({
+      _id: transactionId,
+      userId,
+      type: 'SWAP' // Updated to use 'SWAP' type
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Swap transaction not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        transactionId: transaction._id,
+        status: transaction.status,
+        fromCurrency: transaction.fromCurrency,
+        toCurrency: transaction.toCurrency,
+        fromAmount: transaction.fromAmount,
+        toAmount: transaction.toAmount,
+        swapType: transaction.swapType,
+        createdAt: transaction.createdAt,
+        completedAt: transaction.completedAt,
+        failedAt: transaction.failedAt,
+        metadata: transaction.metadata
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error fetching swap status', {
+      userId: req.user?.id,
+      transactionId: req.params.transactionId,
+      error: error.message
+    });
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch swap status'
+    });
+  }
+});
+
+/**
+ * Quick swap endpoint (simplified version for frequent traders)
+ */
+router.post('/quick', async (req, res) => {
+  const startTime = Date.now();
+  let transaction = null;
+
+  try {
+    const userId = req.user.id;
+    const { fromCurrency, toCurrency, amount } = req.body;
+    
+    // Auto-detect swap type based on currencies
+    let swapType;
+    if (fromCurrency?.toUpperCase() === 'NGNB') {
+      swapType = 'onramp';
+    } else if (toCurrency?.toUpperCase() === 'NGNB') {
+      swapType = 'offramp';
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Quick swap requires either from or to currency to be NGNB'
+      });
+    }
+
+    // Use existing validation and processing logic
+    const validation = validateSwapRequest({
+      fromCurrency,
+      toCurrency,
+      amount,
+      swapType
+    });
+
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+        errors: validation.errors
+      });
+    }
+
+    const validatedData = validation.validatedData;
+
+    logger.info('Processing quick swap request', {
+      userId,
+      ...validatedData
+    });
+
+    // Check user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Skip duplicate check for quick swaps (traders need speed)
+    // But still validate balance using balance service
+    const balanceValidation = await validateUserBalance(userId, validatedData.fromCurrency, validatedData.amount, {
+      includeBalanceDetails: true,
+      logValidation: false // Skip logging for quick swaps
+    });
+    
+    if (!balanceValidation.success) {
+      return res.status(400).json({
+        success: false,
+        message: balanceValidation.message,
+        availableBalance: balanceValidation.availableBalance
+      });
+    }
+
+    // Calculate rates and execute swap (includes USD tracking and naira USD value)
+    const rateCalculation = await calculateSwapRates(validatedData);
+
+    if (!rateCalculation.success) {
+      return res.status(400).json({
+        success: false,
+        message: rateCalculation.message
+      });
+    }
+
+    const { toAmount, exchangeRate, cryptoPrice, usdValue, nairaInvolved, cryptoInvolved } = rateCalculation.data;
+
+    // Create and process transaction
+    transaction = await createSwapTransaction({
+      userId,
+      fromCurrency: validatedData.fromCurrency,
+      toCurrency: validatedData.toCurrency,
+      fromAmount: validatedData.amount,
+      toAmount,
+      swapType: validatedData.swapType,
+      exchangeRate,
+      cryptoPrice,
+      usdValue,
+      nairaInvolved,
+      cryptoInvolved
+    });
+
+    // Update balances using atomic operations
+    await updateSwapBalances({
+      userId,
+      fromCurrency: validatedData.fromCurrency,
+      toCurrency: validatedData.toCurrency,
+      fromAmount: validatedData.amount,
+      toAmount,
+      transactionId: transaction._id
+    });
+
+    transaction.status = 'COMPLETED';
+    transaction.completedAt = new Date();
+    await transaction.save();
+
+    const processingTime = Date.now() - startTime;
+    
+    res.status(200).json({
+      success: true,
+      message: 'Quick swap completed successfully',
+      data: {
+        transactionId: transaction._id,
+        fromCurrency: validatedData.fromCurrency,
+        toCurrency: validatedData.toCurrency,
+        fromAmount: validatedData.amount,
+        toAmount,
+        swapType: validatedData.swapType,
+        exchangeRate: exchangeRate?.finalPrice || exchangeRate,
+        usdValue,
+        nairaInvolved, // Include naira USD value in response
+        cryptoInvolved, // Include crypto USD value in response
+        status: 'COMPLETED',
+        processingTime: `${processingTime}ms`
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    
+    if (transaction) {
+      try {
+        transaction.status = 'FAILED';
+        transaction.failedAt = new Date();
+        transaction.metadata.error = error.message;
+        await transaction.save();
+      } catch (saveError) {
+        logger.error('Failed to update transaction status', {
+          transactionId: transaction._id,
+          error: saveError.message
+        });
+      }
+    }
+
+    logger.error('Quick swap processing failed', {
+      userId: req.user?.id,
+      error: error.message,
+      processingTime
+    });
+
+    res.status(500).json({
+      success: false,
+      message: 'Quick swap failed. Please try again.',
+      transactionId: transaction?._id
+    });
+  }
+});
+
+// Ensure proper export
 module.exports = router;
