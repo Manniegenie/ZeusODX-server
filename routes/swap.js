@@ -458,7 +458,7 @@ router.post('/quote', async (req, res) => {
 
     // Apply global markdown to reduce the amount user receives
     try {
-      const originalReceiveAmount = quoteResult.data.receiveAmount || quoteResult.data.amount;
+      const originalReceiveAmount = quoteResult.data.amountReceived || quoteResult.data.amount;
       const markedDownAmount = await GlobalSwapMarkdown.applyGlobalMarkdown(originalReceiveAmount);
       
       // Server-side logging for internal monitoring
@@ -640,10 +640,10 @@ router.post('/quote/:quoteId', async (req, res) => {
       // Determine amounts based on side
       if (quoteData.side === 'BUY') {
         payAmount = quoteData.originalAmount;
-        receiveAmount = quoteData.receiveAmount || quoteData.amount;
+        receiveAmount = quoteData.receiveAmount || quoteData.amountReceived || quoteData.amount;
       } else {
         payAmount = quoteData.originalAmount;
-        receiveAmount = quoteData.receiveAmount || quoteData.amount;
+        receiveAmount = quoteData.receiveAmount || quoteData.amountReceived || quoteData.amount;
       }
       
       logger.info('POST /swap/quote/:quoteId - Processing regular swap', {
