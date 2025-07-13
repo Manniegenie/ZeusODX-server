@@ -1,11 +1,11 @@
-const express = require('axios');
+const express = require('express');
 const axios = require('axios');
 const { attachObiexAuth } = require('../utils/obiexAuth');
 const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { validateUserBalance } = require('../services/balance');
-const portfolioService = require('../services/portfolio'); // Updated import
+const portfolioService = require('../services/portfolio');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const logger = require('../utils/logger');
@@ -329,6 +329,11 @@ router.post('/quote/:quoteId', async (req, res) => {
       if (swapResult?.data) {
         transactionId = swapResult.data.id || swapResult.data.transactionId || swapResult.data.reference;
       }
+      // Fallback to generated ID if Obiex response lacks a valid transactionId
+      if (!transactionId) {
+        transactionId = `obiex_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        logger.warn('Obiex API returned no valid transaction ID, using fallback', { quoteId, transactionId });
+      }
     } else {
       transactionId = `ngnz_${swapType.toLowerCase()}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
@@ -363,7 +368,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       if (isNGNZQuote) {
         try {
           await Transaction.updateSwapStatus(swapTransactions.swapId, 'SUCCESSFUL');
-          // Use portfolioService.updateUserBalance for both source and target currencies
           await portfolioService.updateUserBalance(userId, sourceCurrency, -payAmount);
           await portfolioService.updateUserBalance(userId, targetCurrency, receiveAmount);
           await portfolioService.updateUserPortfolioBalance(userId);
@@ -445,7 +449,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       error: error.message
     });
     
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Internal server error",
       error: error.message
