@@ -440,8 +440,8 @@ router.post('/quote', async (req, res) => {
     const apiClient = createApiClient();
     
     const response = await apiClient.post('/trades/quote', {
-      source: from.toUpperCase(),
-      target: to.toUpperCase(),
+      sourceId: from.toUpperCase(),
+      targetId: to.toUpperCase(),
       side: side,
       amount: amount
     });
