@@ -7,6 +7,8 @@ const passport = require("passport");
 const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
+const logger = require("./utils/logger"); // Assuming logger is available
+const Transaction = require("./models/transaction"); // Import Transaction model
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,7 +29,7 @@ app.use(morgan("combined"));
 // Helmet Security
 app.use(helmet());
 
-// Raw Body Parser for Webhook Routes (before other body parsers)
+// Raw Body Parser for Webhook Routes
 app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
   req.rawBody = req.body.toString('utf8');
   next();
@@ -112,7 +114,7 @@ const dashboardRoutes = require('./routes/dashboard');
 const pricemarkdownRoutes = require('./adminRoutes/pricemarkdown');
 const swapRoutes = require('./routes/swap');
 
-// Public Routes (No Authentication Required)
+// Public Routes
 app.use("/signin", signinRoutes);
 app.use("/signup", signupRoutes);
 app.use("/refresh-token", refreshtokenRoutes);
@@ -120,11 +122,11 @@ app.use("/verify-otp", verifyotpRoutes);
 app.use("/passwordpin", passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
 
-// Webhook Routes (Special Rate Limiting)
+// Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
 
-// Admin/Utility Routes (No Authentication)
+// Admin/Utility Routes
 app.use("/deleteuser", deleteuserRoutes);
 app.use("/updateuseraddress", updateuseraddressRoutes);
 app.use("/fetch-wallet", fetchwalletRoutes);
@@ -141,7 +143,7 @@ app.use("/naira-price", nairaPriceRouter);
 app.use("/onramp", onrampRoutes);
 app.use("/offramp", offrampRoutes);
 
-// Protected Routes (JWT Required)
+// Protected Routes
 app.use("/logout", authenticateToken, logoutRoutes);
 app.use("/username", authenticateToken, usernameRoutes);
 app.use("/balance", authenticateToken, balanceRoutes);
@@ -165,6 +167,84 @@ app.get("/", (req, res) => {
   res.send(`🚀 API Running at ${new Date().toISOString()}`);
 });
 
+// Database Migration for Duplicate obiexTransactionId
+const migrateTransactions = async () => {
+  try {
+    logger.info('Starting transaction migration to fix duplicate obiexTransactionId values');
+
+    // Find transactions with legacy obiex_ IDs (not ending in _out or _in)
+    const legacyTransactions = await Transaction.find({
+      obiexTransactionId: { $regex: '^obiex_', $not: { $regex: '_out$|_in$' } }
+    });
+
+    if (legacyTransactions.length === 0) {
+      logger.info('No legacy transactions with obiex_ IDs found, migration not needed');
+      return;
+    }
+
+    logger.info(`Found ${legacyTransactions.length} legacy transactions to migrate`);
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        for (const tx of legacyTransactions) {
+          const { swapDetails, type } = tx;
+          if (swapDetails && swapDetails.swapId) {
+            // Check if both SWAP_OUT and SWAP_IN exist for the swapId
+            const { swapOutTransaction, swapInTransaction } = await Transaction.getSwapTransactions(swapDetails.swapId);
+            
+            if (swapOutTransaction && swapInTransaction) {
+              // Update SWAP_OUT and SWAP_IN to have unique IDs
+              if (swapOutTransaction.obiexTransactionId && !swapOutTransaction.obiexTransactionId.endsWith('_out')) {
+                await Transaction.updateOne(
+                  { _id: swapOutTransaction._id },
+                  { $set: { obiexTransactionId: `${swapOutTransaction.obiexTransactionId}_out`, updatedAt: new Date() } },
+                  { session }
+                );
+                logger.info(`Updated SWAP_OUT transaction ${swapOutTransaction._id} to obiexTransactionId: ${swapOutTransaction.obiexTransactionId}_out`);
+              }
+              if (swapInTransaction.obiexTransactionId && !swapInTransaction.obiexTransactionId.endsWith('_in')) {
+                await Transaction.updateOne(
+                  { _id: swapInTransaction._id },
+                  { $set: { obiexTransactionId: `${swapInTransaction.obiexTransactionId}_in`, updatedAt: new Date() } },
+                  { session }
+                );
+                logger.info(`Updated SWAP_IN transaction ${swapInTransaction._id} to obiexTransactionId: ${swapInTransaction.obiexTransactionId}_in`);
+              }
+            } else if (type === 'SWAP_OUT' || type === 'SWAP_IN') {
+              // Handle orphaned transactions (e.g., only SWAP_OUT exists)
+              const newId = `${tx.obiexTransactionId}_${type === 'SWAP_OUT' ? 'out' : 'in'}`;
+              await Transaction.updateOne(
+                { _id: tx._id },
+                { $set: { obiexTransactionId: newId, updatedAt: new Date() } },
+                { session }
+              );
+              logger.info(`Updated orphaned ${type} transaction ${tx._id} to obiexTransactionId: ${newId}`);
+            }
+          } else {
+            // Non-swap transactions with obiex_ IDs (e.g., DEPOSIT, WITHDRAWAL)
+            const newId = `legacy_${tx.obiexTransactionId}_${Math.random().toString(36).substr(2, 9)}`;
+            await Transaction.updateOne(
+              { _id: tx._id },
+              { $set: { obiexTransactionId: newId, updatedAt: new Date() } },
+              { session }
+            );
+            logger.info(`Updated non-swap transaction ${tx._id} to obiexTransactionId: ${newId}`);
+          }
+        }
+      });
+      logger.info('Transaction migration completed successfully');
+    } catch (error) {
+      logger.error('Transaction migration failed', { error: error.message });
+      throw error;
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    logger.error('Error during transaction migration', { error: error.message });
+  }
+};
+
 // Global Error Handler
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
@@ -176,6 +256,9 @@ const startServer = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
+
+    // Run migration before starting the server
+    await migrateTransactions();
     
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);

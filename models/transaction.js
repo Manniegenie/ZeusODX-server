@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const portfolioService = require('../services/portfolio'); // Added import for balance updates
+const portfolioService = require('../services/portfolio');
 const logger = require('../utils/logger');
 
 const transactionSchema = new mongoose.Schema({
@@ -55,8 +55,8 @@ const transactionSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
+// Define indexes, excluding redundant obiexTransactionId index
 transactionSchema.index({ transactionId: 1 }, { sparse: true });
-transactionSchema.index({ obiexTransactionId: 1 }, { unique: true, sparse: true });
 transactionSchema.index({ reference: 1 }, { sparse: true });
 transactionSchema.index({ userId: 1, type: 1, status: 1 });
 transactionSchema.index({ userId: 1, createdAt: -1 });
@@ -90,7 +90,6 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
   } = swapData;
 
   const swapId = `swap_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  // Generate unique obiexTransactionId for each transaction
   const baseTransactionId = obiexTransactionId || `swap_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const swapOutTransactionId = `${baseTransactionId}_out`;
   const swapInTransactionId = `${baseTransactionId}_in`;
@@ -111,7 +110,6 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
     quoteAcceptedAt: new Date()
   };
 
-  // Create SWAP_OUT transaction (debit)
   const swapOutTransaction = new this({
     userId,
     type: swapType === 'ONRAMP' ? 'ONRAMP' : 'SWAP_OUT',
@@ -124,7 +122,6 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
     swapDetails: { ...baseSwapDetails }
   });
 
-  // Create SWAP_IN transaction (credit)
   const swapInTransaction = new this({
     userId,
     type: swapType === 'OFFRAMP' ? 'OFFRAMP' : 'SWAP_IN',
@@ -137,21 +134,19 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
     swapDetails: { ...baseSwapDetails }
   });
 
-  // Save both transactions in a session for atomicity
   const session = await mongoose.startSession();
   try {
+    let result;
     await session.withTransaction(async () => {
       const savedSwapOut = await swapOutTransaction.save({ session });
       const savedSwapIn = await swapInTransaction.save({ session });
 
-      // Link transactions to each other
       savedSwapOut.relatedTransactionId = savedSwapIn._id;
       savedSwapIn.relatedTransactionId = savedSwapOut._id;
 
       await savedSwapOut.save({ session });
       await savedSwapIn.save({ session });
 
-      // For crypto-to-crypto swaps, update balances if status is SUCCESSFUL
       if (swapType === 'CRYPTO_TO_CRYPTO' && status === 'SUCCESSFUL') {
         await portfolioService.updateUserBalance(userId, sourceCurrency, -Math.abs(sourceAmount), session);
         await portfolioService.updateUserBalance(userId, targetCurrency, Math.abs(targetAmount), session);
@@ -159,9 +154,9 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
         logger.info(`Crypto-to-crypto swap balance updated: Deducted ${sourceAmount} ${sourceCurrency}, Added ${targetAmount} ${targetCurrency}`, { userId, swapId });
       }
 
-      return { swapOutTransaction: savedSwapOut, swapInTransaction: savedSwapIn, swapId };
+      result = { swapOutTransaction: savedSwapOut, swapInTransaction: savedSwapIn, swapId };
     });
-    return { swapOutTransaction, swapInTransaction, swapId };
+    return result;
   } catch (error) {
     logger.error('Failed to create swap transactions', { userId, quoteId, error: error.message });
     throw error;
@@ -186,7 +181,6 @@ transactionSchema.statics.updateSwapStatus = async function(swapId, newStatus) {
         { session }
       );
 
-      // For crypto-to-crypto swaps, update balances when status becomes SUCCESSFUL
       if (newStatus === 'SUCCESSFUL') {
         const { swapOutTransaction, swapInTransaction } = await this.getSwapTransactions(swapId);
         if (swapOutTransaction && swapInTransaction && swapOutTransaction.swapDetails.swapType === 'CRYPTO_TO_CRYPTO') {
