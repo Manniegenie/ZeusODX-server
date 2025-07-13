@@ -291,7 +291,11 @@ async function executeObiexSwap(quoteId) {
  * Validates swap request parameters
  */
 function validateSwapRequest(body) {
-  const { fromCurrency, toCurrency, amount, swapType } = body;
+  // Handle both field name variations
+  const fromCurrency = body.fromCurrency || body.from;
+  const toCurrency = body.toCurrency || body.to;
+  const amount = body.amount || body.quantity || body.value;
+  const swapType = body.swapType || body.swap_type || body.type;
 
   const errors = [];
 
@@ -1180,7 +1184,11 @@ router.post('/quick', async (req, res) => {
 
   try {
     const userId = req.user.id;
-    const { fromCurrency, toCurrency, amount } = req.body;
+    
+    // Handle both field name variations
+    const fromCurrency = req.body.fromCurrency || req.body.from;
+    const toCurrency = req.body.toCurrency || req.body.to;
+    const amount = req.body.amount || req.body.quantity || req.body.value;
     
     // Auto-detect swap type based on currencies
     let swapType;
