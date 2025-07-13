@@ -187,7 +187,24 @@ async function getObiexQuote(fromCurrency, toCurrency, amount) {
   try {
     // Call Obiex API for quote using correct endpoint and fields
     const obiexApiUrl = process.env.OBIEX_API_URL || 'https://api.obiex.finance';
-    const response = await fetch(`${obiexApiUrl}/trades/quote`, {
+    
+    // Properly construct URL to avoid double slashes
+    const baseUrl = obiexApiUrl.endsWith('/') ? obiexApiUrl.slice(0, -1) : obiexApiUrl;
+    const endpoint = '/trades/quote';
+    const fullUrl = `${baseUrl}${endpoint}`;
+    
+    // Log the request for debugging
+    logger.info('Making Obiex quote request', {
+      baseUrl,
+      endpoint,
+      fullUrl,
+      fromCurrency,
+      toCurrency,
+      amount,
+      apiKeyExists: !!process.env.OBIEX_API_KEY
+    });
+    
+    const response = await fetch(fullUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -201,11 +218,27 @@ async function getObiexQuote(fromCurrency, toCurrency, amount) {
       })
     });
 
+    // Log response details for debugging
+    logger.info('Obiex API response', {
+      status: response.status,
+      statusText: response.statusText,
+      url: fullUrl
+    });
+
     if (!response.ok) {
-      throw new Error(`Obiex API error: ${response.status} ${response.statusText}`);
+      const errorText = await response.text();
+      logger.error('Obiex API error response', {
+        status: response.status,
+        statusText: response.statusText,
+        errorBody: errorText,
+        url: fullUrl
+      });
+      throw new Error(`Obiex API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
     const obiexData = await response.json();
+    
+    logger.info('Obiex API success response', { obiexData });
     
     if (!obiexData || !obiexData.id) {
       throw new Error(`Obiex quote failed: ${obiexData?.message || 'Invalid response format'}`);
@@ -253,7 +286,18 @@ async function getObiexQuote(fromCurrency, toCurrency, amount) {
 async function executeObiexSwap(quoteId) {
   try {
     const obiexApiUrl = process.env.OBIEX_API_URL || 'https://api.obiex.finance';
-    const response = await fetch(`${obiexApiUrl}/trades/${quoteId}`, {
+    
+    // Properly construct URL to avoid double slashes
+    const baseUrl = obiexApiUrl.endsWith('/') ? obiexApiUrl.slice(0, -1) : obiexApiUrl;
+    const endpoint = `/trades/${quoteId}`;
+    const fullUrl = `${baseUrl}${endpoint}`;
+    
+    logger.info('Executing Obiex swap', {
+      quoteId,
+      fullUrl
+    });
+    
+    const response = await fetch(fullUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -265,7 +309,14 @@ async function executeObiexSwap(quoteId) {
     });
 
     if (!response.ok) {
-      throw new Error(`Obiex execution error: ${response.status} ${response.statusText}`);
+      const errorText = await response.text();
+      logger.error('Obiex execution error', {
+        status: response.status,
+        statusText: response.statusText,
+        errorBody: errorText,
+        url: fullUrl
+      });
+      throw new Error(`Obiex execution error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
     const obiexData = await response.json();
