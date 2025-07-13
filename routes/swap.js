@@ -346,7 +346,7 @@ router.post('/quote/:quoteId', async (req, res) => {
     }
 
     let swapResult = null;
-    let obiexTransactionId = null;
+    let transactionId = null;
     
     if (!isNGNZQuote) {
       swapResult = await acceptQuote(quoteId);
@@ -360,8 +360,10 @@ router.post('/quote/:quoteId', async (req, res) => {
       }
 
       if (swapResult?.data) {
-        obiexTransactionId = swapResult.data.id || swapResult.data.transactionId || swapResult.data.reference;
+        transactionId = swapResult.data.id || swapResult.data.transactionId || swapResult.data.reference;
       }
+    } else {
+      transactionId = `ngnz_${swapType.toLowerCase()}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 
     try {
@@ -388,7 +390,7 @@ router.post('/quote/:quoteId', async (req, res) => {
         swapFee: 0,
         quoteExpiresAt: new Date(quoteData.expiresAt),
         status: 'PENDING',
-        obiexTransactionId
+        obiexTransactionId: transactionId
       });
 
       if (isNGNZQuote) {
@@ -439,14 +441,14 @@ router.post('/quote/:quoteId', async (req, res) => {
               type: swapTransactions.swapOutTransaction.type,
               currency: sourceCurrency,
               amount: -payAmount,
-              obiexTransactionId
+              transactionId
             },
             swapIn: {
               id: swapTransactions.swapInTransaction._id,
               type: swapTransactions.swapInTransaction.type,
               currency: targetCurrency,
               amount: receiveAmount,
-              obiexTransactionId
+              transactionId
             }
           },
           obiexData: swapResult?.data || null,
