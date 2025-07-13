@@ -1,11 +1,11 @@
-const express = require('express');
+const express = require('axios');
 const axios = require('axios');
 const { attachObiexAuth } = require('../utils/obiexAuth');
 const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { validateUserBalance } = require('../services/balance');
-const { updateUserPortfolioBalance } = require('../services/portfolio');
+const portfolioService = require('../services/portfolio'); // Updated import
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const logger = require('../utils/logger');
@@ -27,40 +27,7 @@ const TOKEN_MAP = {
   'NGNZ': { currency: 'NGNZ', name: 'Nigerian Naira Bank' }
 };
 
-const CURRENCY_BALANCE_MAP = {
-  'BTC': 'btcBalance',
-  'ETH': 'ethBalance',
-  'SOL': 'solBalance',
-  'USDT': 'usdtBalance',
-  'USDC': 'usdcBalance',
-  'BNB': 'bnbBalance',
-  'MATIC': 'maticBalance',
-  'AVAX': 'avaxBalance',
-  'NGNZ': 'ngnzBalance'
-};
-
 const quoteCache = new Map();
-
-async function updateUserBalanceForNGNZ(userId, currency, amount) {
-  const normalizedCurrency = currency.toUpperCase();
-  const balanceField = CURRENCY_BALANCE_MAP[normalizedCurrency];
-  
-  if (!balanceField) {
-    logger.warn(`No balance field mapping for currency: ${normalizedCurrency}`);
-    return;
-  }
-  
-  const user = await User.findById(userId);
-  if (!user) {
-    throw new Error('User not found');
-  }
-  
-  const currentBalance = user[balanceField] || 0;
-  const newBalance = Math.max(0, currentBalance + amount);
-  
-  user[balanceField] = newBalance;
-  await user.save();
-}
 
 function createApiClient() {
   const client = axios.create({
@@ -396,9 +363,10 @@ router.post('/quote/:quoteId', async (req, res) => {
       if (isNGNZQuote) {
         try {
           await Transaction.updateSwapStatus(swapTransactions.swapId, 'SUCCESSFUL');
-          await updateUserBalanceForNGNZ(userId, sourceCurrency, -payAmount);
-          await updateUserBalanceForNGNZ(userId, targetCurrency, receiveAmount);
-          await updateUserPortfolioBalance(userId);
+          // Use portfolioService.updateUserBalance for both source and target currencies
+          await portfolioService.updateUserBalance(userId, sourceCurrency, -payAmount);
+          await portfolioService.updateUserBalance(userId, targetCurrency, receiveAmount);
+          await portfolioService.updateUserPortfolioBalance(userId);
         } catch (balanceError) {
           await Transaction.updateSwapStatus(swapTransactions.swapId, 'FAILED');
           logger.error('POST /swap/quote/:quoteId - Failed to update NGNZ balances', {
