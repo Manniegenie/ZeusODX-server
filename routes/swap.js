@@ -191,25 +191,16 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
     const fromUpper = from.toUpperCase();
     const toUpper = to.toUpperCase();
     
-    // Determine if this is onramp (NGNZ -> crypto) or offramp (crypto -> NGNZ)
-    const isOnramp = fromUpper === 'NGNZ' && toUpper !== 'NGNZ';
-    const isOfframp = fromUpper !== 'NGNZ' && toUpper === 'NGNZ';
+    // RESTRICTION: Only allow USDT <-> NGNZ swaps for now
+    const isValidPair = (fromUpper === 'USDT' && toUpper === 'NGNZ') || (fromUpper === 'NGNZ' && toUpper === 'USDT');
     
-    logger.info('handleNGNZSwap - Swap type determined', {
-      userId,
-      isOnramp,
-      isOfframp,
-      fromUpper,
-      toUpper
-    });
-    
-    if (!isOnramp && !isOfframp) {
+    if (!isValidPair) {
       const errorResponse = {
         success: false,
-        message: "Invalid NGNZ swap configuration"
+        message: "Currently only USDT-NGNZ swaps are supported"
       };
       
-      logger.warn('handleNGNZSwap - Invalid NGNZ swap configuration', {
+      logger.warn('handleNGNZSwap - Invalid pair, only USDT-NGNZ allowed', {
         userId,
         fromUpper,
         toUpper,
@@ -219,81 +210,95 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       return res.status(400).json(errorResponse);
     }
     
-    let cryptoCurrency, receiveAmount, payAmount;
+    // Determine if this is onramp (NGNZ -> crypto) or offramp (crypto -> NGNZ)
+    const isOnramp = fromUpper === 'NGNZ' && toUpper === 'USDT';
+    const isOfframp = fromUpper === 'USDT' && toUpper === 'NGNZ';
+    
+    logger.info('handleNGNZSwap - Swap type determined', {
+      userId,
+      isOnramp,
+      isOfframp,
+      fromUpper,
+      toUpper
+    });
+    
+    let receiveAmount, payAmount, rate;
     let quoteData;
     
     if (isOnramp) {
-      // User is paying NGNZ to get crypto (onramp)
-      cryptoCurrency = toUpper;
+      // User is selling NGNZ to get USDT (onramp)
       payAmount = amount; // Amount of NGNZ user is paying
       
       logger.info('handleNGNZSwap - Processing onramp calculation', {
         userId,
-        cryptoCurrency,
         payAmount
       });
       
-      // Calculate how much crypto user gets for their NGNZ using onramp service
-      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, cryptoCurrency);
+      // For USDT: 1 USDT = 1600 NGNZ (example rate)
+      // So if user pays 1600 NGNZ, they get 1 USDT
       const onrampRate = await onrampService.getOnrampRate();
+      rate = onrampRate.finalPrice || 1600; // Fallback rate
+      
+      receiveAmount = payAmount / rate; // NGNZ amount / rate = USDT amount
       
       logger.info('handleNGNZSwap - Onramp calculation completed', {
         userId,
         payAmount,
         receiveAmount,
-        rate: onrampRate.finalPrice
+        rate
       });
       
       quoteData = {
         id: `ngnz_onramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         sourceId: 'ngnz_source',
-        targetId: 'crypto_target',
+        targetId: 'usdt_target',
         side: side,
         amount: payAmount,
         receiveAmount: receiveAmount,
-        ngnzRate: onrampRate.finalPrice,
+        ngnzRate: rate,
         type: 'onramp',
         sourceCurrency: fromUpper,
         targetCurrency: toUpper,
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
+        expiresAt: new Date(Date.now() + 30 * 1000).toISOString() // 30 seconds
       };
       
     } else if (isOfframp) {
-      // User is selling crypto to get NGNZ (offramp)
-      cryptoCurrency = fromUpper;
-      payAmount = amount; // Amount of crypto user is selling
+      // User is selling USDT to get NGNZ (offramp)
+      payAmount = amount; // Amount of USDT user is selling
       
       logger.info('handleNGNZSwap - Processing offramp calculation', {
         userId,
-        cryptoCurrency,
         payAmount
       });
       
-      // Calculate how much NGNZ user gets for their crypto using offramp service
-      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, cryptoCurrency);
+      // For USDT: 1 USDT = 1600 NGNZ (example rate)
+      // So if user pays 1 USDT, they get 1600 NGNZ
       const offrampRate = await offrampService.getCurrentRate();
+      rate = offrampRate.finalPrice || 1600; // Fallback rate
+      
+      receiveAmount = payAmount * rate; // USDT amount * rate = NGNZ amount
       
       logger.info('handleNGNZSwap - Offramp calculation completed', {
         userId,
         payAmount,
         receiveAmount,
-        rate: offrampRate.finalPrice
+        rate
       });
       
       quoteData = {
         id: `ngnz_offramp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        sourceId: 'crypto_source',
+        sourceId: 'usdt_source',
         targetId: 'ngnz_target',
         side: side,
         amount: payAmount,
         receiveAmount: receiveAmount,
-        ngnzRate: offrampRate.finalPrice,
+        ngnzRate: rate,
         type: 'offramp',
         sourceCurrency: fromUpper,
         targetCurrency: toUpper,
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
+        expiresAt: new Date(Date.now() + 30 * 1000).toISOString() // 30 seconds
       };
     }
     
@@ -307,10 +312,26 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       quoteData: quoteData
     });
     
+    // Format response to match frontend expectations
     const finalResponse = {
       success: true,
       message: `NGNZ ${isOnramp ? 'onramp' : 'offramp'} quote created successfully`,
-      data: quoteData
+      data: {
+        data: {
+          id: quoteData.id,
+          amount: payAmount,
+          amountReceived: receiveAmount,
+          rate: rate,
+          side: side,
+          sourceId: quoteData.sourceId,
+          targetId: quoteData.targetId,
+          expiresIn: 30,
+          expiryDate: quoteData.expiresAt,
+          acceptable: true
+        },
+        receiveAmount: receiveAmount,
+        message: "Ok"
+      }
     };
 
     logger.info('handleNGNZSwap - NGNZ swap quote created successfully', {
@@ -319,7 +340,7 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       pair: `${from}-${to}`,
       payAmount,
       receiveAmount,
-      rate: quoteData.ngnzRate,
+      rate,
       quoteId: quoteData.id,
       response: finalResponse
     });
