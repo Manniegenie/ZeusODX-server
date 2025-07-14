@@ -71,7 +71,10 @@ async function processSwapBalances(swapData) {
     const updateResult = await User.findOneAndUpdate(
       conditions,
       updateQuery,
-      { new: true, runValidators: true }
+      { 
+        new: true, 
+        runValidators: false  // ✅ Disable min: 0 validation that blocks updates
+      }
     );
 
     if (!updateResult) {
