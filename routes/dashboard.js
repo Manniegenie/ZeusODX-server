@@ -21,22 +21,22 @@ router.get('/dashboard', async (req, res) => {
     };
     const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
 
-    // Get all supported token symbols for pricing - DOGE REMOVED
+    // Get all supported token symbols for pricing
     const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX'];
     
-    // Fetch current token prices and NGNB rate
-    const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
+    // Fetch current token prices and NGNZ rate
+    const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
       getPricesWithCache(tokenSymbols),
       getCurrentRate()
     ]);
 
     // Handle pricing data
     const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
-    const ngnbRate = ngnbRateInfo.status === 'fulfilled' ? ngnbRateInfo.value : null;
+    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
     
-    // Add NGNB pricing
-    if (ngnbRate && ngnbRate.finalPrice) {
-      prices.NGNB = ngnbRate.finalPrice;
+    // Add NGNZ pricing (fixed from NGNB to NGNZ)
+    if (ngnzRate && ngnzRate.finalPrice) {
+      prices.NGNZ = ngnzRate.finalPrice;
     }
 
     // Store current prices in database
@@ -128,7 +128,6 @@ router.get('/dashboard', async (req, res) => {
             priceChange12h: changes12Hour.BNB ? changes12Hour.BNB.percentageChange : null,
             priceChangeData: changes12Hour.BNB || null
           },
-          // DOGE: REMOVED COMPLETELY
           MATIC: {
             balance: user.maticBalance,
             balanceUSD: user.maticBalanceUSD,
@@ -145,13 +144,23 @@ router.get('/dashboard', async (req, res) => {
             priceChange12h: changes12Hour.AVAX ? changes12Hour.AVAX.percentageChange : null,
             priceChangeData: changes12Hour.AVAX || null
           },
-          NGNB: {
-            balance: user.ngnbBalance,
-            balanceUSD: user.ngnbBalanceUSD,
-            pendingBalance: user.ngnbPendingBalance,
-            currentPrice: prices.NGNB || 0,
+          // Fixed: Now properly using user.ngnzBalance (from user model)
+          NGNZ: {
+            balance: user.ngnzBalance,
+            balanceUSD: user.ngnzBalanceUSD,
+            pendingBalance: user.ngnzPendingBalance,
+            currentPrice: prices.NGNZ || 0,
             priceChange12h: null,
             priceChangeData: null
+          },
+          // Added DOGE since it exists in user model but was missing
+          DOGE: {
+            balance: user.dogeBalance,
+            balanceUSD: user.dogeBalanceUSD,
+            pendingBalance: user.dogePendingBalance,
+            currentPrice: prices.DOGE || 0,
+            priceChange12h: changes12Hour.DOGE ? changes12Hour.DOGE.percentageChange : null,
+            priceChangeData: changes12Hour.DOGE || null
           }
         }
       },
@@ -159,10 +168,11 @@ router.get('/dashboard', async (req, res) => {
       market: {
         prices: prices,
         priceChanges12h: changes12Hour,
-        ngnbExchangeRate: ngnbRate ? {
-          rate: ngnbRate.finalPrice,
-          lastUpdated: ngnbRate.lastUpdated,
-          source: ngnbRate.source
+        // Fixed: Changed from ngnbExchangeRate to ngnzExchangeRate for consistency
+        ngnzExchangeRate: ngnzRate ? {
+          rate: ngnzRate.finalPrice,
+          lastUpdated: ngnzRate.lastUpdated,
+          source: ngnzRate.source
         } : null,
         pricesLastUpdated: tokenPrices.status === 'fulfilled' ? new Date().toISOString() : null
       },
@@ -194,18 +204,19 @@ router.get('/dashboard', async (req, res) => {
 // Additional endpoints
 router.post('/store-prices', async (req, res) => {
   try {
-    // Updated to exclude DOGE
-    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX'];
-    const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
+    // Include DOGE if you want to support it
+    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX', 'DOGE'];
+    const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
       getPricesWithCache(tokenSymbols),
       getCurrentRate()
     ]);
 
     const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
-    const ngnbRate = ngnbRateInfo.status === 'fulfilled' ? ngnbRateInfo.value : null;
+    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
     
-    if (ngnbRate && ngnbRate.finalPrice) {
-      prices.NGNB = ngnbRate.finalPrice;
+    // Fixed: Changed from NGNB to NGNZ
+    if (ngnzRate && ngnzRate.finalPrice) {
+      prices.NGNZ = ngnzRate.finalPrice;
     }
 
     const storedCount = await PriceChange.storePrices(prices);
