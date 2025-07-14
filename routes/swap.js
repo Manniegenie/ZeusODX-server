@@ -43,26 +43,53 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
     const f = from.toUpperCase(), t = to.toUpperCase();
     const isOn  = f === 'NGNZ' && t !== 'NGNZ';
     const isOff = f !== 'NGNZ' && t === 'NGNZ';
-    if (!isOn && !isOff) return res.status(400).json({ success:false, message:'Invalid NGNZ swap' });
+
+    if (!isOn && !isOff) {
+      return res.status(400).json({ success: false, message: 'Invalid NGNZ swap' });
+    }
 
     let receiveAmount, rate;
+    let provider, flow;
+
     if (isOn) {
       receiveAmount = await onrampService.calculateCryptoFromNaira(amount, t);
       rate = (await onrampService.getOnrampRate()).finalPrice;
+      provider = 'INTERNAL_ONRAMP';
+      flow = 'ONRAMP';
     } else {
       receiveAmount = await offrampService.calculateNairaFromCrypto(amount, f);
       rate = (await offrampService.getCurrentRate()).finalPrice;
+      provider = 'INTERNAL_OFFRAMP';
+      flow = 'OFFRAMP';
     }
 
-    const id        = `ngnz_${isOn?'on':'off'}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const expiresAt = new Date(Date.now()+30000).toISOString();
-    const payload   = { id, amount, amountReceived: receiveAmount, rate, side, sourceCurrency:f, targetCurrency:t, provider:isOn?'INTERNAL_ONRAMP':'INTERNAL_OFFRAMP', type:isOn?'onramp':'offramp', expiresAt };
+    const id = `internal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const expiresAt = new Date(Date.now() + 30000).toISOString();
+
+    const payload = {
+      id,
+      amount,
+      amountReceived: receiveAmount,
+      rate,
+      side,
+      sourceCurrency: f,
+      targetCurrency: t,
+      provider,
+      type: 'CRYPTO_TO_CRYPTO', // Consistent with crypto swaps
+      flow,                     // Internal use only
+      expiresAt
+    };
 
     quoteCache.set(id, payload);
-    return res.json({ success:true, message:`NGNZ ${isOn?'onramp':'offramp'} quote created`, data:{ data:payload, ...payload } });
+
+    return res.json({
+      success: true,
+      message: 'Quote created successfully',
+      data: { data: payload, ...payload }
+    });
   } catch (err) {
     logger.error('NGNZ swap error', { error: err.stack });
-    return res.status(500).json({ success:false, message:err.message });
+    return res.status(500).json({ success: false, message: err.message });
   }
 }
 
