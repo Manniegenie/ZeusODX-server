@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const portfolioService = require('../services/portfolio');
 const logger = require('../utils/logger');
 
 const transactionSchema = new mongoose.Schema({
@@ -45,7 +44,7 @@ const transactionSchema = new mongoose.Schema({
     markdownApplied: { type: Number, default: 0 },
     provider: { 
       type: String, 
-      enum: ['OBIEX', 'ONRAMP_SERVICE', 'OFFRAMP_SERVICE'],
+      enum: ['OBIEX', 'ONRAMP_SERVICE', 'OFFRAMP_SERVICE', 'INTERNAL_EXCHANGE', 'INTERNAL_ONRAMP', 'INTERNAL_OFFRAMP'],
       default: 'OBIEX'
     }
   },
