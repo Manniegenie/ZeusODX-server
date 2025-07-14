@@ -19,7 +19,7 @@ router.post('/balance', async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid "types" array in request body' });
     }
 
-    // Complete list of allowed balance fields from User schema - DOGE REMOVED
+    // Complete list of allowed balance fields from User schema - DOGE REMOVED, NGNB FIXED TO NGNZ
     const allowedFields = [
       // SOL balances
       'solBalance', 'solBalanceUSD', 'solPendingBalance',
@@ -48,8 +48,8 @@ router.post('/balance', async (req, res) => {
       // AVAX balances
       'avaxBalance', 'avaxBalanceUSD', 'avaxPendingBalance',
       
-      // NGNB balances
-      'ngnbBalance', 'ngnbBalanceUSD', 'ngnbPendingBalance',
+      // NGNZ balances (FIXED FROM NGNB)
+      'ngnzBalance', 'ngnzBalanceUSD', 'ngnzPendingBalance',
       
       // Total portfolio
       'totalPortfolioBalance'
