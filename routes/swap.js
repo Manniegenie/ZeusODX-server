@@ -1,22 +1,17 @@
 const express = require('express');
-const axios = require('axios');
-const { attachObiexAuth } = require('../utils/obiexAuth');
 const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { validateUserBalance, getUserAvailableBalance } = require('../services/balance');
-const { updateUserBalance, updateUserPortfolioBalance } = require('../services/portfolio');
-const Transaction = require('../models/transaction'); // Add Transaction model
-const User = require('../models/user'); // Add User model for NGNZ balance updates
+const { updateUserBalance, updateUserPortfolioBalance, getPricesWithCache } = require('../services/portfolio');
+const Transaction = require('../models/transaction');
+const User = require('../models/user');
 const logger = require('../utils/logger');
 
 const router = express.Router();
 
 // NOTE: Authentication is handled globally in server.js via authenticateToken middleware
 // No need for additional authentication here since req.user.id is already available
-
-const BASE_URL = process.env.OBIEX_BASE_URL || 'https://staging.api.obiex.finance/v1/';
-const REQUEST_TIMEOUT = 10000;
 
 const TOKEN_MAP = {
   'BTC': { currency: 'BTC', name: 'Bitcoin' },
@@ -75,102 +70,88 @@ async function updateUserBalanceForNGNZ(userId, currency, amount) {
   logger.info(`NGNZ Swap: Updated ${userId} ${balanceField}: ${currentBalance} -> ${newBalance} (${amount >= 0 ? '+' : ''}${amount})`);
 }
 
-function createApiClient() {
-  const client = axios.create({
-    baseURL: BASE_URL,
-    timeout: REQUEST_TIMEOUT,
-    headers: {
-      'Content-Type': 'application/json'
-    }
-  });
-
-  client.interceptors.request.use(attachObiexAuth);
-  client.interceptors.response.use(
-    response => response,
-    error => {
-      console.error('API Error:', error.response?.data || error.message);
-      return Promise.reject(error);
-    }
-  );
-
-  return client;
-}
-
-async function createQuote(sourceId, targetId, side, amount) {
+/**
+ * Calculate exchange rate between two currencies using internal price cache
+ * @param {String} fromCurrency - Source currency
+ * @param {String} toCurrency - Target currency
+ * @param {Number} amount - Amount to convert
+ * @param {String} side - BUY or SELL
+ * @returns {Object} Exchange calculation result
+ */
+async function calculateInternalExchange(fromCurrency, toCurrency, amount, side) {
   try {
-    logger.info('createQuote - Creating Obiex quote', {
-      sourceId,
-      targetId,
-      side,
-      amount
-    });
-
-    const apiClient = createApiClient();
+    const fromUpper = fromCurrency.toUpperCase();
+    const toUpper = toCurrency.toUpperCase();
     
-    const response = await apiClient.post('/trades/quote', {
-      sourceId: sourceId,
-      targetId: targetId,
-      side: side,
-      amount: amount
-    });
-
-    logger.info('createQuote - Obiex quote created successfully', {
-      sourceId,
-      targetId,
-      side,
+    logger.info('Calculating internal exchange rate', {
+      fromCurrency: fromUpper,
+      toCurrency: toUpper,
       amount,
-      response: response.data
+      side
     });
-
+    
+    // Get current prices from portfolio service
+    const prices = await getPricesWithCache([fromUpper, toUpper]);
+    
+    const fromPrice = prices[fromUpper];
+    const toPrice = prices[toUpper];
+    
+    if (!fromPrice || fromPrice <= 0) {
+      throw new Error(`Unable to get price for ${fromUpper}`);
+    }
+    
+    if (!toPrice || toPrice <= 0) {
+      throw new Error(`Unable to get price for ${toUpper}`);
+    }
+    
+    // Calculate exchange rate and amounts
+    const exchangeRate = fromPrice / toPrice;
+    let receiveAmount;
+    
+    if (side === 'SELL') {
+      // User is selling fromCurrency to get toCurrency
+      receiveAmount = amount * exchangeRate;
+    } else {
+      // User is buying fromCurrency with toCurrency
+      receiveAmount = amount * exchangeRate;
+    }
+    
+    // Apply a small spread for internal liquidity (0.1%)
+    const spreadMultiplier = 0.999; // 0.1% spread
+    receiveAmount = receiveAmount * spreadMultiplier;
+    
+    logger.info('Internal exchange calculation completed', {
+      fromCurrency: fromUpper,
+      toCurrency: toUpper,
+      fromPrice,
+      toPrice,
+      exchangeRate,
+      amount,
+      receiveAmount,
+      spread: '0.1%'
+    });
+    
     return {
       success: true,
-      data: response.data
+      fromPrice,
+      toPrice,
+      exchangeRate,
+      receiveAmount,
+      spread: 0.1
     };
-
+    
   } catch (error) {
-    logger.error('createQuote - Failed to create Obiex quote', {
-      sourceId,
-      targetId,
-      side,
+    logger.error('Failed to calculate internal exchange', {
+      fromCurrency,
+      toCurrency,
       amount,
-      error: error.response?.data || error.message
+      side,
+      error: error.message
     });
-
+    
     return {
       success: false,
-      error: error.response?.data || error.message
-    };
-  }
-}
-
-async function acceptQuote(quoteId) {
-  try {
-    logger.info('acceptQuote - Accepting Obiex quote', {
-      quoteId
-    });
-
-    const apiClient = createApiClient();
-    const response = await apiClient.post(`/trades/quote/${quoteId}`);
-
-    logger.info('acceptQuote - Obiex quote accepted successfully', {
-      quoteId,
-      response: response.data
-    });
-
-    return {
-      success: true,
-      data: response.data
-    };
-
-  } catch (error) {
-    logger.error('acceptQuote - Failed to accept Obiex quote', {
-      quoteId,
-      error: error.response?.data || error.message
-    });
-
-    return {
-      success: false,
-      error: error.response?.data || error.message
+      error: error.message
     };
   }
 }
@@ -251,12 +232,13 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         side: side,
         amount: payAmount,
         receiveAmount: receiveAmount,
-        ngnzRate: onrampRate.finalPrice,
+        rate: onrampRate.finalPrice,
         type: 'onramp',
         sourceCurrency: fromUpper,
         targetCurrency: toUpper,
+        provider: 'INTERNAL_ONRAMP',
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
+        expiresAt: new Date(Date.now() + 30 * 1000).toISOString() // 30 seconds
       };
       
     } else if (isOfframp) {
@@ -288,12 +270,13 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         side: side,
         amount: payAmount,
         receiveAmount: receiveAmount,
-        ngnzRate: offrampRate.finalPrice,
+        rate: offrampRate.finalPrice,
         type: 'offramp',
         sourceCurrency: fromUpper,
         targetCurrency: toUpper,
+        provider: 'INTERNAL_OFFRAMP',
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
+        expiresAt: new Date(Date.now() + 30 * 1000).toISOString() // 30 seconds
       };
     }
     
@@ -303,14 +286,24 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
     logger.info('handleNGNZSwap - Quote cached successfully', {
       userId,
       quoteId: quoteData.id,
-      cacheSize: quoteCache.size,
-      quoteData: quoteData
+      cacheSize: quoteCache.size
     });
     
     const finalResponse = {
       success: true,
       message: `NGNZ ${isOnramp ? 'onramp' : 'offramp'} quote created successfully`,
-      data: quoteData
+      data: {
+        id: quoteData.id,
+        amount: payAmount,
+        amountReceived: receiveAmount,
+        rate: quoteData.rate,
+        side: side,
+        expiresIn: 30,
+        expiryDate: quoteData.expiresAt,
+        sourceCurrency: fromUpper,
+        targetCurrency: toUpper,
+        provider: quoteData.provider
+      }
     };
 
     logger.info('handleNGNZSwap - NGNZ swap quote created successfully', {
@@ -319,9 +312,8 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       pair: `${from}-${to}`,
       payAmount,
       receiveAmount,
-      rate: quoteData.ngnzRate,
-      quoteId: quoteData.id,
-      response: finalResponse
+      rate: quoteData.rate,
+      quoteId: quoteData.id
     });
     
     return res.json(finalResponse);
@@ -340,8 +332,7 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       amount,
       side,
       error: error.message,
-      stack: error.stack,
-      response: errorResponse
+      stack: error.stack
     });
     
     return res.status(500).json(errorResponse);
@@ -368,8 +359,7 @@ router.post('/quote', async (req, res) => {
       
       logger.warn('POST /swap/quote - Validation failed', {
         userId: req.user?.id,
-        error: 'Missing required fields',
-        response: errorResponse
+        error: 'Missing required fields'
       });
       
       return res.status(400).json(errorResponse);
@@ -383,8 +373,7 @@ router.post('/quote', async (req, res) => {
       
       logger.warn('POST /swap/quote - Invalid amount', {
         userId: req.user?.id,
-        amount,
-        response: errorResponse
+        amount
       });
       
       return res.status(400).json(errorResponse);
@@ -398,8 +387,7 @@ router.post('/quote', async (req, res) => {
       
       logger.warn('POST /swap/quote - Invalid side', {
         userId: req.user?.id,
-        side,
-        response: errorResponse
+        side
       });
       
       return res.status(400).json(errorResponse);
@@ -427,8 +415,8 @@ router.post('/quote', async (req, res) => {
       return await handleNGNZSwap(req, res, from, to, amount, side);
     }
 
-    // Regular non-NGNZ swap logic
-    logger.info('POST /swap/quote - Creating Obiex quote', {
+    // Regular crypto-to-crypto swap using internal pricing
+    logger.info('POST /swap/quote - Creating internal quote', {
       userId: req.user?.id,
       from: from.toUpperCase(),
       to: to.toUpperCase(),
@@ -436,44 +424,68 @@ router.post('/quote', async (req, res) => {
       side
     });
     
-    // Use Obiex API directly to create quote
-    const apiClient = createApiClient();
+    // Calculate exchange using internal price cache
+    const exchangeResult = await calculateInternalExchange(from, to, amount, side);
     
-    const response = await apiClient.post('/trades/quote', {
-      sourceId: from.toUpperCase(),
-      targetId: to.toUpperCase(),
+    if (!exchangeResult.success) {
+      const errorResponse = {
+        success: false,
+        message: "Failed to calculate exchange rate",
+        error: exchangeResult.error
+      };
+      
+      logger.error('POST /swap/quote - Internal exchange calculation failed', {
+        userId: req.user?.id,
+        from,
+        to,
+        amount,
+        side,
+        error: exchangeResult.error
+      });
+      
+      return res.status(500).json(errorResponse);
+    }
+
+    // Create quote data
+    const quoteId = `internal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const quoteData = {
+      id: quoteId,
+      amount: amount,
+      amountReceived: exchangeResult.receiveAmount,
+      rate: exchangeResult.exchangeRate,
       side: side,
-      amount: amount
-    });
-
-    logger.info('POST /swap/quote - Obiex API response received', {
-      userId: req.user?.id,
-      obiexResponse: response.data
-    });
-
-    const quoteResult = {
-      success: true,
-      data: response.data
+      sourceCurrency: from.toUpperCase(),
+      targetCurrency: to.toUpperCase(),
+      provider: 'INTERNAL_EXCHANGE',
+      fromPrice: exchangeResult.fromPrice,
+      toPrice: exchangeResult.toPrice,
+      spread: exchangeResult.spread,
+      expiresIn: 30,
+      expiryDate: new Date(Date.now() + 30 * 1000).toISOString(),
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 30 * 1000).toISOString()
     };
 
     // Apply global markdown to reduce the amount user receives
+    let finalReceiveAmount = exchangeResult.receiveAmount;
     try {
-      const originalReceiveAmount = quoteResult.data.data.amountReceived || quoteResult.data.data.amount;
-      const markedDownAmount = await GlobalSwapMarkdown.applyGlobalMarkdown(originalReceiveAmount);
+      const markedDownAmount = await GlobalSwapMarkdown.applyGlobalMarkdown(exchangeResult.receiveAmount);
+      finalReceiveAmount = markedDownAmount;
       
       // Server-side logging for internal monitoring
       const markdownConfig = await GlobalSwapMarkdown.getGlobalMarkdown();
       logger.info('POST /swap/quote - Markdown applied', {
         userId: req.user?.id,
         pair: `${from}-${to}`,
-        originalAmount: originalReceiveAmount,
-        markedDownAmount,
-        reduction: originalReceiveAmount - markedDownAmount,
+        originalAmount: exchangeResult.receiveAmount,
+        markedDownAmount: finalReceiveAmount,
+        reduction: exchangeResult.receiveAmount - finalReceiveAmount,
         markdownPercentage: markdownConfig.markdownPercentage
       });
       
-      // Set receiveAmount at the level frontend expects (data.receiveAmount)
-      quoteResult.data.receiveAmount = markedDownAmount;
+      quoteData.amountReceived = finalReceiveAmount;
+      quoteData.originalAmountReceived = exchangeResult.receiveAmount;
+      quoteData.markdownApplied = markdownConfig.markdownPercentage;
     } catch (markdownError) {
       logger.error('POST /swap/quote - Markdown error', {
         userId: req.user?.id,
@@ -481,39 +493,37 @@ router.post('/quote', async (req, res) => {
       });
       // Continue without markdown if there's an error
     }
-
-    // FIXED: Store quote data with correct quote ID path
-    const quoteId = quoteResult.data.data.id;
-    const enrichedQuoteData = {
-      ...quoteResult.data,
-      sourceCurrency: from.toUpperCase(),
-      targetCurrency: to.toUpperCase(),
-      originalAmount: amount,
-      side: side,
-      expiresAt: new Date(Date.now() + 10 * 1000).toISOString() // 10 seconds
-    };
     
-    // FIXED: Use correct quote ID path for cache storage
-    console.log('🔍 Storing quote with ID:', quoteId);
-    quoteCache.set(quoteId, enrichedQuoteData);
+    // Store quote data for acceptance
+    quoteCache.set(quoteId, quoteData);
 
-    logger.info('POST /swap/quote - Quote cached and response ready', {
+    logger.info('POST /swap/quote - Internal quote created successfully', {
       userId: req.user?.id,
-      quoteId: quoteId,
-      cacheSize: quoteCache.size,
-      response: quoteResult.data
+      quoteId,
+      pair: `${from}-${to}`,
+      amount,
+      receiveAmount: finalReceiveAmount,
+      rate: exchangeResult.exchangeRate,
+      spread: exchangeResult.spread
     });
 
     const finalResponse = {
       success: true,
       message: "Quote created successfully",
-      data: quoteResult.data
+      data: {
+        id: quoteId,
+        amount: amount,
+        amountReceived: finalReceiveAmount,
+        rate: exchangeResult.exchangeRate,
+        side: side,
+        expiresIn: 30,
+        expiryDate: quoteData.expiryDate,
+        sourceCurrency: from.toUpperCase(),
+        targetCurrency: to.toUpperCase(),
+        provider: 'INTERNAL_EXCHANGE',
+        acceptable: true
+      }
     };
-
-    logger.info('POST /swap/quote - Success response sent', {
-      userId: req.user?.id,
-      response: finalResponse
-    });
 
     res.json(finalResponse);
 
@@ -537,9 +547,8 @@ router.post('/quote', async (req, res) => {
 router.post('/quote/:quoteId', async (req, res) => {
   try {
     const { quoteId } = req.params;
-    const userId = req.user.id; // Get userId from JWT token
+    const userId = req.user.id;
 
-    // LOG: Request received
     logger.info('POST /swap/quote/:quoteId - Request received', {
       userId,
       quoteId,
@@ -553,11 +562,6 @@ router.post('/quote/:quoteId', async (req, res) => {
         message: "Quote ID is required"
       };
       
-      logger.warn('POST /swap/quote/:quoteId - Missing quote ID', {
-        userId,
-        response: errorResponse
-      });
-      
       return res.status(400).json(errorResponse);
     }
 
@@ -568,13 +572,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       userId,
       quoteId,
       found: !!quoteData,
-      cacheSize: quoteCache.size,
-      quoteData: quoteData ? {
-        sourceCurrency: quoteData.sourceCurrency,
-        targetCurrency: quoteData.targetCurrency,
-        amount: quoteData.amount,
-        expiresAt: quoteData.expiresAt
-      } : null
+      cacheSize: quoteCache.size
     });
     
     if (!quoteData) {
@@ -582,12 +580,6 @@ router.post('/quote/:quoteId', async (req, res) => {
         success: false,
         message: "Quote not found or expired"
       };
-      
-      logger.warn('POST /swap/quote/:quoteId - Quote not found', {
-        userId,
-        quoteId,
-        response: errorResponse
-      });
       
       return res.status(404).json(errorResponse);
     }
@@ -601,21 +593,13 @@ router.post('/quote/:quoteId', async (req, res) => {
         message: "Quote has expired"
       };
       
-      logger.warn('POST /swap/quote/:quoteId - Quote expired', {
-        userId,
-        quoteId,
-        expiresAt: quoteData.expiresAt,
-        currentTime: new Date().toISOString(),
-        response: errorResponse
-      });
-      
       return res.status(410).json(errorResponse);
     }
 
-    // Check if this is a NGNZ quote
+    // Determine swap type and parameters
     const isNGNZQuote = quoteId.includes('ngnz_onramp_') || quoteId.includes('ngnz_offramp_');
     
-    let sourceCurrency, targetCurrency, payAmount, receiveAmount, swapType;
+    let sourceCurrency, targetCurrency, payAmount, receiveAmount, swapType, provider;
     
     if (isNGNZQuote) {
       // NGNZ swap handling
@@ -624,59 +608,30 @@ router.post('/quote/:quoteId', async (req, res) => {
       payAmount = quoteData.amount;
       receiveAmount = quoteData.receiveAmount;
       swapType = quoteData.type === 'onramp' ? 'ONRAMP' : 'OFFRAMP';
-      
-      logger.info('POST /swap/quote/:quoteId - Processing NGNZ swap', {
-        userId,
-        quoteId,
-        type: quoteData.type,
-        sourceCurrency,
-        targetCurrency,
-        payAmount,
-        receiveAmount,
-        swapType
-      });
+      provider = quoteData.provider;
     } else {
-      // Regular swap handling
+      // Regular internal swap handling
       sourceCurrency = quoteData.sourceCurrency;
       targetCurrency = quoteData.targetCurrency;
+      payAmount = quoteData.amount;
+      receiveAmount = quoteData.amountReceived;
       swapType = 'CRYPTO_TO_CRYPTO';
-      
-      // Determine amounts based on side
-      if (quoteData.side === 'BUY') {
-        payAmount = quoteData.originalAmount;
-        receiveAmount = quoteData.receiveAmount || quoteData.amountReceived || quoteData.amount;
-      } else {
-        payAmount = quoteData.originalAmount;
-        receiveAmount = quoteData.receiveAmount || quoteData.amountReceived || quoteData.amount;
-      }
-      
-      logger.info('POST /swap/quote/:quoteId - Processing regular swap', {
-        userId,
-        quoteId,
-        side: quoteData.side,
-        sourceCurrency,
-        targetCurrency,
-        payAmount,
-        receiveAmount,
-        swapType
-      });
+      provider = 'INTERNAL_EXCHANGE';
     }
-
-    // Validate user has sufficient balance for the source currency
-    logger.info('POST /swap/quote/:quoteId - Validating user balance', {
+    
+    logger.info('POST /swap/quote/:quoteId - Processing swap', {
       userId,
       quoteId,
       sourceCurrency,
-      requiredAmount: payAmount
+      targetCurrency,
+      payAmount,
+      receiveAmount,
+      swapType,
+      provider
     });
-    
+
+    // Validate user has sufficient balance for the source currency
     const balanceValidation = await validateUserBalance(userId, sourceCurrency, payAmount);
-    
-    logger.info('POST /swap/quote/:quoteId - Balance validation result', {
-      userId,
-      quoteId,
-      balanceValidation
-    });
     
     if (!balanceValidation.success) {
       const errorResponse = {
@@ -688,79 +643,11 @@ router.post('/quote/:quoteId', async (req, res) => {
         currency: sourceCurrency
       };
       
-      logger.warn('POST /swap/quote/:quoteId - Insufficient balance', {
-        userId,
-        quoteId,
-        sourceCurrency,
-        requiredAmount: payAmount,
-        error: balanceValidation.message,
-        response: errorResponse
-      });
-      
       return res.status(400).json(errorResponse);
     }
 
-    let swapResult = null;
-    let obiexTransactionId = null;
-    
-    if (!isNGNZQuote) {
-      // For regular swaps, accept quote through Obiex
-      logger.info('POST /swap/quote/:quoteId - Accepting Obiex quote', {
-        userId,
-        quoteId
-      });
-      
-      swapResult = await acceptQuote(quoteId);
-      
-      logger.info('POST /swap/quote/:quoteId - Obiex quote acceptance result', {
-        userId,
-        quoteId,
-        success: swapResult.success,
-        swapResult: swapResult.success ? swapResult.data : swapResult.error
-      });
-      
-      if (!swapResult.success) {
-        const errorResponse = {
-          success: false,
-          message: "Failed to accept quote",
-          error: swapResult.error
-        };
-        
-        logger.error('POST /swap/quote/:quoteId - Obiex quote acceptance failed', {
-          userId,
-          quoteId,
-          error: swapResult.error,
-          response: errorResponse
-        });
-        
-        return res.status(500).json(errorResponse);
-      }
-
-      // Extract Obiex transaction ID for tracking
-      if (swapResult?.data) {
-        obiexTransactionId = swapResult.data.id || swapResult.data.transactionId || swapResult.data.reference;
-        
-        logger.info('POST /swap/quote/:quoteId - Extracted Obiex transaction ID', {
-          userId,
-          quoteId,
-          obiexTransactionId
-        });
-      }
-    }
-
-    // Create swap transactions - they will be marked as SUCCESSFUL immediately for both NGNZ and regular swaps
+    // Create swap transactions with SUCCESSFUL status for immediate completion
     try {
-      logger.info('POST /swap/quote/:quoteId - Creating swap transactions', {
-        userId,
-        quoteId,
-        sourceCurrency,
-        targetCurrency,
-        payAmount,
-        receiveAmount,
-        swapType,
-        obiexTransactionId
-      });
-
       // Calculate exchange rate
       const exchangeRate = receiveAmount / payAmount;
 
@@ -769,21 +656,11 @@ router.post('/quote/:quoteId', async (req, res) => {
       try {
         const markdownConfig = await GlobalSwapMarkdown.getGlobalMarkdown();
         markdownApplied = markdownConfig.markdownPercentage || 0;
-        
-        logger.info('POST /swap/quote/:quoteId - Markdown config retrieved', {
-          userId,
-          quoteId,
-          markdownApplied
-        });
       } catch (err) {
-        logger.warn('POST /swap/quote/:quoteId - Could not get markdown config', {
-          userId,
-          quoteId,
-          error: err.message
-        });
+        logger.warn('Could not get markdown config', { error: err.message });
       }
 
-      // Create swap transaction pair - SUCCESSFUL status for immediate completion
+      // Create swap transaction pair
       const swapTransactions = await Transaction.createSwapTransactions({
         userId,
         quoteId,
@@ -793,74 +670,57 @@ router.post('/quote/:quoteId', async (req, res) => {
         targetAmount: receiveAmount,
         exchangeRate,
         swapType,
-        provider: isNGNZQuote ? (swapType === 'ONRAMP' ? 'ONRAMP_SERVICE' : 'OFFRAMP_SERVICE') : 'OBIEX',
+        provider,
         markdownApplied,
-        swapFee: 0, // You can calculate this if needed
+        swapFee: 0,
         quoteExpiresAt: new Date(quoteData.expiresAt),
-        status: 'SUCCESSFUL', // Mark as SUCCESSFUL immediately
-        obiexTransactionId // Pass obiexTransactionId for tracking
+        status: 'SUCCESSFUL',
+        obiexTransactionId: `internal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       });
 
       logger.info('POST /swap/quote/:quoteId - Swap transactions created', {
         userId,
         quoteId,
-        swapId: swapTransactions.swapId,
-        swapOutTransactionId: swapTransactions.swapOutTransaction._id,
-        swapInTransactionId: swapTransactions.swapInTransaction._id
+        swapId: swapTransactions.swapId
       });
 
-      // For ALL swaps (both NGNZ and regular), update balances directly using portfolio service
+      // Update balances directly
       try {
-        logger.info('POST /swap/quote/:quoteId - Processing balance updates directly', {
-          userId,
-          swapId: swapTransactions.swapId,
-          sourceCurrency,
-          targetCurrency,
-          payAmount,
-          receiveAmount
-        });
-
-        // For NGNZ swaps, use the NGNZ helper function
         if (isNGNZQuote) {
-          // Deduct source currency (amount being paid)
+          // For NGNZ swaps, use the NGNZ helper function
           await updateUserBalanceForNGNZ(userId, sourceCurrency, -payAmount);
-          logger.info(`POST /swap/quote/:quoteId - NGNZ: Deducted ${payAmount} ${sourceCurrency} from user ${userId}`);
-
-          // Add target currency (amount being received)
           await updateUserBalanceForNGNZ(userId, targetCurrency, receiveAmount);
-          logger.info(`POST /swap/quote/:quoteId - NGNZ: Added ${receiveAmount} ${targetCurrency} to user ${userId}`);
         } else {
           // For regular swaps, use portfolio service
-          // Deduct source currency (amount being paid)
           await updateUserBalance(userId, sourceCurrency, -payAmount);
-          logger.info(`POST /swap/quote/:quoteId - Deducted ${payAmount} ${sourceCurrency} from user ${userId}`);
-
-          // Add target currency (amount being received)  
           await updateUserBalance(userId, targetCurrency, receiveAmount);
-          logger.info(`POST /swap/quote/:quoteId - Added ${receiveAmount} ${targetCurrency} to user ${userId}`);
         }
 
-        // Update portfolio balance (for both NGNZ and regular swaps)
-        await updateUserPortfolioBalance(userId);
-        logger.info(`POST /swap/quote/:quoteId - Updated portfolio balance for user ${userId}`);
+        // Update portfolio balance (with error handling)
+        try {
+          await updateUserPortfolioBalance(userId);
+        } catch (portfolioError) {
+          logger.warn('Portfolio update failed (non-critical)', {
+            userId,
+            error: portfolioError.message
+          });
+        }
 
-        logger.info('POST /swap/quote/:quoteId - Swap completed successfully with direct balance updates', {
+        logger.info('POST /swap/quote/:quoteId - Swap completed successfully', {
           userId,
           swapId: swapTransactions.swapId,
           sourceCurrency,
           targetCurrency,
           sourceAmount: payAmount,
           targetAmount: receiveAmount,
-          exchangeRate,
-          swapType
+          provider
         });
 
       } catch (balanceError) {
-        logger.error('POST /swap/quote/:quoteId - Failed to update balances for swap', {
+        logger.error('POST /swap/quote/:quoteId - Failed to update balances', {
           userId,
           swapId: swapTransactions.swapId,
-          error: balanceError.message,
-          stack: balanceError.stack
+          error: balanceError.message
         });
 
         // Update transactions to FAILED status
@@ -878,19 +738,13 @@ router.post('/quote/:quoteId', async (req, res) => {
       // Clean up quote from cache
       quoteCache.delete(quoteId);
       
-      logger.info('POST /swap/quote/:quoteId - Quote removed from cache', {
-        userId,
-        quoteId,
-        remainingCacheSize: quoteCache.size
-      });
-      
       const finalResponse = {
         success: true,
         message: "Swap completed successfully with balance updates.",
         data: {
           swapId: swapTransactions.swapId,
           quoteId,
-          status: 'SUCCESSFUL', // Always SUCCESSFUL now
+          status: 'SUCCESSFUL',
           swapDetails: {
             sourceCurrency,
             targetCurrency,
@@ -898,37 +752,27 @@ router.post('/quote/:quoteId', async (req, res) => {
             targetAmount: receiveAmount,
             exchangeRate,
             swapType,
+            provider,
             createdAt: new Date().toISOString(),
-            completedAt: new Date().toISOString() // Always completed immediately
+            completedAt: new Date().toISOString()
           },
           transactions: {
             swapOut: {
               id: swapTransactions.swapOutTransaction._id,
               type: swapTransactions.swapOutTransaction.type,
               currency: sourceCurrency,
-              amount: -payAmount,
-              obiexTransactionId
+              amount: -payAmount
             },
             swapIn: {
               id: swapTransactions.swapInTransaction._id,
               type: swapTransactions.swapInTransaction.type,
               currency: targetCurrency,
-              amount: receiveAmount,
-              obiexTransactionId
+              amount: receiveAmount
             }
           },
-          obiexData: swapResult?.data || null,
-          balanceUpdated: true // Always true since we update directly
+          balanceUpdated: true
         }
       };
-
-      logger.info('POST /swap/quote/:quoteId - Success response ready', {
-        userId,
-        quoteId,
-        swapId: swapTransactions.swapId,
-        finalStatus: 'SUCCESSFUL',
-        response: finalResponse
-      });
 
       res.json(finalResponse);
 
@@ -943,8 +787,7 @@ router.post('/quote/:quoteId', async (req, res) => {
         userId,
         quoteId,
         error: transactionError.message,
-        stack: transactionError.stack,
-        response: errorResponse
+        stack: transactionError.stack
       });
       
       return res.status(500).json(errorResponse);
@@ -961,8 +804,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       quoteId: req.params.quoteId,
       userId: req.user?.id,
       error: error.message,
-      stack: error.stack,
-      response: errorResponse
+      stack: error.stack
     });
     
     res.status(500).json(errorResponse);
@@ -971,7 +813,6 @@ router.post('/quote/:quoteId', async (req, res) => {
 
 router.get('/tokens', (req, res) => {
   try {
-    // LOG: Request received
     logger.info('GET /swap/tokens - Request received', {
       userId: req.user?.id,
       userAgent: req.get('User-Agent'),
@@ -984,23 +825,12 @@ router.get('/tokens', (req, res) => {
       currency: info.currency
     }));
 
-    logger.info('GET /swap/tokens - Tokens prepared', {
-      userId: req.user?.id,
-      tokenCount: tokens.length,
-      tokens: tokens
-    });
-
     const finalResponse = {
       success: true,
       message: "Supported tokens retrieved successfully",
       data: tokens,
       total: tokens.length
     };
-
-    logger.info('GET /swap/tokens - Success response sent', {
-      userId: req.user?.id,
-      response: finalResponse
-    });
 
     res.json(finalResponse);
 
@@ -1013,8 +843,7 @@ router.get('/tokens', (req, res) => {
     
     logger.error('GET /swap/tokens - Server error', {
       userId: req.user?.id,
-      error: error.message,
-      response: errorResponse
+      error: error.message
     });
     
     res.status(500).json(errorResponse);
@@ -1025,9 +854,8 @@ router.get('/tokens', (req, res) => {
 router.get('/balance/:currency', async (req, res) => {
   try {
     const { currency } = req.params;
-    const userId = req.user.id; // Get userId from JWT token
+    const userId = req.user.id;
     
-    // LOG: Request received
     logger.info('GET /swap/balance/:currency - Request received', {
       userId,
       currency,
@@ -1035,28 +863,9 @@ router.get('/balance/:currency', async (req, res) => {
       ip: req.ip
     });
     
-    logger.info('GET /swap/balance/:currency - Fetching user balance', {
-      userId,
-      currency
-    });
-    
     const balanceInfo = await getUserAvailableBalance(userId, currency);
     
-    logger.info('GET /swap/balance/:currency - Balance info retrieved', {
-      userId,
-      currency,
-      success: balanceInfo.success,
-      balanceInfo: balanceInfo
-    });
-    
     if (!balanceInfo.success) {
-      logger.warn('GET /swap/balance/:currency - Balance retrieval failed', {
-        userId,
-        currency,
-        error: balanceInfo.message || 'Unknown error',
-        response: balanceInfo
-      });
-      
       return res.status(400).json(balanceInfo);
     }
     
@@ -1065,12 +874,6 @@ router.get('/balance/:currency', async (req, res) => {
       message: "Balance retrieved successfully",
       data: balanceInfo
     };
-
-    logger.info('GET /swap/balance/:currency - Success response sent', {
-      userId,
-      currency,
-      response: finalResponse
-    });
     
     res.json(finalResponse);
     
@@ -1085,8 +888,7 @@ router.get('/balance/:currency', async (req, res) => {
       userId: req.user?.id,
       currency: req.params.currency,
       error: error.message,
-      stack: error.stack,
-      response: errorResponse
+      stack: error.stack
     });
     
     res.status(500).json(errorResponse);
@@ -1094,7 +896,7 @@ router.get('/balance/:currency', async (req, res) => {
 });
 
 // Log router initialization
-logger.info('Swap router initialized with direct balance updates', {
+logger.info('Simplified swap router initialized with internal pricing', {
   endpoints: [
     'POST /swap/quote',
     'POST /swap/quote/:quoteId', 
@@ -1104,11 +906,12 @@ logger.info('Swap router initialized with direct balance updates', {
   tokenMapSize: Object.keys(TOKEN_MAP).length,
   supportedTokens: Object.keys(TOKEN_MAP),
   features: [
-    'Direct balance updates',
+    'Internal pricing via portfolio service',
     'Immediate swap completion',
     'NGNZ onramp/offramp support',
     'Global markdown application',
-    'Portfolio balance updates'
+    'No external API dependencies',
+    'Internal liquidity management'
   ]
 });
 
