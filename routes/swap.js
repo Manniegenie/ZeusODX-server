@@ -36,6 +36,15 @@ async function processSwapBalances(swapData) {
   const { userId, fromCurrency, toCurrency, fromAmount, toAmount, transactionId } = swapData;
 
   try {
+    logger.info('Starting atomic balance update', {
+      userId,
+      fromCurrency,
+      toCurrency,
+      fromAmount,
+      toAmount,
+      transactionId
+    });
+
     // Get user document first to check current balances
     const user = await User.findById(userId);
     if (!user) {
@@ -52,13 +61,31 @@ async function processSwapBalances(swapData) {
     const fromBalanceField = getBalanceField(fromCurrency);
     const toBalanceField = getBalanceField(toCurrency);
 
-    // Check if user has sufficient balance
+    logger.info('Balance field mapping', {
+      fromCurrency,
+      toCurrency,
+      fromBalanceField,
+      toBalanceField
+    });
+
+    // Check current balances
     const currentFromBalance = user[fromBalanceField] || 0;
+    const currentToBalance = user[toBalanceField] || 0;
+
+    logger.info('Current balances before update', {
+      fromCurrency,
+      toCurrency,
+      currentFromBalance,
+      currentToBalance,
+      requiredFromAmount: fromAmount
+    });
+
+    // Check if user has sufficient balance
     if (currentFromBalance < fromAmount) {
       throw new Error(`Insufficient ${fromCurrency} balance. Available: ${currentFromBalance}, Required: ${fromAmount}`);
     }
 
-    // Perform atomic balance update with conditions to prevent negative balances
+    // Prepare atomic update operation
     const updateQuery = {
       $inc: {
         [fromBalanceField]: -fromAmount, // Debit source currency
@@ -72,6 +99,14 @@ async function processSwapBalances(swapData) {
       [fromBalanceField]: { $gte: fromAmount } // Ensure sufficient balance
     };
 
+    logger.info('Performing atomic update', {
+      conditions,
+      updateQuery,
+      fromBalanceField,
+      toBalanceField
+    });
+
+    // Perform atomic balance update with conditions
     const updateResult = await User.findOneAndUpdate(
       conditions,
       updateQuery,
@@ -79,27 +114,55 @@ async function processSwapBalances(swapData) {
     );
 
     if (!updateResult) {
-      throw new Error(`Failed to update balances - insufficient ${fromCurrency} balance or user not found`);
+      throw new Error(`Atomic update failed - insufficient ${fromCurrency} balance or user not found during update`);
     }
 
-    logger.info('Swap balances processed successfully with atomic update', {
+    const newFromBalance = updateResult[fromBalanceField];
+    const newToBalance = updateResult[toBalanceField];
+
+    logger.info('Atomic balance update completed successfully', {
       userId,
       transactionId,
       fromCurrency,
       toCurrency,
       fromAmount,
       toAmount,
-      newFromBalance: updateResult[fromBalanceField],
-      newToBalance: updateResult[toBalanceField]
+      previousFromBalance: currentFromBalance,
+      previousToBalance: currentToBalance,
+      newFromBalance,
+      newToBalance,
+      fromBalanceChange: newFromBalance - currentFromBalance,
+      toBalanceChange: newToBalance - currentToBalance
     });
+
+    // Verify the update worked as expected
+    if (Math.abs((newFromBalance - currentFromBalance) - (-fromAmount)) > 0.00000001) {
+      logger.error('From balance update verification failed', {
+        expected: currentFromBalance - fromAmount,
+        actual: newFromBalance,
+        difference: Math.abs((newFromBalance - currentFromBalance) - (-fromAmount))
+      });
+    }
+
+    if (Math.abs((newToBalance - currentToBalance) - toAmount) > 0.00000001) {
+      logger.error('To balance update verification failed', {
+        expected: currentToBalance + toAmount,
+        actual: newToBalance,
+        difference: Math.abs((newToBalance - currentToBalance) - toAmount)
+      });
+    }
 
     return { 
       success: true,
       balances: {
-        [fromCurrency]: updateResult[fromBalanceField],
-        [toCurrency]: updateResult[toBalanceField]
+        [fromCurrency]: newFromBalance,
+        [toCurrency]: newToBalance
       },
-      updatedUser: updateResult
+      updatedUser: updateResult,
+      verification: {
+        fromBalanceCorrect: Math.abs((newFromBalance - currentFromBalance) - (-fromAmount)) <= 0.00000001,
+        toBalanceCorrect: Math.abs((newToBalance - currentToBalance) - toAmount) <= 0.00000001
+      }
     };
 
   } catch (error) {
