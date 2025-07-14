@@ -257,6 +257,148 @@ const fixNegativeBalances = async () => {
   }
 };
 
+// 🚨 MIGRATE ALL BALANCES TO 8 DECIMAL PLACES
+const migrateBalancesToEightDecimals = async () => {
+  try {
+    logger.info('🔧 Starting balance migration to 8 decimal places');
+
+    // Helper function to limit to 8 decimal places (same as in schema)
+    const limitToEightDecimals = (value) => {
+      if (typeof value === 'number') {
+        return Math.round(value * 100000000) / 100000000;
+      }
+      return value;
+    };
+
+    // Define all balance fields that need to be migrated
+    const balanceFields = [
+      'solBalance', 'solBalanceUSD', 'solPendingBalance',
+      'btcBalance', 'btcBalanceUSD', 'btcPendingBalance',
+      'usdtBalance', 'usdtBalanceUSD', 'usdtPendingBalance',
+      'usdcBalance', 'usdcBalanceUSD', 'usdcPendingBalance',
+      'ethBalance', 'ethBalanceUSD', 'ethPendingBalance',
+      'bnbBalance', 'bnbBalanceUSD', 'bnbPendingBalance',
+      'dogeBalance', 'dogeBalanceUSD', 'dogePendingBalance',
+      'maticBalance', 'maticBalanceUSD', 'maticPendingBalance',
+      'avaxBalance', 'avaxBalanceUSD', 'avaxPendingBalance',
+      'ngnzBalance', 'ngnzBalanceUSD', 'ngnzPendingBalance',
+      'totalPortfolioBalance'
+    ];
+
+    // Get total user count for progress tracking
+    const totalUsers = await User.countDocuments();
+    logger.info(`📊 Found ${totalUsers} users to migrate`);
+
+    if (totalUsers === 0) {
+      logger.info('✅ No users found, migration not needed');
+      return;
+    }
+
+    let migratedCount = 0;
+    let usersWithChanges = 0;
+    const batchSize = 100; // Process in batches to avoid memory issues
+
+    // Process users in batches
+    for (let skip = 0; skip < totalUsers; skip += batchSize) {
+      const users = await User.find({})
+        .select(['_id', 'username', 'phonenumber', ...balanceFields])
+        .skip(skip)
+        .limit(batchSize)
+        .lean();
+
+      const bulkOps = [];
+
+      for (const user of users) {
+        const updateFields = {};
+        let hasChanges = false;
+
+        // Check each balance field
+        for (const field of balanceFields) {
+          const currentValue = user[field];
+          if (typeof currentValue === 'number') {
+            const limitedValue = limitToEightDecimals(currentValue);
+            
+            // Only update if the value actually changes
+            if (currentValue !== limitedValue) {
+              updateFields[field] = limitedValue;
+              hasChanges = true;
+            }
+          }
+        }
+
+        // If there are changes, add to bulk operation
+        if (hasChanges) {
+          updateFields.portfolioLastUpdated = new Date();
+          
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: user._id },
+              update: { $set: updateFields }
+            }
+          });
+
+          usersWithChanges++;
+
+          // Log example of changes (only for first few users to avoid spam)
+          if (usersWithChanges <= 5) {
+            logger.info('Example balance changes', {
+              userId: user._id,
+              username: user.username,
+              changes: Object.keys(updateFields).filter(k => k !== 'portfolioLastUpdated').length,
+              sampleChanges: Object.fromEntries(
+                Object.entries(updateFields)
+                  .slice(0, 3)
+                  .map(([key, newVal]) => [key, { from: user[key], to: newVal }])
+              )
+            });
+          }
+        }
+
+        migratedCount++;
+      }
+
+      // Execute bulk operations if any
+      if (bulkOps.length > 0) {
+        const result = await User.bulkWrite(bulkOps);
+        logger.info(`📝 Batch processed: ${skip + 1}-${Math.min(skip + batchSize, totalUsers)} of ${totalUsers}`, {
+          batchModified: result.modifiedCount,
+          totalProcessed: migratedCount,
+          usersWithChanges: usersWithChanges
+        });
+      } else {
+        logger.info(`📝 Batch processed: ${skip + 1}-${Math.min(skip + batchSize, totalUsers)} of ${totalUsers} (no changes needed)`);
+      }
+    }
+
+    logger.info('✅ Balance migration to 8 decimals completed successfully', {
+      totalUsers: totalUsers,
+      usersProcessed: migratedCount,
+      usersWithChanges: usersWithChanges,
+      usersUnchanged: totalUsers - usersWithChanges
+    });
+
+    // Verification: Check if any balances still have more than 8 decimals
+    const verificationQuery = balanceFields.map(field => ({
+      [field]: { $type: "double", $not: { $eq: { $round: [{ $multiply: [`$${field}`, 100000000] }] } } }
+    }));
+
+    const remainingIssues = await User.countDocuments({ $or: verificationQuery });
+    
+    if (remainingIssues === 0) {
+      logger.info('🎉 All balances successfully limited to 8 decimal places');
+    } else {
+      logger.warn(`⚠️ ${remainingIssues} users may still have precision issues after migration`);
+    }
+
+  } catch (error) {
+    logger.error('❌ Error during balance migration', {
+      error: error.message,
+      stack: error.stack
+    });
+    // Don't throw error to prevent server startup failure
+  }
+};
+
 // Database Migration for Duplicate obiexTransactionId
 const migrateTransactions = async () => {
   try {
@@ -349,6 +491,9 @@ const startServer = async () => {
 
     // 🚨 Run balance fix FIRST (most critical)
     await fixNegativeBalances();
+    
+    // 🚨 Run balance decimal migration
+    await migrateBalancesToEightDecimals();
     
     // Run transaction migration
     await migrateTransactions();
