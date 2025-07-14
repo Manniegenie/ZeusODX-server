@@ -199,20 +199,6 @@ const fixNegativeBalances = async () => {
       userCount: usersWithNegativeBalances.length
     });
 
-    // Log details of affected users
-    usersWithNegativeBalances.forEach(user => {
-      const negativeFields = usdBalanceFields.filter(field => user[field] < 0);
-      logger.warn('User with negative balance found', {
-        userId: user._id,
-        username: user.username,
-        phonenumber: user.phonenumber?.replace(/(\+234\d{3})\d{4}(\d{4})/, '$1****$2'),
-        negativeBalances: negativeFields.map(field => ({
-          field,
-          value: user[field]
-        }))
-      });
-    });
-
     // Fix negative balances using aggregation pipeline
     const result = await User.updateMany(
       negativeBalanceQuery,
@@ -236,24 +222,14 @@ const fixNegativeBalances = async () => {
 
     logger.info('✅ Negative balance fix completed successfully', {
       matchedCount: result.matchedCount,
-      modifiedCount: result.modifiedCount,
-      acknowledgedCount: result.acknowledged
+      modifiedCount: result.modifiedCount
     });
-
-    // Verify the fix worked
-    const remainingNegativeBalances = await User.countDocuments(negativeBalanceQuery);
-    if (remainingNegativeBalances === 0) {
-      logger.info('🎉 All negative balances successfully fixed');
-    } else {
-      logger.warn(`⚠️ ${remainingNegativeBalances} users still have negative balances after fix`);
-    }
 
   } catch (error) {
     logger.error('❌ Error during negative balance fix', {
       error: error.message,
       stack: error.stack
     });
-    // Don't throw error to prevent server startup failure
   }
 };
 
@@ -262,7 +238,7 @@ const migrateBalancesToEightDecimals = async () => {
   try {
     logger.info('🔧 Starting balance migration to 8 decimal places');
 
-    // Helper function to limit to 8 decimal places (same as in schema)
+    // Helper function to limit to 8 decimal places
     const limitToEightDecimals = (value) => {
       if (typeof value === 'number') {
         return Math.round(value * 100000000) / 100000000;
@@ -285,7 +261,6 @@ const migrateBalancesToEightDecimals = async () => {
       'totalPortfolioBalance'
     ];
 
-    // Get total user count for progress tracking
     const totalUsers = await User.countDocuments();
     logger.info(`📊 Found ${totalUsers} users to migrate`);
 
@@ -294,14 +269,13 @@ const migrateBalancesToEightDecimals = async () => {
       return;
     }
 
-    let migratedCount = 0;
     let usersWithChanges = 0;
-    const batchSize = 100; // Process in batches to avoid memory issues
+    const batchSize = 100;
 
     // Process users in batches
     for (let skip = 0; skip < totalUsers; skip += batchSize) {
       const users = await User.find({})
-        .select(['_id', 'username', 'phonenumber', ...balanceFields])
+        .select(['_id', 'username', ...balanceFields])
         .skip(skip)
         .limit(batchSize)
         .lean();
@@ -318,7 +292,6 @@ const migrateBalancesToEightDecimals = async () => {
           if (typeof currentValue === 'number') {
             const limitedValue = limitToEightDecimals(currentValue);
             
-            // Only update if the value actually changes
             if (currentValue !== limitedValue) {
               updateFields[field] = limitedValue;
               hasChanges = true;
@@ -326,7 +299,6 @@ const migrateBalancesToEightDecimals = async () => {
           }
         }
 
-        // If there are changes, add to bulk operation
         if (hasChanges) {
           updateFields.portfolioLastUpdated = new Date();
           
@@ -338,64 +310,177 @@ const migrateBalancesToEightDecimals = async () => {
           });
 
           usersWithChanges++;
-
-          // Log example of changes (only for first few users to avoid spam)
-          if (usersWithChanges <= 5) {
-            logger.info('Example balance changes', {
-              userId: user._id,
-              username: user.username,
-              changes: Object.keys(updateFields).filter(k => k !== 'portfolioLastUpdated').length,
-              sampleChanges: Object.fromEntries(
-                Object.entries(updateFields)
-                  .slice(0, 3)
-                  .map(([key, newVal]) => [key, { from: user[key], to: newVal }])
-              )
-            });
-          }
         }
-
-        migratedCount++;
       }
 
       // Execute bulk operations if any
       if (bulkOps.length > 0) {
-        const result = await User.bulkWrite(bulkOps);
-        logger.info(`📝 Batch processed: ${skip + 1}-${Math.min(skip + batchSize, totalUsers)} of ${totalUsers}`, {
-          batchModified: result.modifiedCount,
-          totalProcessed: migratedCount,
-          usersWithChanges: usersWithChanges
-        });
-      } else {
-        logger.info(`📝 Batch processed: ${skip + 1}-${Math.min(skip + batchSize, totalUsers)} of ${totalUsers} (no changes needed)`);
+        await User.bulkWrite(bulkOps);
       }
     }
 
     logger.info('✅ Balance migration to 8 decimals completed successfully', {
-      totalUsers: totalUsers,
-      usersProcessed: migratedCount,
-      usersWithChanges: usersWithChanges,
-      usersUnchanged: totalUsers - usersWithChanges
+      totalUsers,
+      usersWithChanges
     });
-
-    // Verification: Check if any balances still have more than 8 decimals
-    const verificationQuery = balanceFields.map(field => ({
-      [field]: { $type: "double", $not: { $eq: { $round: [{ $multiply: [`$${field}`, 100000000] }] } } }
-    }));
-
-    const remainingIssues = await User.countDocuments({ $or: verificationQuery });
-    
-    if (remainingIssues === 0) {
-      logger.info('🎉 All balances successfully limited to 8 decimal places');
-    } else {
-      logger.warn(`⚠️ ${remainingIssues} users may still have precision issues after migration`);
-    }
 
   } catch (error) {
     logger.error('❌ Error during balance migration', {
       error: error.message,
       stack: error.stack
     });
-    // Don't throw error to prevent server startup failure
+  }
+};
+
+// 🚨 NEW: FIX INCONSISTENT USD BALANCES (crypto = 0 but USD > 0)
+const fixInconsistentUSDBalances = async () => {
+  try {
+    logger.info('🔧 Starting inconsistent USD balance fix script');
+
+    // Define crypto balance pairs (crypto balance + corresponding USD balance)
+    const balancePairs = [
+      { crypto: 'btcBalance', usd: 'btcBalanceUSD' },
+      { crypto: 'ethBalance', usd: 'ethBalanceUSD' },
+      { crypto: 'solBalance', usd: 'solBalanceUSD' },
+      { crypto: 'usdtBalance', usd: 'usdtBalanceUSD' },
+      { crypto: 'usdcBalance', usd: 'usdcBalanceUSD' },
+      { crypto: 'avaxBalance', usd: 'avaxBalanceUSD' },
+      { crypto: 'bnbBalance', usd: 'bnbBalanceUSD' },
+      { crypto: 'maticBalance', usd: 'maticBalanceUSD' },
+      { crypto: 'ngnzBalance', usd: 'ngnzBalanceUSD' }
+    ];
+
+    // Build query to find users with inconsistent balances
+    const inconsistentQueries = balancePairs.map(pair => ({
+      [pair.crypto]: 0,           // Crypto balance is 0
+      [pair.usd]: { $gt: 0 }      // But USD balance > 0
+    }));
+
+    const usersWithInconsistentBalances = await User.find({
+      $or: inconsistentQueries
+    }).select(['_id', 'username', 'phonenumber', ...balancePairs.flatMap(p => [p.crypto, p.usd])]).lean();
+
+    if (usersWithInconsistentBalances.length === 0) {
+      logger.info('✅ No users with inconsistent USD balances found');
+      return;
+    }
+
+    logger.info(`🔍 Found ${usersWithInconsistentBalances.length} users with inconsistent USD balances`);
+
+    // Log examples of inconsistencies found
+    let exampleCount = 0;
+    for (const user of usersWithInconsistentBalances) {
+      if (exampleCount >= 3) break; // Only log first 3 examples
+      
+      const inconsistencies = [];
+      for (const pair of balancePairs) {
+        const cryptoBalance = user[pair.crypto];
+        const usdBalance = user[pair.usd];
+        
+        if (cryptoBalance === 0 && usdBalance > 0) {
+          inconsistencies.push({
+            token: pair.crypto.replace('Balance', '').toUpperCase(),
+            cryptoBalance,
+            usdBalance
+          });
+        }
+      }
+      
+      if (inconsistencies.length > 0) {
+        logger.warn('User with inconsistent balances found', {
+          userId: user._id,
+          username: user.username,
+          inconsistencies
+        });
+        exampleCount++;
+      }
+    }
+
+    // Fix inconsistent balances using aggregation pipeline
+    const fixOperations = [];
+    
+    for (const pair of balancePairs) {
+      fixOperations.push({
+        $set: {
+          // If crypto balance is 0, set USD balance to 0, otherwise keep current USD balance
+          [pair.usd]: {
+            $cond: {
+              if: { $eq: [`$${pair.crypto}`, 0] },
+              then: 0,
+              else: `$${pair.usd}`
+            }
+          }
+        }
+      });
+    }
+
+    // Execute the fix
+    const result = await User.updateMany(
+      { $or: inconsistentQueries },
+      [
+        ...fixOperations,
+        {
+          $set: {
+            portfolioLastUpdated: new Date()
+          }
+        }
+      ]
+    );
+
+    logger.info('✅ Inconsistent USD balance fix completed successfully', {
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount
+    });
+
+    // Recalculate total portfolio balances for affected users
+    if (result.modifiedCount > 0) {
+      logger.info('🔄 Recalculating total portfolio balances for affected users');
+      
+      const affectedUsers = await User.find({
+        portfolioLastUpdated: { $gte: new Date(Date.now() - 10000) } // Users updated in last 10 seconds
+      }).select('_id');
+
+      for (const user of affectedUsers) {
+        try {
+          const userData = await User.findById(user._id);
+          if (userData) {
+            const newTotalPortfolio = 
+              (userData.btcBalanceUSD || 0) +
+              (userData.ethBalanceUSD || 0) +
+              (userData.solBalanceUSD || 0) +
+              (userData.usdtBalanceUSD || 0) +
+              (userData.usdcBalanceUSD || 0) +
+              (userData.avaxBalanceUSD || 0) +
+              (userData.bnbBalanceUSD || 0) +
+              (userData.maticBalanceUSD || 0) +
+              (userData.ngnzBalanceUSD || 0);
+
+            await User.findByIdAndUpdate(user._id, {
+              totalPortfolioBalance: parseFloat(newTotalPortfolio.toFixed(8))
+            });
+          }
+        } catch (error) {
+          logger.warn('Failed to recalculate portfolio for user', { userId: user._id, error: error.message });
+        }
+      }
+
+      logger.info('✅ Portfolio recalculation completed');
+    }
+
+    // Verify the fix worked
+    const remainingInconsistencies = await User.countDocuments({ $or: inconsistentQueries });
+    
+    if (remainingInconsistencies === 0) {
+      logger.info('🎉 All inconsistent USD balances successfully fixed');
+    } else {
+      logger.warn(`⚠️ ${remainingInconsistencies} users still have inconsistent balances after fix`);
+    }
+
+  } catch (error) {
+    logger.error('❌ Error during inconsistent USD balance fix', {
+      error: error.message,
+      stack: error.stack
+    });
   }
 };
 
@@ -404,7 +489,6 @@ const migrateTransactions = async () => {
   try {
     logger.info('Starting transaction migration to fix duplicate obiexTransactionId values');
 
-    // Find transactions with legacy obiex_ IDs (not ending in _out or _in)
     const legacyTransactions = await Transaction.find({
       obiexTransactionId: { $regex: '^obiex_', $not: { $regex: '_out$|_in$' } }
     });
@@ -422,18 +506,15 @@ const migrateTransactions = async () => {
         for (const tx of legacyTransactions) {
           const { swapDetails, type } = tx;
           if (swapDetails && swapDetails.swapId) {
-            // Check if both SWAP_OUT and SWAP_IN exist for the swapId
             const { swapOutTransaction, swapInTransaction } = await Transaction.getSwapTransactions(swapDetails.swapId);
             
             if (swapOutTransaction && swapInTransaction) {
-              // Update SWAP_OUT and SWAP_IN to have unique IDs
               if (swapOutTransaction.obiexTransactionId && !swapOutTransaction.obiexTransactionId.endsWith('_out')) {
                 await Transaction.updateOne(
                   { _id: swapOutTransaction._id },
                   { $set: { obiexTransactionId: `${swapOutTransaction.obiexTransactionId}_out`, updatedAt: new Date() } },
                   { session }
                 );
-                logger.info(`Updated SWAP_OUT transaction ${swapOutTransaction._id} to obiexTransactionId: ${swapOutTransaction.obiexTransactionId}_out`);
               }
               if (swapInTransaction.obiexTransactionId && !swapInTransaction.obiexTransactionId.endsWith('_in')) {
                 await Transaction.updateOne(
@@ -441,27 +522,22 @@ const migrateTransactions = async () => {
                   { $set: { obiexTransactionId: `${swapInTransaction.obiexTransactionId}_in`, updatedAt: new Date() } },
                   { session }
                 );
-                logger.info(`Updated SWAP_IN transaction ${swapInTransaction._id} to obiexTransactionId: ${swapInTransaction.obiexTransactionId}_in`);
               }
             } else if (type === 'SWAP_OUT' || type === 'SWAP_IN') {
-              // Handle orphaned transactions (e.g., only SWAP_OUT exists)
               const newId = `${tx.obiexTransactionId}_${type === 'SWAP_OUT' ? 'out' : 'in'}`;
               await Transaction.updateOne(
                 { _id: tx._id },
                 { $set: { obiexTransactionId: newId, updatedAt: new Date() } },
                 { session }
               );
-              logger.info(`Updated orphaned ${type} transaction ${tx._id} to obiexTransactionId: ${newId}`);
             }
           } else {
-            // Non-swap transactions with obiex_ IDs (e.g., DEPOSIT, WITHDRAWAL)
             const newId = `legacy_${tx.obiexTransactionId}_${Math.random().toString(36).substr(2, 9)}`;
             await Transaction.updateOne(
               { _id: tx._id },
               { $set: { obiexTransactionId: newId, updatedAt: new Date() } },
               { session }
             );
-            logger.info(`Updated non-swap transaction ${tx._id} to obiexTransactionId: ${newId}`);
           }
         }
       });
@@ -489,13 +565,10 @@ const startServer = async () => {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
 
-    // 🚨 Run balance fix FIRST (most critical)
+    // 🚨 Run balance migrations in order
     await fixNegativeBalances();
-    
-    // 🚨 Run balance decimal migration
     await migrateBalancesToEightDecimals();
-    
-    // Run transaction migration
+    await fixInconsistentUSDBalances(); // NEW: Fix crypto=0 but USD>0 cases
     await migrateTransactions();
     
     app.listen(PORT, "0.0.0.0", () => {
