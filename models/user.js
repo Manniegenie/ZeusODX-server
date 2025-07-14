@@ -3,6 +3,14 @@ const bcrypt = require('bcryptjs');
 
 const SALT_WORK_FACTOR = 10;
 
+// Helper function to limit to 8 decimal places
+const limitToEightDecimals = (value) => {
+  if (typeof value === 'number') {
+    return Math.round(value * 100000000) / 100000000;
+  }
+  return value;
+};
+
 const userSchema = new mongoose.Schema({
   // Authentication
   username: { type: String }, // Unique index defined below with sparse
@@ -85,48 +93,203 @@ const userSchema = new mongoose.Schema({
     NGNZ: { address: String, network: String, walletReferenceId: String },
   },
 
-  // Wallet Balances - Added new balances for new tokens
-  solBalance: { type: Number, default: 0, min: 0 },
-  solBalanceUSD: { type: Number, default: 0, min: 0 },
-  solPendingBalance: { type: Number, default: 0, min: 0 },
+  // Wallet Balances - Limited to 8 decimal places
+  solBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  solBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  solPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  btcBalance: { type: Number, default: 0, min: 0 },
-  btcBalanceUSD: { type: Number, default: 0, min: 0 },
-  btcPendingBalance: { type: Number, default: 0, min: 0 },
+  btcBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  btcBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  btcPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  usdtBalance: { type: Number, default: 0, min: 0 },
-  usdtBalanceUSD: { type: Number, default: 0, min: 0 },
-  usdtPendingBalance: { type: Number, default: 0, min: 0 },
+  usdtBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  usdtBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  usdtPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  usdcBalance: { type: Number, default: 0, min: 0 },
-  usdcBalanceUSD: { type: Number, default: 0, min: 0 },
-  usdcPendingBalance: { type: Number, default: 0, min: 0 },
+  usdcBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  usdcBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  usdcPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  ethBalance: { type: Number, default: 0, min: 0 },
-  ethBalanceUSD: { type: Number, default: 0, min: 0 },
-  ethPendingBalance: { type: Number, default: 0, min: 0 },
+  ethBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  ethBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  ethPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  bnbBalance: { type: Number, default: 0, min: 0 },
-  bnbBalanceUSD: { type: Number, default: 0, min: 0 },
-  bnbPendingBalance: { type: Number, default: 0, min: 0 },
+  bnbBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  bnbBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  bnbPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  dogeBalance: { type: Number, default: 0, min: 0 },
-  dogeBalanceUSD: { type: Number, default: 0, min: 0 },
-  dogePendingBalance: { type: Number, default: 0, min: 0 },
+  dogeBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  dogeBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  dogePendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  maticBalance: { type: Number, default: 0, min: 0 },
-  maticBalanceUSD: { type: Number, default: 0, min: 0 },
-  maticPendingBalance: { type: Number, default: 0, min: 0 },
+  maticBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  maticBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  maticPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  avaxBalance: { type: Number, default: 0, min: 0 },
-  avaxBalanceUSD: { type: Number, default: 0, min: 0 },
-  avaxPendingBalance: { type: Number, default: 0, min: 0 },
+  avaxBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  avaxBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  avaxPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  ngnzBalance: { type: Number, default: 0, min: 0 },
-  ngnzBalanceUSD: { type: Number, default: 0, min: 0 },
-  ngnzPendingBalance: { type: Number, default: 0, min: 0 },
+  ngnzBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  ngnzBalanceUSD: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
+  ngnzPendingBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
-  totalPortfolioBalance: { type: Number, default: 0, min: 0 },
+  totalPortfolioBalance: { 
+    type: Number, 
+    default: 0, 
+    min: 0,
+    set: limitToEightDecimals
+  },
 
   // Wallet Generation Status
   walletGenerationStatus: {
