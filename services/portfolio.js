@@ -201,7 +201,7 @@ async function getPricesWithCache(tokenSymbols) {
   return Object.fromEntries(tokens.map(t => [t, result.get(t) || 0]));
 }
 
-/** Update one currency balance (not used for swaps) */
+/** Update one currency balance (not for swaps) */
 async function updateUserBalance(userId, currency, amount, session=null) {
   if (!userId || !currency || typeof amount !== 'number') {
     throw new Error('Invalid parameters for balance update');
@@ -221,7 +221,8 @@ async function updateUserBalance(userId, currency, amount, session=null) {
 }
 
 /**
- * Calculate user balances from transactions (treat SWAP_IN/OUT properly)
+ * Calculate user balances from transactions
+ * (treat SWAP_IN as deposit and SWAP_OUT as withdrawal)
  */
 async function getUserPortfolioBalance(userId, asOfDate=null) {
   if (!userId) throw new Error('User ID is required');
@@ -242,17 +243,19 @@ async function getUserPortfolioBalance(userId, asOfDate=null) {
     const tok = tx.currency.toUpperCase();
     if (!SUPPORTED_TOKENS[tok]) continue;
     const curr = balances.get(tok) || 0;
-    if (tx.type === 'DEPOSIT' || tx.type === 'SWAP_IN') {
-      balances.set(tok, curr + tx.amount);
-    } else if (tx.type === 'WITHDRAWAL' || tx.type === 'SWAP_OUT') {
-      balances.set(tok, curr - tx.amount);
-    }
+
+    // SWAP_IN (positive) and SWAP_OUT (negative) are just added
+    balances.set(tok, curr + tx.amount);
   }
 
-  // Filter zero balances
   const nonZero = Array.from(balances.entries()).filter(([,b]) => Math.abs(b) > 1e-8);
   if (nonZero.length === 0) {
-    return { totalPortfolioUSD: 0, tokens: [], lastUpdated: priceCache.lastUpdated ? new Date(priceCache.lastUpdated).toISOString() : null, asOfDate: asOfDate||null };
+    return {
+      totalPortfolioUSD: 0,
+      tokens: [],
+      lastUpdated: priceCache.lastUpdated ? new Date(priceCache.lastUpdated).toISOString() : null,
+      asOfDate: asOfDate || null
+    };
   }
 
   const tokens = nonZero.map(([t]) => t);
@@ -262,7 +265,13 @@ async function getUserPortfolioBalance(userId, asOfDate=null) {
     const price = prices[t]||0;
     const val = b * price;
     total += val;
-    return { token: t, balance: parseFloat(b.toFixed(8)), priceInUSD: parseFloat(price.toFixed(8)), valueInUSD: parseFloat(val.toFixed(2)), isNairaPegged: t==='NGNZ' };
+    return {
+      token: t,
+      balance: parseFloat(b.toFixed(8)),
+      priceInUSD: parseFloat(price.toFixed(8)),
+      valueInUSD: parseFloat(val.toFixed(2)),
+      isNairaPegged: t === 'NGNZ'
+    };
   });
 
   portfolio.sort((a,b) => b.valueInUSD - a.valueInUSD);
@@ -282,7 +291,6 @@ async function updateUserPortfolioBalance(userId, asOfDate=null) {
   const user = await User.findById(userId);
   if (!user) throw new Error(`User not found: ${userId}`);
 
-  // reset all balances
   const reset = {
     solBalance:0, solBalanceUSD:0,
     btcBalance:0, btcBalanceUSD:0,
@@ -301,7 +309,6 @@ async function updateUserPortfolioBalance(userId, asOfDate=null) {
     ...reset
   };
 
-  // fill in non-zero tokens
   pf.tokens.forEach(({ token, balance, valueInUSD }) => {
     const lower = token.toLowerCase();
     fields[`${lower}Balance`]    = balance;
@@ -313,7 +320,7 @@ async function updateUserPortfolioBalance(userId, asOfDate=null) {
   return updated;
 }
 
-/** Reserve and release (unchanged) */
+// Reserve & release (unchanged)
 async function reserveUserBalance(userId, currency, amount) {
   if (!userId||!currency||typeof amount!=='number'||amount<=0) throw new Error('Invalid params');
   const cu = currency.toUpperCase();
@@ -336,10 +343,11 @@ async function releaseReservedBalance(userId, currency, amount) {
   return user;
 }
 
-/** Utilities */
+// Utilities
 function isTokenSupported(token) {
   return SUPPORTED_TOKENS.hasOwnProperty(token.toUpperCase());
 }
+
 function clearPriceCache() {
   priceCache.data.clear();
   priceCache.lastUpdated = null;
@@ -347,6 +355,7 @@ function clearPriceCache() {
   priceCache.updatePromise = null;
   logger.info('Price cache cleared');
 }
+
 function getCacheStats() {
   return {
     cacheSize: priceCache.data.size,
@@ -358,11 +367,13 @@ function getCacheStats() {
     supportedTokens: Object.keys(SUPPORTED_TOKENS)
   };
 }
+
 async function forceRefreshPrices(tokens=[]) {
   clearPriceCache();
   const toFetch = tokens.length ? tokens : Object.keys(SUPPORTED_TOKENS);
   return await getPricesWithCache(toFetch);
 }
+
 async function getOriginalPricesWithCache(tokenSymbols) {
   if (!Array.isArray(tokenSymbols)||tokenSymbols.length===0) return {};
   const tokens = [...new Set(tokenSymbols.map(t=>t.toUpperCase()).filter(t=>SUPPORTED_TOKENS[t]))];
