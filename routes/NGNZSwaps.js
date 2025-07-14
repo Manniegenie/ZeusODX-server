@@ -84,13 +84,13 @@ router.post('/quote', async (req, res) => {
 
     const { isOnramp, sourceCurrency, targetCurrency } = validation;
     
-    let receiveAmount, rate, provider, flow, swapType;
+    let receiveAmount, rate, provider, flow, swapType, cryptoPrice;
 
     if (isOnramp) {
       // NGNZ to Crypto (Onramp)
       // Need to get crypto price for the target currency
       const cryptoPrices = await getPricesWithCache([targetCurrency]);
-      const cryptoPrice = cryptoPrices[targetCurrency];
+      cryptoPrice = cryptoPrices[targetCurrency];
       
       if (!cryptoPrice) {
         logger.error(`Onramp failed: Price not available for ${targetCurrency}`);
@@ -113,7 +113,7 @@ router.post('/quote', async (req, res) => {
       // Crypto to NGNZ (Offramp)
       // Need to get crypto price for the source currency
       const cryptoPrices = await getPricesWithCache([sourceCurrency]);
-      const cryptoPrice = cryptoPrices[sourceCurrency];
+      cryptoPrice = cryptoPrices[sourceCurrency];
       
       if (!cryptoPrice) {
         logger.error(`Offramp failed: Price not available for ${sourceCurrency}`);
