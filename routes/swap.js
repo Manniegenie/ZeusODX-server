@@ -1,8 +1,6 @@
 // routes/swap.js
 
 const express = require('express');
-const onrampService  = require('../services/onramppriceservice');
-const offrampService = require('../services/offramppriceservice');
 const { getPricesWithCache }         = require('../services/portfolio');
 const { updateBalancesOnSwap }       = require('../services/swapBalanceService');
 const Transaction                    = require('../models/transaction');
@@ -37,62 +35,6 @@ async function calculateCryptoExchange(fromCurrency, toCurrency, amount) {
   return { success: true, fromPrice: f, toPrice: t, exchangeRate: rate, receiveAmount: amount * rate };
 }
 
-async function handleNGNZSwap(req, res, from, to, amount, side) {
-  try {
-    const userId = req.user.id;
-    const f = from.toUpperCase(), t = to.toUpperCase();
-    const isOn  = f === 'NGNZ' && t !== 'NGNZ';
-    const isOff = f !== 'NGNZ' && t === 'NGNZ';
-
-    if (!isOn && !isOff) {
-      return res.status(400).json({ success: false, message: 'Invalid NGNZ swap' });
-    }
-
-    let receiveAmount, rate;
-    let provider, flow;
-
-    if (isOn) {
-      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, t);
-      rate = (await onrampService.getOnrampRate()).finalPrice;
-      provider = 'INTERNAL_ONRAMP';
-      flow = 'ONRAMP';
-    } else {
-      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, f);
-      rate = (await offrampService.getCurrentRate()).finalPrice;
-      provider = 'INTERNAL_OFFRAMP';
-      flow = 'OFFRAMP';
-    }
-
-    const id = `internal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const expiresAt = new Date(Date.now() + 30000).toISOString();
-
-    const payload = {
-      id,
-      amount,
-      amountReceived: receiveAmount,
-      rate,
-      side,
-      sourceCurrency: f,
-      targetCurrency: t,
-      provider,
-      type: 'CRYPTO_TO_CRYPTO', // Consistent with crypto swaps
-      flow,                     // Internal use only
-      expiresAt
-    };
-
-    quoteCache.set(id, payload);
-
-    return res.json({
-      success: true,
-      message: 'Quote created successfully',
-      data: { data: payload, ...payload }
-    });
-  } catch (err) {
-    logger.error('NGNZ swap error', { error: err.stack });
-    return res.status(500).json({ success: false, message: err.message });
-  }
-}
-
 router.post('/quote', async (req, res) => {
   try {
     const { from, to, amount, side } = req.body;
@@ -100,17 +42,13 @@ router.post('/quote', async (req, res) => {
     if (typeof amount!=='number'||amount<=0)   return res.status(400).json({ success:false, message:'Invalid amount' });
     if (!['BUY','SELL'].includes(side))        return res.status(400).json({ success:false, message:'Invalid side' });
 
-    if ([from,to].some(c=>c.toUpperCase()==='NGNZ')) {
-      return handleNGNZSwap(req,res,from,to,amount,side);
-    }
-
     const result = await calculateCryptoExchange(from, to, amount);
     const id     = `internal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const expiresAt = new Date(Date.now()+30000).toISOString();
     const payload = {
       id, amount, amountReceived: result.receiveAmount, rate: result.exchangeRate,
       side, sourceCurrency:from.toUpperCase(), targetCurrency:to.toUpperCase(),
-      provider:'INTERNAL_EXCHANGE', expiresAt
+      provider:'INTERNAL_EXCHANGE', type:'CRYPTO_TO_CRYPTO', expiresAt
     };
 
     quoteCache.set(id, payload);
