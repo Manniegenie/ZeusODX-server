@@ -11,134 +11,114 @@ const logger = require('../utils/logger');
 const router = express.Router();
 
 const TOKEN_MAP = {
-  BTC: { currency: 'BTC', name: 'Bitcoin' },
-  ETH: { currency: 'ETH', name: 'Ethereum' },
-  SOL: { currency: 'SOL', name: 'Solana' },
+  BTC:  { currency: 'BTC',  name: 'Bitcoin' },
+  ETH:  { currency: 'ETH',  name: 'Ethereum' },
+  SOL:  { currency: 'SOL',  name: 'Solana' },
   USDT: { currency: 'USDT', name: 'Tether' },
   USDC: { currency: 'USDC', name: 'USD Coin' },
-  BNB: { currency: 'BNB', name: 'Binance Coin' },
-  MATIC: { currency: 'MATIC', name: 'Polygon' },
+  BNB:  { currency: 'BNB',  name: 'Binance Coin' },
+  MATIC:{ currency: 'MATIC',name: 'Polygon' },
   AVAX: { currency: 'AVAX', name: 'Avalanche' },
-  NGNZ: { currency: 'NGNZ', name: 'Nigerian Naira Bank' }
+  NGNZ: { currency: 'NGNZ', name: 'Nigerian Naira Bank' },
 };
 
-// In-memory cache for quotes
+// In-memory quote cache
 const quoteCache = new Map();
 
 /**
- * Validate that user has enough balance for a swap
+ * Validates that the user has enough balance
  */
 async function validateUserBalance(userId, currency, amount) {
   const user = await User.findById(userId);
-  if (!user) {
-    return { success: false, message: 'User not found' };
-  }
+  if (!user) return { success: false, message: 'User not found' };
   const field = `${currency.toLowerCase()}Balance`;
-  const available = user[field] || 0;
-  if (available < amount) {
+  const avail = user[field] || 0;
+  if (avail < amount) {
     return {
       success: false,
-      message: `Insufficient ${currency} balance. Available: ${available}, Required: ${amount}`,
-      availableBalance: available
+      message: `Insufficient ${currency} balance. Available: ${avail}, Required: ${amount}`,
+      availableBalance: avail
     };
   }
-  return { success: true, availableBalance: available };
+  return { success: true, availableBalance: avail };
 }
 
 /**
- * Calculate cross-crypto exchange via price cache
+ * Calculate price for a crypto-to-crypto swap
  */
 async function calculateCryptoExchange(fromCurrency, toCurrency, amount) {
   const from = fromCurrency.toUpperCase();
   const to   = toCurrency.toUpperCase();
-
   const prices = await getPricesWithCache([from, to]);
-  const fromPrice = prices[from];
-  const toPrice   = prices[to];
-
+  const fromPrice = prices[from], toPrice = prices[to];
   if (!fromPrice || !toPrice) {
     throw new Error(`Price unavailable for ${!fromPrice ? from : to}`);
   }
-
   const rate = fromPrice / toPrice;
-  const receiveAmount = amount * rate;
-
-  return {
+  return { 
     success: true,
     fromPrice,
     toPrice,
     exchangeRate: rate,
-    receiveAmount
+    receiveAmount: amount * rate 
   };
 }
 
 /**
- * Handle NGNZ on- and off-ramps
+ * Handle NGNZ onramp/offramp swaps
  */
 async function handleNGNZSwap(req, res, from, to, amount, side) {
   try {
     const userId = req.user.id;
-    const fromU = from.toUpperCase();
-    const toU   = to.toUpperCase();
-
-    const isOnramp  = fromU === 'NGNZ' && toU !== 'NGNZ';
-    const isOfframp = fromU !== 'NGNZ' && toU === 'NGNZ';
-    if (!isOnramp && !isOfframp) {
+    const fromU = from.toUpperCase(), toU = to.toUpperCase();
+    const isOn  = fromU === 'NGNZ' && toU !== 'NGNZ';
+    const isOff = fromU !== 'NGNZ' && toU === 'NGNZ';
+    if (!isOn && !isOff) {
       return res.status(400).json({ success: false, message: 'Invalid NGNZ swap' });
     }
 
     let receiveAmount, rate;
-    if (isOnramp) {
+    if (isOn) {
       receiveAmount = await onrampService.calculateCryptoFromNaira(amount, toU);
-      rate = (await onrampService.getOnrampRate()).finalPrice;
+      rate          = (await onrampService.getOnrampRate()).finalPrice;
     } else {
       receiveAmount = await offrampService.calculateNairaFromCrypto(amount, fromU);
-      rate = (await offrampService.getCurrentRate()).finalPrice;
+      rate          = (await offrampService.getCurrentRate()).finalPrice;
     }
 
-    const quoteId = `ngnz_${isOnramp ? 'on' : 'off'}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const id        = `ngnz_${isOn ? 'on' : 'off'}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const expiresAt = new Date(Date.now() + 30_000).toISOString();
-
-    const quote = {
-      id: quoteId,
+    const payload   = {
+      id,
       amount,
       amountReceived: receiveAmount,
       rate,
       side,
       sourceCurrency: fromU,
       targetCurrency: toU,
-      provider: isOnramp ? 'INTERNAL_ONRAMP' : 'INTERNAL_OFFRAMP',
-      type: isOnramp ? 'onramp' : 'offramp',
+      provider: isOn ? 'INTERNAL_ONRAMP' : 'INTERNAL_OFFRAMP',
+      type:     isOn ? 'onramp' : 'offramp',
       expiresAt
     };
 
-    quoteCache.set(quoteId, quote);
+    quoteCache.set(id, payload);
 
     return res.json({
       success: true,
-      message: `NGNZ ${isOnramp ? 'onramp' : 'offramp'} quote created`,
+      message: `NGNZ ${isOn ? 'onramp' : 'offramp'} quote created`,
       data: {
-        id: quoteId,
-        amount,
-        amountReceived: receiveAmount,
-        rate,
-        side,
-        expiresIn: 30,
-        expiryDate: expiresAt,
-        sourceCurrency: fromU,
-        targetCurrency: toU,
-        provider: quote.provider,
-        acceptable: true
+        data: payload,
+        ...payload
       }
     });
   } catch (err) {
-    logger.error('NGNZ swap error', { error: err.message, stack: err.stack });
+    logger.error('NGNZ swap error', { error: err.stack });
     return res.status(500).json({ success: false, message: err.message });
   }
 }
 
 /**
- * Create a new swap quote
+ * POST /swap/quote — create a fresh quote
  */
 router.post('/quote', async (req, res) => {
   try {
@@ -153,18 +133,17 @@ router.post('/quote', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Side must be BUY or SELL' });
     }
 
-    // NGNZ on/off-ramp?
+    // NGNZ special case?
     if ([from,to].some(c => c.toUpperCase() === 'NGNZ')) {
       return handleNGNZSwap(req, res, from, to, amount, side);
     }
 
-    // Crypto ↔ Crypto
-    const result = await calculateCryptoExchange(from, to, amount);
-    const quoteId = `internal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const expiresAt = new Date(Date.now() + 30_000).toISOString();
-
-    const quote = {
-      id: quoteId,
+    // Crypto-to-crypto
+    const result   = await calculateCryptoExchange(from, to, amount);
+    const id       = `internal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const expiresAt= new Date(Date.now() + 30_000).toISOString();
+    const payload  = {
+      id,
       amount,
       amountReceived: result.receiveAmount,
       rate: result.exchangeRate,
@@ -172,44 +151,33 @@ router.post('/quote', async (req, res) => {
       sourceCurrency: from.toUpperCase(),
       targetCurrency: to.toUpperCase(),
       provider: 'INTERNAL_EXCHANGE',
-      fromPrice: result.fromPrice,
-      toPrice: result.toPrice,
       expiresAt
     };
 
-    quoteCache.set(quoteId, quote);
+    quoteCache.set(id, payload);
 
     return res.json({
       success: true,
       message: 'Quote created successfully',
       data: {
-        id: quoteId,
-        amount,
-        amountReceived: result.receiveAmount,
-        rate: result.exchangeRate,
-        side,
-        expiresIn: 30,
-        expiryDate: expiresAt,
-        sourceCurrency: quote.sourceCurrency,
-        targetCurrency: quote.targetCurrency,
-        provider: quote.provider,
-        acceptable: true
+        data: payload,
+        ...payload
       }
     });
   } catch (err) {
-    logger.error('POST /swap/quote error', { error: err.message, stack: err.stack });
+    logger.error('POST /swap/quote error', { error: err.stack });
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
 /**
- * Execute a swap against a previously created quote
+ * POST /swap/quote/:quoteId — execute a swap from a quote
  */
 router.post('/quote/:quoteId', async (req, res) => {
   try {
     const { quoteId } = req.params;
-    const userId = req.user.id;
-    const quote = quoteCache.get(quoteId);
+    const userId      = req.user.id;
+    const quote       = quoteCache.get(quoteId);
 
     if (!quote) {
       return res.status(404).json({ success: false, message: 'Quote not found or expired' });
@@ -219,29 +187,28 @@ router.post('/quote/:quoteId', async (req, res) => {
       return res.status(410).json({ success: false, message: 'Quote has expired' });
     }
 
-    const { sourceCurrency, targetCurrency, amount: payAmount, amountReceived: receiveAmount } = quote;
-    // Validate available balance
-    const balanceCheck = await validateUserBalance(userId, sourceCurrency, payAmount);
-    if (!balanceCheck.success) {
+    // Validate balance
+    const val = await validateUserBalance(userId, quote.sourceCurrency, quote.amount);
+    if (!val.success) {
       return res.status(400).json({
         success: false,
-        message: balanceCheck.message,
+        message: val.message,
         balanceError: true,
-        availableBalance: balanceCheck.availableBalance,
-        requiredAmount: payAmount,
-        currency: sourceCurrency
+        availableBalance: val.availableBalance,
+        requiredAmount: quote.amount,
+        currency: quote.sourceCurrency
       });
     }
 
-    // Create the swap transactions
+    // Create two swap transactions under the hood
     const swapTx = await Transaction.createSwapTransactions({
       userId,
       quoteId,
-      sourceCurrency,
-      targetCurrency,
-      sourceAmount: payAmount,
-      targetAmount: receiveAmount,
-      exchangeRate: receiveAmount / payAmount,
+      sourceCurrency: quote.sourceCurrency,
+      targetCurrency: quote.targetCurrency,
+      sourceAmount: quote.amount,
+      targetAmount: quote.amountReceived,
+      exchangeRate: quote.amountReceived / quote.amount,
       swapType: quote.type || 'CRYPTO_TO_CRYPTO',
       provider: quote.provider,
       markdownApplied: 0,
@@ -252,62 +219,65 @@ router.post('/quote/:quoteId', async (req, res) => {
     });
     logger.info('Swap transactions created', { userId, quoteId, swapId: swapTx.swapId });
 
-    // ——— Use portfolio service to update balances exactly like the webhook does ———
+    // Update balances just like webhook
     try {
       await updateUserPortfolioBalance(userId);
       logger.info('Balances updated via portfolio service after swap', { userId });
-    } catch (updateErr) {
-      logger.error('Portfolio update failed after swap', { userId, error: updateErr.message });
-      // You can choose to return a warning here if desired
+    } catch (e) {
+      logger.error('Portfolio update failed after swap', { userId, error: e.message });
     }
 
-    // Clean up the quote
+    // Clean up
     quoteCache.delete(quoteId);
 
-    // Respond
+    const responsePayload = {
+      swapId:    swapTx.swapId,
+      quoteId,
+      status:    'SUCCESSFUL',
+      swapDetails: {
+        sourceCurrency: quote.sourceCurrency,
+        targetCurrency: quote.targetCurrency,
+        sourceAmount:   quote.amount,
+        targetAmount:   quote.amountReceived,
+        exchangeRate:   quote.amountReceived / quote.amount,
+        swapType:       quote.type || 'CRYPTO_TO_CRYPTO',
+        provider:       quote.provider,
+        createdAt:      new Date().toISOString(),
+        completedAt:    new Date().toISOString()
+      },
+      transactions: {
+        swapOut: {
+          id:       swapTx.swapOutTransaction._id,
+          type:     swapTx.swapOutTransaction.type,
+          currency: quote.sourceCurrency,
+          amount:  -quote.amount
+        },
+        swapIn: {
+          id:       swapTx.swapInTransaction._id,
+          type:     swapTx.swapInTransaction.type,
+          currency: quote.targetCurrency,
+          amount:   quote.amountReceived
+        }
+      },
+      balanceUpdated: true
+    };
+
     return res.json({
       success: true,
       message: 'Swap completed successfully',
       data: {
-        swapId: swapTx.swapId,
-        quoteId,
-        status: 'SUCCESSFUL',
-        swapDetails: {
-          sourceCurrency,
-          targetCurrency,
-          sourceAmount: payAmount,
-          targetAmount: receiveAmount,
-          exchangeRate: receiveAmount / payAmount,
-          swapType: quote.type || 'CRYPTO_TO_CRYPTO',
-          provider: quote.provider,
-          createdAt: new Date().toISOString(),
-          completedAt: new Date().toISOString()
-        },
-        transactions: {
-          swapOut: {
-            id: swapTx.swapOutTransaction._id,
-            type: swapTx.swapOutTransaction.type,
-            currency: sourceCurrency,
-            amount: -payAmount
-          },
-          swapIn: {
-            id: swapTx.swapInTransaction._id,
-            type: swapTx.swapInTransaction.type,
-            currency: targetCurrency,
-            amount: receiveAmount
-          }
-        },
-        balanceUpdated: true
+        data: responsePayload,
+        ...responsePayload
       }
     });
   } catch (err) {
-    logger.error('POST /swap/quote/:quoteId error', { error: err.message, stack: err.stack });
+    logger.error('POST /swap/quote/:quoteId error', { error: err.stack });
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
 /**
- * List supported tokens
+ * GET /swap/tokens — list supported tokens
  */
 router.get('/tokens', (req, res) => {
   const tokens = Object.entries(TOKEN_MAP).map(([code, info]) => ({
@@ -324,14 +294,8 @@ router.get('/tokens', (req, res) => {
 });
 
 logger.info('Working swap router initialized', {
-  endpoints: ['POST /swap/quote', 'POST /swap/quote/:quoteId', 'GET /swap/tokens'],
-  supportedTokens: Object.keys(TOKEN_MAP),
-  features: [
-    'NGNZ onramp/offramp support',
-    'Crypto-to-crypto swaps via price cache',
-    'Unified balance updates via portfolio service',
-    'Immediate swap completion'
-  ]
+  endpoints: ['/swap/quote', '/swap/quote/:quoteId', '/swap/tokens'],
+  supportedTokens: Object.keys(TOKEN_MAP)
 });
 
 module.exports = router;
