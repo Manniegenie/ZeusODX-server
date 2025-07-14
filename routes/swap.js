@@ -5,7 +5,7 @@ const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { validateUserBalance, getUserAvailableBalance } = require('../services/balance');
-const { updateUserPortfolioBalance } = require('../services/portfolio');
+const { updateUserBalance, updateUserPortfolioBalance } = require('../services/portfolio');
 const Transaction = require('../models/transaction'); // Add Transaction model
 const User = require('../models/user'); // Add User model for NGNZ balance updates
 const logger = require('../utils/logger');
@@ -736,7 +736,7 @@ router.post('/quote/:quoteId', async (req, res) => {
         return res.status(500).json(errorResponse);
       }
 
-      // Extract Obiex transaction ID for webhook integration
+      // Extract Obiex transaction ID for tracking
       if (swapResult?.data) {
         obiexTransactionId = swapResult.data.id || swapResult.data.transactionId || swapResult.data.reference;
         
@@ -748,7 +748,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       }
     }
 
-    // Create swap transactions in PENDING status (webhooks will update balances for Obiex, direct update for NGNZ)
+    // Create swap transactions - they will be marked as SUCCESSFUL immediately for both NGNZ and regular swaps
     try {
       logger.info('POST /swap/quote/:quoteId - Creating swap transactions', {
         userId,
@@ -783,7 +783,7 @@ router.post('/quote/:quoteId', async (req, res) => {
         });
       }
 
-      // Create swap transaction pair using your Transaction model
+      // Create swap transaction pair - SUCCESSFUL status for immediate completion
       const swapTransactions = await Transaction.createSwapTransactions({
         userId,
         quoteId,
@@ -797,8 +797,8 @@ router.post('/quote/:quoteId', async (req, res) => {
         markdownApplied,
         swapFee: 0, // You can calculate this if needed
         quoteExpiresAt: new Date(quoteData.expiresAt),
-        status: 'PENDING',
-        obiexTransactionId // Pass obiexTransactionId for webhook integration
+        status: 'SUCCESSFUL', // Mark as SUCCESSFUL immediately
+        obiexTransactionId // Pass obiexTransactionId for tracking
       });
 
       logger.info('POST /swap/quote/:quoteId - Swap transactions created', {
@@ -809,62 +809,70 @@ router.post('/quote/:quoteId', async (req, res) => {
         swapInTransactionId: swapTransactions.swapInTransaction._id
       });
 
-      // UPDATED: For NGNZ swaps, update balances directly and mark as SUCCESSFUL
-      if (isNGNZQuote) {
-        try {
-          logger.info('POST /swap/quote/:quoteId - Processing NGNZ swap balance updates directly', {
-            userId,
-            swapId: swapTransactions.swapId,
-            sourceCurrency,
-            targetCurrency,
-            payAmount,
-            receiveAmount
-          });
+      // For ALL swaps (both NGNZ and regular), update balances directly using portfolio service
+      try {
+        logger.info('POST /swap/quote/:quoteId - Processing balance updates directly', {
+          userId,
+          swapId: swapTransactions.swapId,
+          sourceCurrency,
+          targetCurrency,
+          payAmount,
+          receiveAmount
+        });
 
-          // Update transaction status to SUCCESSFUL for NGNZ swaps
-          await Transaction.updateSwapStatus(swapTransactions.swapId, 'SUCCESSFUL');
-
+        // For NGNZ swaps, use the NGNZ helper function
+        if (isNGNZQuote) {
           // Deduct source currency (amount being paid)
           await updateUserBalanceForNGNZ(userId, sourceCurrency, -payAmount);
-          logger.info(`POST /swap/quote/:quoteId - NGNZ Swap: Deducted ${payAmount} ${sourceCurrency} from user ${userId}`);
+          logger.info(`POST /swap/quote/:quoteId - NGNZ: Deducted ${payAmount} ${sourceCurrency} from user ${userId}`);
 
           // Add target currency (amount being received)
           await updateUserBalanceForNGNZ(userId, targetCurrency, receiveAmount);
-          logger.info(`POST /swap/quote/:quoteId - NGNZ Swap: Added ${receiveAmount} ${targetCurrency} to user ${userId}`);
+          logger.info(`POST /swap/quote/:quoteId - NGNZ: Added ${receiveAmount} ${targetCurrency} to user ${userId}`);
+        } else {
+          // For regular swaps, use portfolio service
+          // Deduct source currency (amount being paid)
+          await updateUserBalance(userId, sourceCurrency, -payAmount);
+          logger.info(`POST /swap/quote/:quoteId - Deducted ${payAmount} ${sourceCurrency} from user ${userId}`);
 
-          // Update portfolio balance
-          await updateUserPortfolioBalance(userId);
-          logger.info(`POST /swap/quote/:quoteId - NGNZ Swap: Updated portfolio balance for user ${userId}`);
-
-          logger.info('POST /swap/quote/:quoteId - NGNZ swap completed successfully with direct balance updates', {
-            userId,
-            swapId: swapTransactions.swapId,
-            sourceCurrency,
-            targetCurrency,
-            sourceAmount: payAmount,
-            targetAmount: receiveAmount,
-            exchangeRate
-          });
-
-        } catch (balanceError) {
-          logger.error('POST /swap/quote/:quoteId - Failed to update balances for NGNZ swap', {
-            userId,
-            swapId: swapTransactions.swapId,
-            error: balanceError.message,
-            stack: balanceError.stack
-          });
-
-          // Update transactions to FAILED status
-          await Transaction.updateSwapStatus(swapTransactions.swapId, 'FAILED');
-
-          const errorResponse = {
-            success: false,
-            message: "NGNZ swap failed during balance update. Please contact support.",
-            error: balanceError.message
-          };
-          
-          return res.status(500).json(errorResponse);
+          // Add target currency (amount being received)  
+          await updateUserBalance(userId, targetCurrency, receiveAmount);
+          logger.info(`POST /swap/quote/:quoteId - Added ${receiveAmount} ${targetCurrency} to user ${userId}`);
         }
+
+        // Update portfolio balance (for both NGNZ and regular swaps)
+        await updateUserPortfolioBalance(userId);
+        logger.info(`POST /swap/quote/:quoteId - Updated portfolio balance for user ${userId}`);
+
+        logger.info('POST /swap/quote/:quoteId - Swap completed successfully with direct balance updates', {
+          userId,
+          swapId: swapTransactions.swapId,
+          sourceCurrency,
+          targetCurrency,
+          sourceAmount: payAmount,
+          targetAmount: receiveAmount,
+          exchangeRate,
+          swapType
+        });
+
+      } catch (balanceError) {
+        logger.error('POST /swap/quote/:quoteId - Failed to update balances for swap', {
+          userId,
+          swapId: swapTransactions.swapId,
+          error: balanceError.message,
+          stack: balanceError.stack
+        });
+
+        // Update transactions to FAILED status
+        await Transaction.updateSwapStatus(swapTransactions.swapId, 'FAILED');
+
+        const errorResponse = {
+          success: false,
+          message: "Swap failed during balance update. Please contact support.",
+          error: balanceError.message
+        };
+        
+        return res.status(500).json(errorResponse);
       }
 
       // Clean up quote from cache
@@ -878,13 +886,11 @@ router.post('/quote/:quoteId', async (req, res) => {
       
       const finalResponse = {
         success: true,
-        message: isNGNZQuote 
-          ? "NGNZ swap completed successfully with balance updates." 
-          : "Swap initiated successfully. Transactions created in pending status.",
+        message: "Swap completed successfully with balance updates.",
         data: {
           swapId: swapTransactions.swapId,
           quoteId,
-          status: isNGNZQuote ? 'SUCCESSFUL' : 'PENDING',
+          status: 'SUCCESSFUL', // Always SUCCESSFUL now
           swapDetails: {
             sourceCurrency,
             targetCurrency,
@@ -893,7 +899,7 @@ router.post('/quote/:quoteId', async (req, res) => {
             exchangeRate,
             swapType,
             createdAt: new Date().toISOString(),
-            completedAt: isNGNZQuote ? new Date().toISOString() : null
+            completedAt: new Date().toISOString() // Always completed immediately
           },
           transactions: {
             swapOut: {
@@ -912,7 +918,7 @@ router.post('/quote/:quoteId', async (req, res) => {
             }
           },
           obiexData: swapResult?.data || null,
-          balanceUpdated: isNGNZQuote // Indicates if balance was updated directly
+          balanceUpdated: true // Always true since we update directly
         }
       };
 
@@ -920,7 +926,7 @@ router.post('/quote/:quoteId', async (req, res) => {
         userId,
         quoteId,
         swapId: swapTransactions.swapId,
-        finalStatus: isNGNZQuote ? 'SUCCESSFUL' : 'PENDING',
+        finalStatus: 'SUCCESSFUL',
         response: finalResponse
       });
 
@@ -1088,7 +1094,7 @@ router.get('/balance/:currency', async (req, res) => {
 });
 
 // Log router initialization
-logger.info('Swap router initialized', {
+logger.info('Swap router initialized with direct balance updates', {
   endpoints: [
     'POST /swap/quote',
     'POST /swap/quote/:quoteId', 
@@ -1096,7 +1102,14 @@ logger.info('Swap router initialized', {
     'GET /swap/balance/:currency'
   ],
   tokenMapSize: Object.keys(TOKEN_MAP).length,
-  supportedTokens: Object.keys(TOKEN_MAP)
+  supportedTokens: Object.keys(TOKEN_MAP),
+  features: [
+    'Direct balance updates',
+    'Immediate swap completion',
+    'NGNZ onramp/offramp support',
+    'Global markdown application',
+    'Portfolio balance updates'
+  ]
 });
 
 module.exports = router;
