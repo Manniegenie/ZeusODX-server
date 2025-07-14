@@ -538,31 +538,12 @@ function calculateUSDValue(swapData, cryptoPrice = null, exchangeRate = null) {
 }
 
 /**
- * Validates swap request parameters with frontend compatibility
+ * Validates swap request parameters
  * @param {Object} body - Request body
  * @returns {Object} Validation result
  */
 function validateSwapRequest(body) {
-  // Support both frontend formats:
-  // Frontend: { from, to, amount, side }
-  // Backend: { fromCurrency, toCurrency, amount, swapType }
-  
-  const fromCurrency = body.fromCurrency || body.from;
-  const toCurrency = body.toCurrency || body.to;
-  const amount = body.amount;
-  let swapType = body.swapType;
-  
-  // Map frontend 'side' to backend 'swapType' if needed
-  if (!swapType && body.side) {
-    // For frontend compatibility: side 'SELL' means selling crypto (offramp), 'BUY' means buying crypto (onramp)
-    if (body.side === 'SELL') {
-      // Selling means from crypto to fiat (offramp) or from high value to low value
-      // We'll determine this based on currencies below
-    } else if (body.side === 'BUY') {
-      // Buying means from fiat to crypto (onramp) or from low value to high value  
-      // We'll determine this based on currencies below
-    }
-  }
+  const { fromCurrency, toCurrency, amount, swapType } = body;
 
   const errors = [];
 
@@ -575,6 +556,7 @@ function validateSwapRequest(body) {
   // Convert values to strings safely
   const fromCurrencyStr = safeStringTrim(fromCurrency);
   const toCurrencyStr = safeStringTrim(toCurrency);
+  const swapTypeStr = safeStringTrim(swapType);
 
   // Required fields validation
   if (!fromCurrencyStr) {
@@ -612,13 +594,15 @@ function validateSwapRequest(body) {
   const upperFromCurrency = fromCurrencyStr.toUpperCase();
   const upperToCurrency = toCurrencyStr.toUpperCase();
 
-  // Check for NGNZ swaps - auto-detect swap type
+  // Check for NGNZ swaps - auto-detect swap type but don't require swapType param
   const ngnzDetection = detectNGNZSwap(upperFromCurrency, upperToCurrency);
-  let finalSwapType = swapType;
+  let finalSwapType = swapTypeStr ? swapTypeStr.toLowerCase() : null;
   
   if (ngnzDetection.isNGNZSwap) {
-    // For NGNZ swaps, auto-detect swap type
-    finalSwapType = ngnzDetection.isOnramp ? 'onramp' : 'offramp';
+    // For NGNZ swaps, auto-detect swap type if not provided
+    if (!finalSwapType) {
+      finalSwapType = ngnzDetection.isOnramp ? 'onramp' : 'offramp';
+    }
     
     // NGNZ swap validation
     if (ngnzDetection.isOnramp) {
@@ -639,50 +623,34 @@ function validateSwapRequest(body) {
       }
     }
   } else {
-    // Check if this is an NGNB swap
-    const isNGNBSwap = upperFromCurrency === 'NGNB' || upperToCurrency === 'NGNB';
-    
-    if (isNGNBSwap) {
-      // NGNB swap - auto-detect swap type if not provided
-      if (!finalSwapType) {
-        finalSwapType = upperFromCurrency === 'NGNB' ? 'onramp' : 'offramp';
+    // Original NGNB swap validation - swapType is required
+    if (!swapTypeStr) {
+      errors.push('Swap type is required (onramp/offramp)');
+    }
+
+    // Swap type validation
+    const validSwapTypes = ['onramp', 'offramp'];
+    if (swapTypeStr && !validSwapTypes.includes(swapTypeStr.toLowerCase())) {
+      errors.push('Invalid swap type. Must be either "onramp" or "offramp"');
+    }
+
+    // For onramp: NGNB to crypto
+    if (finalSwapType === 'onramp') {
+      if (upperFromCurrency !== 'NGNB') {
+        errors.push('For onramp swaps, from currency must be NGNB');
       }
-      
-      // NGNB swap validation
-      if (finalSwapType === 'onramp') {
-        if (upperFromCurrency !== 'NGNB') {
-          errors.push('For onramp swaps, from currency must be NGNB');
-        }
-        if (upperToCurrency === 'NGNB' || !SUPPORTED_TOKENS[upperToCurrency]) {
-          errors.push(`For onramp swaps, to currency must be a supported crypto: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
-        }
-      } else if (finalSwapType === 'offramp') {
-        if (upperToCurrency !== 'NGNB') {
-          errors.push('For offramp swaps, to currency must be NGNB');
-        }
-        if (upperFromCurrency === 'NGNB' || !SUPPORTED_TOKENS[upperFromCurrency]) {
-          errors.push(`For offramp swaps, from currency must be a supported crypto: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
-        }
+      if (upperToCurrency === 'NGNB' || !SUPPORTED_TOKENS[upperToCurrency]) {
+        errors.push(`For onramp swaps, to currency must be a supported crypto: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
       }
-    } else {
-      // Crypto to crypto swap - determine swap type based on side if provided
-      if (body.side === 'SELL') {
-        // For crypto-to-crypto, we'll default to treating the first crypto as being "sold"
-        // This is a simple crypto-to-crypto swap, but we still need a swap type
-        // We'll default to 'offramp' for crypto-to-crypto SELL operations
-        finalSwapType = 'offramp';
-      } else if (body.side === 'BUY') {
-        finalSwapType = 'onramp'; 
-      } else {
-        errors.push('Swap type is required (onramp/offramp) for non-NGNB/NGNZ swaps');
+    }
+
+    // For offramp: crypto to NGNB
+    if (finalSwapType === 'offramp') {
+      if (upperToCurrency !== 'NGNB') {
+        errors.push('For offramp swaps, to currency must be NGNB');
       }
-      
-      // Validate both currencies are supported for crypto-to-crypto
-      if (!SUPPORTED_TOKENS[upperFromCurrency]) {
-        errors.push(`Unsupported from currency: ${upperFromCurrency}. Supported: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
-      }
-      if (!SUPPORTED_TOKENS[upperToCurrency]) {
-        errors.push(`Unsupported to currency: ${upperToCurrency}. Supported: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
+      if (upperFromCurrency === 'NGNB' || !SUPPORTED_TOKENS[upperFromCurrency]) {
+        errors.push(`For offramp swaps, from currency must be a supported crypto: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
       }
     }
   }
@@ -767,94 +735,6 @@ async function checkDuplicateSwap(userId, fromCurrency, toCurrency, amount) {
 }
 
 /**
- * Calculates crypto-to-crypto swap rates using portfolio.js
- * @param {Object} swapData - Swap parameters
- * @returns {Promise<Object>} Crypto-to-crypto calculation result
- */
-async function calculateCryptoToCryptoRates(swapData) {
-  const { fromCurrency, toCurrency, amount } = swapData;
-  
-  try {
-    logger.info('Processing crypto-to-crypto swap calculation', {
-      fromCurrency,
-      toCurrency,
-      amount
-    });
-    
-    // Get crypto prices in USD using portfolio.js
-    const prices = await getPricesWithCache([fromCurrency, toCurrency]);
-    const fromPrice = prices[fromCurrency];
-    const toPrice = prices[toCurrency];
-    
-    if (!fromPrice || fromPrice <= 0) {
-      throw new Error(`Unable to fetch current price for ${fromCurrency}`);
-    }
-    
-    if (!toPrice || toPrice <= 0) {
-      throw new Error(`Unable to fetch current price for ${toCurrency}`);
-    }
-    
-    // Calculate: from amount * from USD price / to USD price = to amount
-    const fromUsdValue = amount * fromPrice;
-    const toAmount = fromUsdValue / toPrice;
-    
-    const result = {
-      fromAmount: amount,
-      toAmount: parseFloat(toAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
-      fromPrice,
-      toPrice,
-      exchangeRate: {
-        finalPrice: fromPrice / toPrice, // How many TO tokens per FROM token
-        source: 'portfolio_service',
-        updatedAt: new Date()
-      },
-      usdValue: parseFloat(fromUsdValue.toFixed(2)),
-      cryptoInvolved: {
-        fromToken: {
-          amount: amount,
-          usdValue: parseFloat(fromUsdValue.toFixed(2)),
-          currency: fromCurrency,
-          role: 'source',
-          price: parseFloat(fromPrice.toFixed(2))
-        },
-        toToken: {
-          amount: parseFloat(toAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
-          usdValue: parseFloat(fromUsdValue.toFixed(2)), // Same USD value
-          currency: toCurrency,
-          role: 'destination',
-          price: parseFloat(toPrice.toFixed(2))
-        }
-      }
-    };
-    
-    logger.info('Crypto-to-crypto calculation completed', {
-      fromCurrency,
-      toCurrency,
-      fromAmount: amount,
-      toAmount,
-      fromPrice,
-      toPrice,
-      exchangeRate: result.exchangeRate.finalPrice,
-      usdValue: fromUsdValue
-    });
-    
-    return {
-      success: true,
-      data: result,
-      isCryptoToCrypto: true
-    };
-    
-  } catch (error) {
-    logger.error('Error calculating crypto-to-crypto swap rates', { swapData, error: error.message });
-    return {
-      success: false,
-      message: error.message,
-      isCryptoToCrypto: true
-    };
-  }
-}
-
-/**
  * Calculates swap rates and amounts with USD tracking and naira USD value
  * @param {Object} swapData - Swap parameters
  * @returns {Promise<Object>} Calculation result
@@ -877,156 +757,135 @@ async function calculateSwapRates(swapData) {
       
       return await calculateNGNZSwapRates(swapData);
     }
-    
-    // Check if this is an NGNB swap
-    const isNGNBSwap = fromCurrency === 'NGNB' || toCurrency === 'NGNB';
-    
-    if (isNGNBSwap) {
-      logger.info('Detected NGNB swap, using NGNB calculation logic', {
-        fromCurrency,
-        toCurrency,
-        amount,
-        swapType
-      });
+
+    // Original NGNB swap logic (unchanged)
+    let result = {};
+    let usdCalculation = {};
+    let nairaUsdValue = 0;
+    let nairaAmount = 0;
+    let cryptoUsdValue = 0;
+    let cryptoAmount = 0;
+
+    if (swapType === 'onramp') {
+      // NGNB to Crypto (onramp)
+      const prices = await getPricesWithCache([toCurrency]);
+      const cryptoPrice = prices[toCurrency];
       
-      // Original NGNB swap logic (unchanged)
-      let result = {};
-      let usdCalculation = {};
-      let nairaUsdValue = 0;
-      let nairaAmount = 0;
-      let cryptoUsdValue = 0;
-      let cryptoAmount = 0;
-
-      if (swapType === 'onramp') {
-        // NGNB to Crypto (onramp)
-        const prices = await getPricesWithCache([toCurrency]);
-        const cryptoPrice = prices[toCurrency];
-        
-        if (!cryptoPrice || cryptoPrice <= 0) {
-          throw new Error(`Unable to fetch current price for ${toCurrency}`);
-        }
-
-        // Get onramp rate and calculate USD value for tracking
-        const onrampRate = await getOnrampRate();
-        
-        // Calculate USD value (no limit validation)
-        usdCalculation = calculateUSDValue(swapData, null, onrampRate);
-
-        cryptoAmount = await calculateCryptoFromNaira(amount, toCurrency, cryptoPrice);
-
-        // Calculate naira USD value for onramp (NGNB is the source)
-        nairaAmount = amount; // The NGNB amount being swapped
-        const nairaRateResult = await getNairaUSDRate('onramp');
-        
-        if (nairaRateResult.success) {
-          nairaUsdValue = nairaAmount * nairaRateResult.data.ngnbToUsdRate;
-        } else {
-          logger.warn('Could not get naira USD rate for onramp', { error: nairaRateResult.message });
-          nairaUsdValue = 0; // fallback
-        }
-
-        // Calculate crypto USD value (crypto is the destination)
-        cryptoUsdValue = cryptoAmount * cryptoPrice;
-
-        result = {
-          fromAmount: amount,
-          toAmount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
-          cryptoPrice,
-          exchangeRate: onrampRate,
-          usdValue: usdCalculation.usdValue || 0,
-          nairaInvolved: {
-            amount: nairaAmount,
-            usdValue: parseFloat(nairaUsdValue.toFixed(2)),
-            currency: 'NGNB',
-            role: 'source', // NGNB is being spent
-            rate: nairaRateResult.success ? {
-              ngnbToUsdRate: nairaRateResult.data.ngnbToUsdRate,
-              usdToNgnbRate: nairaRateResult.data.usdToNgnbRate,
-              rateType: nairaRateResult.data.rateType,
-              lastUpdated: nairaRateResult.data.lastUpdated
-            } : null
-          },
-          cryptoInvolved: {
-            amount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
-            usdValue: parseFloat(cryptoUsdValue.toFixed(2)),
-            currency: toCurrency,
-            role: 'destination', // Crypto is being received
-            price: parseFloat(cryptoPrice.toFixed(2))
-          }
-        };
-
-      } else if (swapType === 'offramp') {
-        // Crypto to NGNB (offramp)
-        const prices = await getPricesWithCache([fromCurrency]);
-        const cryptoPrice = prices[fromCurrency];
-        
-        if (!cryptoPrice || cryptoPrice <= 0) {
-          throw new Error(`Unable to fetch current price for ${fromCurrency}`);
-        }
-
-        // Calculate USD value for tracking (no limit validation)
-        usdCalculation = calculateUSDValue(swapData, cryptoPrice, null);
-
-        // Get offramp rate and calculate NGNB amount
-        const offrampRate = await getCurrentRate();
-        nairaAmount = await calculateNairaFromCrypto(amount, fromCurrency, cryptoPrice);
-
-        // Calculate naira USD value for offramp (NGNB is the destination)
-        const nairaRateResult = await getNairaUSDRate('offramp');
-        
-        if (nairaRateResult.success) {
-          nairaUsdValue = nairaAmount * nairaRateResult.data.ngnbToUsdRate;
-        } else {
-          logger.warn('Could not get naira USD rate for offramp', { error: nairaRateResult.message });
-          nairaUsdValue = 0; // fallback
-        }
-
-        // Calculate crypto USD value (crypto is the source)
-        cryptoAmount = amount; // The crypto amount being swapped
-        cryptoUsdValue = cryptoAmount * cryptoPrice;
-
-        result = {
-          fromAmount: amount,
-          toAmount: parseFloat(nairaAmount.toFixed(2)),
-          cryptoPrice,
-          exchangeRate: offrampRate,
-          usdValue: usdCalculation.usdValue || 0,
-          nairaInvolved: {
-            amount: parseFloat(nairaAmount.toFixed(2)),
-            usdValue: parseFloat(nairaUsdValue.toFixed(2)),
-            currency: 'NGNB',
-            role: 'destination', // NGNB is being received
-            rate: nairaRateResult.success ? {
-              ngnbToUsdRate: nairaRateResult.data.ngnbToUsdRate,
-              usdToNgnbRate: nairaRateResult.data.usdToNgnbRate,
-              rateType: nairaRateResult.data.rateType,
-              lastUpdated: nairaRateResult.data.lastUpdated
-            } : null
-          },
-          cryptoInvolved: {
-            amount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
-            usdValue: parseFloat(cryptoUsdValue.toFixed(2)),
-            currency: fromCurrency,
-            role: 'source', // Crypto is being spent
-            price: parseFloat(cryptoPrice.toFixed(2))
-          }
-        };
+      if (!cryptoPrice || cryptoPrice <= 0) {
+        throw new Error(`Unable to fetch current price for ${toCurrency}`);
       }
 
-      return {
-        success: true,
-        data: result
+      // Get onramp rate and calculate USD value for tracking
+      const onrampRate = await getOnrampRate();
+      
+      // Calculate USD value (no limit validation)
+      usdCalculation = calculateUSDValue(swapData, null, onrampRate);
+
+      cryptoAmount = await calculateCryptoFromNaira(amount, toCurrency, cryptoPrice);
+
+      // Calculate naira USD value for onramp (NGNB is the source)
+      nairaAmount = amount; // The NGNB amount being swapped
+      const nairaRateResult = await getNairaUSDRate('onramp');
+      
+      if (nairaRateResult.success) {
+        nairaUsdValue = nairaAmount * nairaRateResult.data.ngnbToUsdRate;
+      } else {
+        logger.warn('Could not get naira USD rate for onramp', { error: nairaRateResult.message });
+        nairaUsdValue = 0; // fallback
+      }
+
+      // Calculate crypto USD value (crypto is the destination)
+      cryptoUsdValue = cryptoAmount * cryptoPrice;
+
+      result = {
+        fromAmount: amount,
+        toAmount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
+        cryptoPrice,
+        exchangeRate: onrampRate,
+        usdValue: usdCalculation.usdValue || 0,
+        nairaInvolved: {
+          amount: nairaAmount,
+          usdValue: parseFloat(nairaUsdValue.toFixed(2)),
+          currency: 'NGNB',
+          role: 'source', // NGNB is being spent
+          rate: nairaRateResult.success ? {
+            ngnbToUsdRate: nairaRateResult.data.ngnbToUsdRate,
+            usdToNgnbRate: nairaRateResult.data.usdToNgnbRate,
+            rateType: nairaRateResult.data.rateType,
+            lastUpdated: nairaRateResult.data.lastUpdated
+          } : null
+        },
+        cryptoInvolved: {
+          amount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
+          usdValue: parseFloat(cryptoUsdValue.toFixed(2)),
+          currency: toCurrency,
+          role: 'destination', // Crypto is being received
+          price: parseFloat(cryptoPrice.toFixed(2))
+        }
+      };
+
+    } else if (swapType === 'offramp') {
+      // Crypto to NGNB (offramp)
+      const prices = await getPricesWithCache([fromCurrency]);
+      const cryptoPrice = prices[fromCurrency];
+      
+      if (!cryptoPrice || cryptoPrice <= 0) {
+        throw new Error(`Unable to fetch current price for ${fromCurrency}`);
+      }
+
+      // Calculate USD value for tracking (no limit validation)
+      usdCalculation = calculateUSDValue(swapData, cryptoPrice, null);
+
+      // Get offramp rate and calculate NGNB amount
+      const offrampRate = await getCurrentRate();
+      nairaAmount = await calculateNairaFromCrypto(amount, fromCurrency, cryptoPrice);
+
+      // Calculate naira USD value for offramp (NGNB is the destination)
+      const nairaRateResult = await getNairaUSDRate('offramp');
+      
+      if (nairaRateResult.success) {
+        nairaUsdValue = nairaAmount * nairaRateResult.data.ngnbToUsdRate;
+      } else {
+        logger.warn('Could not get naira USD rate for offramp', { error: nairaRateResult.message });
+        nairaUsdValue = 0; // fallback
+      }
+
+      // Calculate crypto USD value (crypto is the source)
+      cryptoAmount = amount; // The crypto amount being swapped
+      cryptoUsdValue = cryptoAmount * cryptoPrice;
+
+      result = {
+        fromAmount: amount,
+        toAmount: parseFloat(nairaAmount.toFixed(2)),
+        cryptoPrice,
+        exchangeRate: offrampRate,
+        usdValue: usdCalculation.usdValue || 0,
+        nairaInvolved: {
+          amount: parseFloat(nairaAmount.toFixed(2)),
+          usdValue: parseFloat(nairaUsdValue.toFixed(2)),
+          currency: 'NGNB',
+          role: 'destination', // NGNB is being received
+          rate: nairaRateResult.success ? {
+            ngnbToUsdRate: nairaRateResult.data.ngnbToUsdRate,
+            usdToNgnbRate: nairaRateResult.data.usdToNgnbRate,
+            rateType: nairaRateResult.data.rateType,
+            lastUpdated: nairaRateResult.data.lastUpdated
+          } : null
+        },
+        cryptoInvolved: {
+          amount: parseFloat(cryptoAmount.toFixed(SWAP_CONFIG.AMOUNT_PRECISION)),
+          usdValue: parseFloat(cryptoUsdValue.toFixed(2)),
+          currency: fromCurrency,
+          role: 'source', // Crypto is being spent
+          price: parseFloat(cryptoPrice.toFixed(2))
+        }
       };
     }
-    
-    // If neither NGNZ nor NGNB swap, it's a crypto-to-crypto swap
-    logger.info('Detected crypto-to-crypto swap', {
-      fromCurrency,
-      toCurrency,
-      amount
-    });
-    
-    return await calculateCryptoToCryptoRates(swapData);
+
+    return {
+      success: true,
+      data: result
+    };
 
   } catch (error) {
     logger.error('Error calculating swap rates', { swapData, error: error.message });
@@ -1130,111 +989,12 @@ async function processSwapBalances(swapData) {
       
       return await processNGNZSwapBalances(swapData);
     }
-    
-    // Check if this is an NGNB swap
-    const isNGNBSwap = fromCurrency === 'NGNB' || toCurrency === 'NGNB';
-    
-    if (isNGNBSwap) {
-      logger.info('Detected NGNB swap, using NGNB balance processing', {
-        userId,
-        transactionId,
-        fromCurrency,
-        toCurrency
-      });
-      
-      // Original NGNB swap balance processing
-      // Validate user exists
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found for balance update');
-      }
 
-      // Get balance field name for validation
-      const getBalanceField = (currency) => {
-        const currencyLower = currency.toLowerCase();
-        return `${currencyLower}Balance`;
-      };
-
-      // Check current balance before processing
-      const fromBalanceField = getBalanceField(fromCurrency);
-      const currentFromBalance = user[fromBalanceField] || 0;
-      
-      if (currentFromBalance < fromAmount) {
-        throw new Error(`Insufficient ${fromCurrency} balance. Available: ${currentFromBalance}, Required: ${fromAmount}`);
-      }
-
-      logger.info('Processing NGNB swap balances using portfolio service', {
-        userId,
-        transactionId,
-        fromCurrency,
-        toCurrency,
-        fromAmount,
-        toAmount,
-        currentFromBalance
-      });
-
-      // Step 1: Debit the source currency using portfolio.js
-      // Note: We pass negative amount to debit the balance
-      await updateUserBalance(userId, fromCurrency, -fromAmount);
-      
-      logger.info('Successfully debited source currency', {
-        userId,
-        currency: fromCurrency,
-        amount: -fromAmount,
-        transactionId
-      });
-
-      // Step 2: Credit the destination currency using portfolio.js
-      await updateUserBalance(userId, toCurrency, toAmount);
-      
-      logger.info('Successfully credited destination currency', {
-        userId,
-        currency: toCurrency,
-        amount: toAmount,
-        transactionId
-      });
-
-      // Get updated user data to return current balances
-      const updatedUser = await User.findById(userId);
-      const fromBalanceFieldUpdated = getBalanceField(fromCurrency);
-      const toBalanceFieldUpdated = getBalanceField(toCurrency);
-
-      logger.info('NGNB swap balances processed successfully using portfolio service', {
-        userId,
-        transactionId,
-        fromCurrency,
-        toCurrency,
-        fromAmount,
-        toAmount,
-        newFromBalance: updatedUser[fromBalanceFieldUpdated],
-        newToBalance: updatedUser[toBalanceFieldUpdated],
-        totalPortfolioBalance: updatedUser.totalPortfolioBalance
-      });
-
-      return { 
-        success: true,
-        balances: {
-          [fromCurrency]: updatedUser[fromBalanceFieldUpdated],
-          [toCurrency]: updatedUser[toBalanceFieldUpdated]
-        },
-        totalPortfolioBalance: updatedUser.totalPortfolioBalance
-      };
-    }
-    
-    // Crypto-to-crypto swap processing
-    logger.info('Detected crypto-to-crypto swap, using portfolio service for both currencies', {
-      userId,
-      transactionId,
-      fromCurrency,
-      toCurrency,
-      fromAmount,
-      toAmount
-    });
-
+    // Original NGNB swap balance processing (unchanged)
     // Validate user exists
     const user = await User.findById(userId);
     if (!user) {
-      throw new Error('User not found for crypto-to-crypto balance update');
+      throw new Error('User not found for balance update');
     }
 
     // Get balance field name for validation
@@ -1251,10 +1011,21 @@ async function processSwapBalances(swapData) {
       throw new Error(`Insufficient ${fromCurrency} balance. Available: ${currentFromBalance}, Required: ${fromAmount}`);
     }
 
+    logger.info('Processing swap balances using portfolio service', {
+      userId,
+      transactionId,
+      fromCurrency,
+      toCurrency,
+      fromAmount,
+      toAmount,
+      currentFromBalance
+    });
+
     // Step 1: Debit the source currency using portfolio.js
+    // Note: We pass negative amount to debit the balance
     await updateUserBalance(userId, fromCurrency, -fromAmount);
     
-    logger.info('Successfully debited source currency for crypto-to-crypto swap', {
+    logger.info('Successfully debited source currency', {
       userId,
       currency: fromCurrency,
       amount: -fromAmount,
@@ -1264,7 +1035,7 @@ async function processSwapBalances(swapData) {
     // Step 2: Credit the destination currency using portfolio.js
     await updateUserBalance(userId, toCurrency, toAmount);
     
-    logger.info('Successfully credited destination currency for crypto-to-crypto swap', {
+    logger.info('Successfully credited destination currency', {
       userId,
       currency: toCurrency,
       amount: toAmount,
@@ -1276,7 +1047,7 @@ async function processSwapBalances(swapData) {
     const fromBalanceFieldUpdated = getBalanceField(fromCurrency);
     const toBalanceFieldUpdated = getBalanceField(toCurrency);
 
-    logger.info('Crypto-to-crypto swap balances processed successfully', {
+    logger.info('Swap balances processed successfully using portfolio service', {
       userId,
       transactionId,
       fromCurrency,
@@ -1359,11 +1130,9 @@ router.post('/crypto', async (req, res) => {
 
     const { fromCurrency, toCurrency, amount, swapType } = validation.validatedData;
 
-    // Detect swap type internally
+    // Detect if this is an NGNZ swap internally
     const ngnzDetection = detectNGNZSwap(fromCurrency, toCurrency);
     const isNGNZSwap = ngnzDetection.isNGNZSwap;
-    const isNGNBSwap = fromCurrency === 'NGNB' || toCurrency === 'NGNB';
-    const isCryptoToCrypto = !isNGNZSwap && !isNGNBSwap;
 
     logger.info('Processing swap request', {
       userId,
@@ -1371,9 +1140,7 @@ router.post('/crypto', async (req, res) => {
       toCurrency,
       amount,
       swapType,
-      isNGNZSwap,
-      isNGNBSwap,
-      isCryptoToCrypto
+      isNGNZSwap
     });
 
     // Validate user exists
@@ -1440,11 +1207,8 @@ router.post('/crypto', async (req, res) => {
     if (isNGNZSwap) {
       transactionData.ngnzInvolved = ngnzInvolved;
       transactionData.cryptoInvolved = cryptoInvolved;
-    } else if (isNGNBSwap) {
-      transactionData.nairaInvolved = nairaInvolved;
-      transactionData.cryptoInvolved = cryptoInvolved;
     } else {
-      // Crypto-to-crypto swap
+      transactionData.nairaInvolved = nairaInvolved;
       transactionData.cryptoInvolved = cryptoInvolved;
     }
 
@@ -1460,7 +1224,8 @@ router.post('/crypto', async (req, res) => {
       transactionId: transaction._id
     });
 
-    // Mark as completed immediately (all swaps are processed instantly)
+    // For NGNZ swaps, mark as completed immediately
+    // For NGNB swaps, also mark as completed (no obiex API needed based on current code)
     transaction.status = 'COMPLETED';
     transaction.completedAt = new Date();
     await transaction.save();
@@ -1477,8 +1242,16 @@ router.post('/crypto', async (req, res) => {
       usdValue,
       totalPortfolioBalance: balanceResult.totalPortfolioBalance,
       processingTime,
-      swapType: isNGNZSwap ? 'NGNZ' : isNGNBSwap ? 'NGNB' : 'crypto-to-crypto'
+      isNGNZSwap
     };
+
+    if (isNGNZSwap) {
+      logData.ngnzUsdValue = ngnzInvolved?.usdValue;
+      logData.cryptoUsdValue = cryptoInvolved?.usdValue;
+    } else {
+      logData.nairaUsdValue = nairaInvolved?.usdValue;
+      logData.cryptoUsdValue = cryptoInvolved?.usdValue;
+    }
 
     logger.info('Swap processed successfully with portfolio service integration', logData);
 
@@ -1491,7 +1264,7 @@ router.post('/crypto', async (req, res) => {
       toAmount,
       swapType,
       exchangeRate: exchangeRate?.finalPrice || exchangeRate,
-      cryptoPrice: rateCalculation.data.fromPrice || cryptoPrice, // For crypto-to-crypto, use fromPrice
+      cryptoPrice,
       usdValue,
       status: 'COMPLETED',
       completedAt: transaction.completedAt,
@@ -1499,19 +1272,14 @@ router.post('/crypto', async (req, res) => {
       totalPortfolioBalance: balanceResult.totalPortfolioBalance
     };
 
-    // Add involved data based on swap type (existing field names for compatibility)
+    // Add involved data based on swap type (existing field names)
     if (isNGNZSwap) {
-      // For NGNZ swaps, use nairaInvolved field for compatibility
-      responseData.nairaInvolved = ngnzInvolved;
-      responseData.cryptoInvolved = cryptoInvolved;
-    } else if (isNGNBSwap) {
-      responseData.nairaInvolved = nairaInvolved;
+      // For NGNZ swaps, use ngnzInvolved but also include nairaInvolved for compatibility
+      responseData.nairaInvolved = ngnzInvolved; // Use same field name for client compatibility
       responseData.cryptoInvolved = cryptoInvolved;
     } else {
-      // For crypto-to-crypto swaps, use cryptoInvolved field
+      responseData.nairaInvolved = nairaInvolved;
       responseData.cryptoInvolved = cryptoInvolved;
-      // Add receive amount for frontend compatibility
-      responseData.receiveAmount = toAmount;
     }
 
     res.status(200).json({
@@ -1574,11 +1342,9 @@ router.post('/quote', async (req, res) => {
 
     const { fromCurrency, toCurrency, amount, swapType } = validation.validatedData;
 
-    // Detect swap type internally
+    // Detect if this is an NGNZ swap internally
     const ngnzDetection = detectNGNZSwap(fromCurrency, toCurrency);
     const isNGNZSwap = ngnzDetection.isNGNZSwap;
-    const isNGNBSwap = fromCurrency === 'NGNB' || toCurrency === 'NGNB';
-    const isCryptoToCrypto = !isNGNZSwap && !isNGNBSwap;
 
     logger.info('Processing swap quote request', {
       userId,
@@ -1586,9 +1352,7 @@ router.post('/quote', async (req, res) => {
       toCurrency,
       amount,
       swapType,
-      isNGNZSwap,
-      isNGNBSwap,
-      isCryptoToCrypto
+      isNGNZSwap
     });
 
     // Calculate swap rates
@@ -1606,16 +1370,14 @@ router.post('/quote', async (req, res) => {
       });
     }
 
-    // Build response data maintaining original format but adding receiveAmount for frontend
+    // Build response data maintaining original format
     const responseData = {
       ...rateCalculation.data,
       fromCurrency,
       toCurrency,
       swapType,
       quoteValidFor: '2 minutes',
-      quotedAt: new Date(),
-      // Add receiveAmount field for frontend compatibility
-      receiveAmount: rateCalculation.data.toAmount
+      quotedAt: new Date()
     };
 
     logger.info('Swap quote calculated successfully', {
@@ -1624,8 +1386,7 @@ router.post('/quote', async (req, res) => {
       toCurrency,
       fromAmount: amount,
       toAmount: rateCalculation.data.toAmount,
-      receiveAmount: rateCalculation.data.toAmount,
-      swapType: isNGNZSwap ? 'NGNZ' : isNGNBSwap ? 'NGNB' : 'crypto-to-crypto',
+      isNGNZSwap,
       usdValue: rateCalculation.data.usdValue
     });
 
@@ -1714,8 +1475,6 @@ router.post('/quick', async (req, res) => {
     // Auto-detect swap type based on currencies
     let swapType;
     let isNGNZSwap = false;
-    let isNGNBSwap = false;
-    let isCryptoToCrypto = false;
     
     // Check for NGNZ first
     const ngnzDetection = detectNGNZSwap(fromCurrency, toCurrency);
@@ -1723,15 +1482,14 @@ router.post('/quick', async (req, res) => {
       isNGNZSwap = true;
       swapType = ngnzDetection.isOnramp ? 'onramp' : 'offramp';
     } else if (fromCurrency?.toUpperCase() === 'NGNB') {
-      isNGNBSwap = true;
       swapType = 'onramp';
     } else if (toCurrency?.toUpperCase() === 'NGNB') {
-      isNGNBSwap = true;
       swapType = 'offramp';
     } else {
-      // Crypto-to-crypto swap
-      isCryptoToCrypto = true;
-      swapType = 'offramp'; // Default for crypto-to-crypto
+      return res.status(400).json({
+        success: false,
+        message: 'Quick swap requires either from or to currency to be NGNB or NGNZ'
+      });
     }
 
     // Use existing validation and processing logic
@@ -1755,9 +1513,7 @@ router.post('/quick', async (req, res) => {
     logger.info('Processing quick swap request', {
       userId,
       ...validatedData,
-      isNGNZSwap,
-      isNGNBSwap,
-      isCryptoToCrypto
+      isNGNZSwap
     });
 
     // Check user exists
@@ -1808,11 +1564,8 @@ router.post('/quick', async (req, res) => {
     if (isNGNZSwap) {
       transactionData.ngnzInvolved = ngnzInvolved;
       transactionData.cryptoInvolved = cryptoInvolved;
-    } else if (isNGNBSwap) {
-      transactionData.nairaInvolved = nairaInvolved;
-      transactionData.cryptoInvolved = cryptoInvolved;
     } else {
-      // Crypto-to-crypto swap
+      transactionData.nairaInvolved = nairaInvolved;
       transactionData.cryptoInvolved = cryptoInvolved;
     }
 
@@ -1847,20 +1600,15 @@ router.post('/quick', async (req, res) => {
       status: 'COMPLETED',
       processingTime: `${processingTime}ms`,
       balances: balanceResult.balances,
-      totalPortfolioBalance: balanceResult.totalPortfolioBalance,
-      // Add receiveAmount for frontend compatibility
-      receiveAmount: toAmount
+      totalPortfolioBalance: balanceResult.totalPortfolioBalance
     };
 
     // Add involved data using existing field names for compatibility
     if (isNGNZSwap) {
       responseData.nairaInvolved = ngnzInvolved; // Use same field name for client compatibility
       responseData.cryptoInvolved = cryptoInvolved;
-    } else if (isNGNBSwap) {
-      responseData.nairaInvolved = nairaInvolved;
-      responseData.cryptoInvolved = cryptoInvolved;
     } else {
-      // Crypto-to-crypto swap
+      responseData.nairaInvolved = nairaInvolved;
       responseData.cryptoInvolved = cryptoInvolved;
     }
     
