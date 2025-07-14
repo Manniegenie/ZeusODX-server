@@ -293,6 +293,22 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
       success: true,
       message: `NGNZ ${isOnramp ? 'onramp' : 'offramp'} quote created successfully`,
       data: {
+        data: {
+          id: quoteData.id,
+          amount: payAmount,
+          amountReceived: receiveAmount,
+          rate: quoteData.rate,
+          side: side,
+          expiresIn: 30,
+          expiryDate: quoteData.expiresAt,
+          sourceCurrency: fromUpper,
+          targetCurrency: toUpper,
+          provider: quoteData.provider,
+          acceptable: true,
+          sourceId: quoteData.sourceId,
+          targetId: quoteData.targetId
+        },
+        // Also include flat structure for backward compatibility
         id: quoteData.id,
         amount: payAmount,
         amountReceived: receiveAmount,
@@ -302,7 +318,8 @@ async function handleNGNZSwap(req, res, from, to, amount, side) {
         expiryDate: quoteData.expiresAt,
         sourceCurrency: fromUpper,
         targetCurrency: toUpper,
-        provider: quoteData.provider
+        provider: quoteData.provider,
+        acceptable: true
       }
     };
 
@@ -446,7 +463,7 @@ router.post('/quote', async (req, res) => {
       return res.status(500).json(errorResponse);
     }
 
-    // Create quote data
+    // Create quote data for caching (compatible with client expectations)
     const quoteId = `internal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const quoteData = {
       id: quoteId,
@@ -463,7 +480,18 @@ router.post('/quote', async (req, res) => {
       expiresIn: 30,
       expiryDate: new Date(Date.now() + 30 * 1000).toISOString(),
       createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 30 * 1000).toISOString()
+      expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
+      // Store original amount for compatibility
+      originalAmount: amount,
+      // Add Obiex-compatible fields for client
+      data: {
+        id: quoteId,
+        amount: amount,
+        amountReceived: exchangeResult.receiveAmount,
+        rate: exchangeResult.exchangeRate,
+        side: side,
+        acceptable: true
+      }
     };
 
     // Apply global markdown to reduce the amount user receives
@@ -511,6 +539,24 @@ router.post('/quote', async (req, res) => {
       success: true,
       message: "Quote created successfully",
       data: {
+        data: {
+          id: quoteId,
+          amount: amount,
+          amountReceived: finalReceiveAmount,
+          rate: exchangeResult.exchangeRate,
+          side: side,
+          expiresIn: 30,
+          expiryDate: quoteData.expiryDate,
+          sourceCurrency: from.toUpperCase(),
+          targetCurrency: to.toUpperCase(),
+          provider: 'INTERNAL_EXCHANGE',
+          acceptable: true,
+          sourceId: `internal_${from.toLowerCase()}`,
+          targetId: `internal_${to.toLowerCase()}`,
+          sourceDollarRate: exchangeResult.fromPrice,
+          targetDollarRate: exchangeResult.toPrice
+        },
+        // Also include flat structure for backward compatibility
         id: quoteId,
         amount: amount,
         amountReceived: finalReceiveAmount,
@@ -613,7 +659,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       // Regular internal swap handling
       sourceCurrency = quoteData.sourceCurrency;
       targetCurrency = quoteData.targetCurrency;
-      payAmount = quoteData.amount;
+      payAmount = quoteData.amount || quoteData.originalAmount;
       receiveAmount = quoteData.amountReceived;
       swapType = 'CRYPTO_TO_CRYPTO';
       provider = 'INTERNAL_EXCHANGE';
