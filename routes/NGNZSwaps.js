@@ -137,11 +137,27 @@ router.post('/quote', async (req, res) => {
     const id = `ngnz_${flow.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const expiresAt = new Date(Date.now() + 30000).toISOString(); // 30 seconds
 
+    // Calculate USD values for better UX
+    let sourceAmountUSD, targetAmountUSD;
+    
+    if (isOnramp) {
+      // NGNZ to Crypto
+      sourceAmountUSD = amount / rate; // NGNZ amount ÷ rate = USD
+      targetAmountUSD = receiveAmount * cryptoPrice; // crypto amount × price = USD
+    } else {
+      // Crypto to NGNZ  
+      sourceAmountUSD = amount * cryptoPrice; // crypto amount × price = USD
+      targetAmountUSD = receiveAmount / rate; // NGNZ amount ÷ rate = USD
+    }
+
     const payload = {
       id,
       amount,
       amountReceived: receiveAmount,
+      sourceAmountUSD: parseFloat(sourceAmountUSD.toFixed(6)),
+      targetAmountUSD: parseFloat(targetAmountUSD.toFixed(6)),
       rate,
+      cryptoPrice, // Include crypto price for reference
       side,
       sourceCurrency,
       targetCurrency,
@@ -150,6 +166,15 @@ router.post('/quote', async (req, res) => {
       flow,
       expiresAt
     };
+
+    logger.info(`${flow} quote created`, {
+      sourceAmount: amount,
+      targetAmount: receiveAmount,
+      sourceUSD: sourceAmountUSD.toFixed(6),
+      targetUSD: targetAmountUSD.toFixed(6),
+      rate,
+      cryptoPrice
+    });
 
     ngnzQuoteCache.set(id, payload);
 
