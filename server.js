@@ -9,6 +9,7 @@ const jwt = require("jsonwebtoken");
 const cors = require("cors");
 const logger = require("./utils/logger"); // Assuming logger is available
 const Transaction = require("./models/transaction"); // Import Transaction model
+const User = require("./models/user"); // Import User model for balance fix
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -169,6 +170,93 @@ app.get("/", (req, res) => {
   res.send(`🚀 API Running at ${new Date().toISOString()}`);
 });
 
+// 🚨 FIX NEGATIVE BALANCES SCRIPT
+const fixNegativeBalances = async () => {
+  try {
+    logger.info('🔧 Starting negative balance fix script');
+
+    // Define all USD balance fields
+    const usdBalanceFields = [
+      'btcBalanceUSD', 'ethBalanceUSD', 'solBalanceUSD', 'usdtBalanceUSD',
+      'usdcBalanceUSD', 'avaxBalanceUSD', 'bnbBalanceUSD', 'maticBalanceUSD', 'ngnzBalanceUSD'
+    ];
+
+    // Find users with negative USD balances
+    const negativeBalanceQuery = {
+      $or: usdBalanceFields.map(field => ({ [field]: { $lt: 0 } }))
+    };
+
+    const usersWithNegativeBalances = await User.find(negativeBalanceQuery)
+      .select(['_id', 'username', 'phonenumber', ...usdBalanceFields])
+      .lean();
+
+    if (usersWithNegativeBalances.length === 0) {
+      logger.info('✅ No users with negative USD balances found');
+      return;
+    }
+
+    logger.info(`🔍 Found ${usersWithNegativeBalances.length} users with negative USD balances`, {
+      userCount: usersWithNegativeBalances.length
+    });
+
+    // Log details of affected users
+    usersWithNegativeBalances.forEach(user => {
+      const negativeFields = usdBalanceFields.filter(field => user[field] < 0);
+      logger.warn('User with negative balance found', {
+        userId: user._id,
+        username: user.username,
+        phonenumber: user.phonenumber?.replace(/(\+234\d{3})\d{4}(\d{4})/, '$1****$2'),
+        negativeBalances: negativeFields.map(field => ({
+          field,
+          value: user[field]
+        }))
+      });
+    });
+
+    // Fix negative balances using aggregation pipeline
+    const result = await User.updateMany(
+      negativeBalanceQuery,
+      [
+        {
+          $set: {
+            btcBalanceUSD: { $max: ["$btcBalanceUSD", 0] },
+            ethBalanceUSD: { $max: ["$ethBalanceUSD", 0] },
+            solBalanceUSD: { $max: ["$solBalanceUSD", 0] },
+            usdtBalanceUSD: { $max: ["$usdtBalanceUSD", 0] },
+            usdcBalanceUSD: { $max: ["$usdcBalanceUSD", 0] },
+            avaxBalanceUSD: { $max: ["$avaxBalanceUSD", 0] },
+            bnbBalanceUSD: { $max: ["$bnbBalanceUSD", 0] },
+            maticBalanceUSD: { $max: ["$maticBalanceUSD", 0] },
+            ngnzBalanceUSD: { $max: ["$ngnzBalanceUSD", 0] },
+            portfolioLastUpdated: new Date()
+          }
+        }
+      ]
+    );
+
+    logger.info('✅ Negative balance fix completed successfully', {
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+      acknowledgedCount: result.acknowledged
+    });
+
+    // Verify the fix worked
+    const remainingNegativeBalances = await User.countDocuments(negativeBalanceQuery);
+    if (remainingNegativeBalances === 0) {
+      logger.info('🎉 All negative balances successfully fixed');
+    } else {
+      logger.warn(`⚠️ ${remainingNegativeBalances} users still have negative balances after fix`);
+    }
+
+  } catch (error) {
+    logger.error('❌ Error during negative balance fix', {
+      error: error.message,
+      stack: error.stack
+    });
+    // Don't throw error to prevent server startup failure
+  }
+};
+
 // Database Migration for Duplicate obiexTransactionId
 const migrateTransactions = async () => {
   try {
@@ -259,7 +347,10 @@ const startServer = async () => {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
 
-    // Run migration before starting the server
+    // 🚨 Run balance fix FIRST (most critical)
+    await fixNegativeBalances();
+    
+    // Run transaction migration
     await migrateTransactions();
     
     app.listen(PORT, "0.0.0.0", () => {
