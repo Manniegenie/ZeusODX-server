@@ -1,62 +1,59 @@
+// services/portfolio.js
+
 const axios = require('axios');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
-const GlobalMarkdown = require('../models/pricemarkdown'); // Import markdown model
+const GlobalMarkdown = require('../models/pricemarkdown');
 const logger = require('../utils/logger');
 
 // Configuration for price sources
 const CONFIG = {
-  CACHE_TTL: 5 * 60 * 1000, // 5 minutes
-  REQUEST_TIMEOUT: 15000, // 15 seconds
+  CACHE_TTL: 5 * 60 * 1000,    // 5 minutes
+  REQUEST_TIMEOUT: 15000,      // 15 seconds
   MAX_RETRIES: 3,
-  RETRY_DELAY: 2000, // 2 seconds
-  RATE_LIMIT_DELAY: 30000, // 30 seconds wait on rate limit
+  RETRY_DELAY: 2000,           // 2 seconds
+  RATE_LIMIT_DELAY: 30000      // 30 seconds wait on rate limit
 };
 
-// ALIGNED WITH USER SCHEMA: All tokens that exist in user.js balance fields - DOGE REMOVED
+// Supported tokens (aligned with User schema)
 const SUPPORTED_TOKENS = {
-  BTC: { currencyApiSymbol: 'BTC', isStablecoin: false, supportedByCurrencyAPI: true },
-  ETH: { currencyApiSymbol: 'ETH', isStablecoin: false, supportedByCurrencyAPI: true },
-  SOL: { currencyApiSymbol: 'SOL', isStablecoin: false, supportedByCurrencyAPI: true },
-  USDT: { currencyApiSymbol: 'USDT', isStablecoin: true, supportedByCurrencyAPI: false }, // Handle as stablecoin
-  USDC: { currencyApiSymbol: 'USDC', isStablecoin: true, supportedByCurrencyAPI: false }, // Handle as stablecoin
-  BNB: { currencyApiSymbol: 'BNB', isStablecoin: false, supportedByCurrencyAPI: true },
-  // DOGE: REMOVED COMPLETELY
-  MATIC: { currencyApiSymbol: 'MATIC', isStablecoin: false, supportedByCurrencyAPI: true },
+  BTC:  { currencyApiSymbol: 'BTC',  isStablecoin: false, supportedByCurrencyAPI: true },
+  ETH:  { currencyApiSymbol: 'ETH',  isStablecoin: false, supportedByCurrencyAPI: true },
+  SOL:  { currencyApiSymbol: 'SOL',  isStablecoin: false, supportedByCurrencyAPI: true },
+  USDT: { currencyApiSymbol: 'USDT', isStablecoin: true,  supportedByCurrencyAPI: false },
+  USDC: { currencyApiSymbol: 'USDC', isStablecoin: true,  supportedByCurrencyAPI: false },
+  BNB:  { currencyApiSymbol: 'BNB',  isStablecoin: false, supportedByCurrencyAPI: true },
+  MATIC:{ currencyApiSymbol: 'MATIC',isStablecoin: false, supportedByCurrencyAPI: true },
   AVAX: { currencyApiSymbol: 'AVAX', isStablecoin: false, supportedByCurrencyAPI: true },
-  NGNZ: { currencyApiSymbol: 'NGNZ', isStablecoin: true, isNairaPegged: true, supportedByCurrencyAPI: false },
+  NGNZ: { currencyApiSymbol: 'NGNZ', isStablecoin: true, isNairaPegged: true, supportedByCurrencyAPI: false }
 };
 
-// Simplified price cache
+// Price cache
 const priceCache = {
   data: new Map(),
   lastUpdated: null,
   isUpdating: false,
-  updatePromise: null,
+  updatePromise: null
 };
 
-// Validates CurrencyAPI.com API key format
+// Validate CurrencyAPI key
 function validateCurrencyApiKey(apiKey) {
-  if (!apiKey) return false;
   return typeof apiKey === 'string' && apiKey.length >= 32;
 }
 
-// CurrencyAPI configuration - SINGLE DECLARATION
 const API_CONFIG = {
   hasValidApiKey: validateCurrencyApiKey(process.env.CURRENCYAPI_KEY),
   baseUrl: 'https://api.currencyapi.com/v3',
   apiKey: process.env.CURRENCYAPI_KEY
 };
 
-// NEW FUNCTION: Get global markdown percentage
+/** Get global markdown percentage */
 async function getGlobalMarkdownPercentage() {
   try {
     const markdownDoc = await GlobalMarkdown.getCurrentMarkdown();
-    
     if (!markdownDoc || !markdownDoc.isActive) {
       return { hasMarkdown: false, percentage: 0 };
     }
-    
     return {
       hasMarkdown: true,
       percentage: markdownDoc.markdownPercentage,
@@ -68,688 +65,281 @@ async function getGlobalMarkdownPercentage() {
   }
 }
 
-// NEW FUNCTION: Apply markdown to prices
+/** Apply markdown to a map of prices */
 function applyMarkdownToPrices(priceMap, markdownPercentage) {
-  if (!markdownPercentage || markdownPercentage <= 0) {
-    return priceMap;
-  }
-  
-  const markedDownPrices = new Map();
-  const discountMultiplier = (100 - markdownPercentage) / 100;
-  
+  if (!markdownPercentage || markdownPercentage <= 0) return priceMap;
+  const multiplier = (100 - markdownPercentage) / 100;
+  const markedDown = new Map();
   for (const [token, price] of priceMap.entries()) {
-    // Don't apply markdown to stablecoins or NGNZ
-    const tokenInfo = SUPPORTED_TOKENS[token];
-    if (tokenInfo && (tokenInfo.isStablecoin || tokenInfo.isNairaPegged)) {
-      markedDownPrices.set(token, price);
+    const info = SUPPORTED_TOKENS[token];
+    if (info && (info.isStablecoin || info.isNairaPegged)) {
+      markedDown.set(token, price);
     } else {
-      const markedDownPrice = price * discountMultiplier;
-      markedDownPrices.set(token, markedDownPrice);
+      markedDown.set(token, price * multiplier);
     }
   }
-  
-  logger.info(`Applied ${markdownPercentage}% markdown to ${priceMap.size} token prices`, {
-    discountMultiplier,
-    affectedTokens: Array.from(priceMap.keys()).filter(token => {
-      const tokenInfo = SUPPORTED_TOKENS[token];
-      return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
-    })
-  });
-  
-  return markedDownPrices;
+  logger.info(`Applied ${markdownPercentage}% markdown`, { discountMultiplier: multiplier });
+  return markedDown;
 }
 
-// Special handling for NGNZ (Naira-pegged stablecoin)
+/** Handle NGNZ pricing */
 function handleNGNZPricing(tokens) {
-  const ngnzPrices = {};
-  if (tokens.some(token => token.toUpperCase() === 'NGNZ')) {
-    const ngnToUsdRate = 1 / 1554.42; // Approximate NGN to USD rate
-    ngnzPrices['NGNZ'] = ngnToUsdRate;
+  const prices = {};
+  if (tokens.includes('NGNZ')) {
+    const rate = 1 / 1554.42;
+    prices['NGNZ'] = rate;
   }
-  return ngnzPrices;
+  return prices;
 }
 
-// Checks if cache is valid and contains all required tokens
-function isCacheValid(tokenSymbols) {
+/** Check if cache is still valid */
+function isCacheValid(tokens) {
   if (!priceCache.lastUpdated) return false;
-  
-  const now = Date.now();
-  const cacheExpired = now - priceCache.lastUpdated > CONFIG.CACHE_TTL;
-  
-  if (cacheExpired) return false;
-  
-  return tokenSymbols.every(symbol => 
-    priceCache.data.has(symbol.toUpperCase())
-  );
+  if (Date.now() - priceCache.lastUpdated > CONFIG.CACHE_TTL) return false;
+  return tokens.every(t => priceCache.data.has(t));
 }
 
-// Implements retry logic with exponential backoff
+/** Retry helper */
 async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RETRY_DELAY) {
-  let lastError;
-  
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  let lastErr;
+  for (let i = 0; i <= maxRetries; i++) {
     try {
       return await fn();
-    } catch (error) {
-      lastError = error;
-      
-      if (error.response && error.response.status === 429) {
-        if (attempt === maxRetries) break;
-        
-        const rateLimitWait = CONFIG.RATE_LIMIT_DELAY;
-        logger.warn(`Rate limited, waiting ${rateLimitWait}ms before retry ${attempt + 1}`);
-        await new Promise(resolve => setTimeout(resolve, rateLimitWait));
-        continue;
-      }
-      
-      if (attempt === maxRetries) break;
-      
-      const waitTime = delay * Math.pow(2, attempt);
-      logger.warn(`Attempt ${attempt + 1} failed, retrying in ${waitTime}ms`, { error: error.message });
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-    }
-  }
-  
-  throw lastError;
-}
-
-// FIXED: Fetch prices from CurrencyAPI.com - only request supported tokens
-async function fetchCurrencyApiPrices(tokens) {
-  try {
-    logger.info('Starting CurrencyAPI price fetch', { requestedTokens: tokens });
-    
-    // Filter to only tokens that CurrencyAPI actually supports
-    const currencyApiTokens = tokens.filter(token => {
-      const upperToken = token.toUpperCase();
-      const tokenInfo = SUPPORTED_TOKENS[upperToken];
-      return tokenInfo && tokenInfo.supportedByCurrencyAPI;
-    });
-    
-    logger.info('Tokens supported by CurrencyAPI', { currencyApiTokens });
-    
-    const prices = new Map();
-    
-    // Handle stablecoins (always $1.00)
-    const stablecoins = ['USDT', 'USDC'];
-    for (const token of tokens) {
-      const upperToken = token.toUpperCase();
-      if (stablecoins.includes(upperToken)) {
-        prices.set(upperToken, 1.0);
-        logger.debug(`Set stablecoin price: ${upperToken} = $1.00`);
-      }
-    }
-    
-    // Handle NGNZ separately (Naira-pegged)
-    const ngnzPrices = handleNGNZPricing(tokens);
-    for (const [token, price] of Object.entries(ngnzPrices)) {
-      prices.set(token, price);
-      logger.debug(`Set NGNZ price: ${token} = $${price}`);
-    }
-    
-    // Exit early if no tokens to request from CurrencyAPI
-    if (currencyApiTokens.length === 0) {
-      logger.info('No tokens to request from CurrencyAPI, returning early');
-      return prices;
-    }
-    
-    // Request only supported tokens from CurrencyAPI
-    const cryptoTokens = currencyApiTokens.join(',');
-    logger.info('Requesting from CurrencyAPI', { cryptoTokens });
-    
-    const config = {
-      params: {
-        base_currency: 'USD',
-        currencies: cryptoTokens
-      },
-      timeout: CONFIG.REQUEST_TIMEOUT,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Portfolio-Service/1.0'
-      }
-    };
-    
-    if (API_CONFIG.hasValidApiKey) {
-      config.headers['apikey'] = API_CONFIG.apiKey;
-    } else {
-      logger.warn('No valid CurrencyAPI key found, request may fail');
-    }
-    
-    const response = await axios.get(`${API_CONFIG.baseUrl}/latest`, config);
-    
-    if (!response.data || !response.data.data || typeof response.data.data !== 'object') {
-      throw new Error('Invalid response format from CurrencyAPI');
-    }
-    
-    logger.info('CurrencyAPI response received', { 
-      responseDataKeys: Object.keys(response.data.data),
-      responseStatus: response.status 
-    });
-    
-    // Process response - CurrencyAPI returns rates like EUR: 0.85 (USD to EUR)
-    // We need to invert to get crypto prices in USD
-    for (const token of currencyApiTokens) {
-      const upperToken = token.toUpperCase();
-      const rateData = response.data.data[upperToken];
-      
-      if (rateData && typeof rateData.value === 'number' && rateData.value > 0) {
-        const price = 1 / rateData.value; // Invert to get USD price per crypto unit
-        prices.set(upperToken, price);
-        logger.debug(`Set CurrencyAPI price: ${upperToken} = $${price.toFixed(2)}`);
+    } catch (err) {
+      lastErr = err;
+      if (err.response?.status === 429 && i < maxRetries) {
+        await new Promise(r => setTimeout(r, CONFIG.RATE_LIMIT_DELAY));
+      } else if (i < maxRetries) {
+        await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
       } else {
-        logger.warn(`Invalid or missing price data for ${upperToken}`, { rateData });
+        break;
       }
     }
-    
-    logger.info(`Successfully fetched ${prices.size} prices from CurrencyAPI`, {
-      totalPrices: prices.size,
-      currencyApiPrices: currencyApiTokens.length
-    });
-    
-    return prices;
-  } catch (error) {
-    logger.error('CurrencyAPI price fetch failed', { 
-      error: error.message,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      responseData: error.response?.data
-    });
-    throw error;
   }
+  throw lastErr;
 }
 
-// Fallback prices for supported tokens only - DOGE REMOVED
-async function getFallbackPrices(tokens) {
-  const fallbackPrices = new Map();
-  const fallbacks = {
-    'BTC': 65000,
-    'ETH': 3200,
-    'SOL': 200,
-    'USDT': 1,
-    'USDC': 1,
-    'BNB': 580,
-    // 'DOGE': REMOVED
-    'MATIC': 0.85,
-    'AVAX': 35,
-    'NGNZ': 1 / 1554.42,
+/** Fetch from CurrencyAPI */
+async function fetchCurrencyApiPrices(tokens) {
+  logger.info('Fetching prices from CurrencyAPI', { tokens });
+  const supported = tokens.filter(t => SUPPORTED_TOKENS[t]?.supportedByCurrencyAPI);
+  const prices = new Map();
+  // stablecoins
+  ['USDT','USDC'].forEach(t => tokens.includes(t) && prices.set(t, 1.0));
+  // NGNZ
+  Object.entries(handleNGNZPricing(tokens)).forEach(([t,p]) => prices.set(t,p));
+  if (supported.length === 0) return prices;
+  const params = { base_currency: 'USD', currencies: supported.join(',') };
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': 'Portfolio-Service/1.0',
+    ...(API_CONFIG.hasValidApiKey ? { apikey: API_CONFIG.apiKey } : {})
   };
-  
-  for (const token of tokens) {
-    const upperToken = token.toUpperCase();
-    if (SUPPORTED_TOKENS[upperToken]) {
-      fallbackPrices.set(upperToken, fallbacks[upperToken] || 0);
-      logger.debug(`Set fallback price: ${upperToken} = $${fallbacks[upperToken]}`);
-    }
+  const res = await axios.get(`${API_CONFIG.baseUrl}/latest`, { params, timeout: CONFIG.REQUEST_TIMEOUT, headers });
+  const data = res.data.data;
+  for (const t of supported) {
+    const v = data[t]?.value;
+    if (v > 0) prices.set(t, 1 / v);
   }
-  
-  return fallbackPrices;
+  logger.info('CurrencyAPI fetch complete', { count: prices.size });
+  return prices;
 }
 
-// Gets cryptocurrency prices with caching and automatic markdown application
+/** Fallback prices */
+async function getFallbackPrices(tokens) {
+  const fallbacks = {
+    BTC:65000, ETH:3200, SOL:200,
+    USDT:1, USDC:1, BNB:580,
+    MATIC:0.85, AVAX:35, NGNZ:1/1554.42
+  };
+  const map = new Map();
+  tokens.forEach(t => map.set(t, fallbacks[t]||0));
+  return map;
+}
+
+/** Get prices with cache + markdown */
 async function getPricesWithCache(tokenSymbols) {
-  if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
-    logger.warn('Invalid token symbols provided to getPricesWithCache');
-    return {};
+  if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) return {};
+  const tokens = [...new Set(tokenSymbols.map(t => t.toUpperCase()).filter(t => SUPPORTED_TOKENS[t]))];
+  if (tokens.length === 0) return {};
+
+  if (isCacheValid(tokens)) {
+    return Object.fromEntries(tokens.map(t => [t, priceCache.data.get(t)]));
   }
-  
-  // Filter to only supported tokens and normalize
-  const normalizedTokens = [...new Set(
-    tokenSymbols
-      .map(t => t.toUpperCase())
-      .filter(token => SUPPORTED_TOKENS[token])
-  )];
-  
-  if (normalizedTokens.length === 0) {
-    logger.warn('No supported tokens found in request');
-    return {};
-  }
-  
-  // Check cache validity
-  if (isCacheValid(normalizedTokens)) {
-    logger.debug('Using cached prices with markdown applied', { tokens: normalizedTokens });
-    return Object.fromEntries(
-      normalizedTokens.map(token => [token, priceCache.data.get(token)])
-    );
-  }
-  
-  // Handle concurrent requests
-  if (priceCache.isUpdating && priceCache.updatePromise) {
-    logger.info('Price update in progress, waiting for completion');
+  if (priceCache.isUpdating) {
     await priceCache.updatePromise;
-    return Object.fromEntries(
-      normalizedTokens.map(token => [token, priceCache.data.get(token) || 0])
-    );
+    return Object.fromEntries(tokens.map(t => [t, priceCache.data.get(t) || 0]));
   }
-  
-  // Start price update with markdown integration
+
   priceCache.isUpdating = true;
   priceCache.updatePromise = (async () => {
     try {
       let priceMap;
-      
-      // Fetch original prices from API or fallback
       try {
-        priceMap = await withRetry(() => fetchCurrencyApiPrices(normalizedTokens));
-      } catch (apiError) {
-        logger.warn('CurrencyAPI failed, using fallback prices', { error: apiError.message });
-        priceMap = await getFallbackPrices(normalizedTokens);
+        priceMap = await withRetry(() => fetchCurrencyApiPrices(tokens));
+      } catch {
+        priceMap = await getFallbackPrices(tokens);
       }
-      
-      // Apply global markdown percentage automatically
-      const markdownInfo = await getGlobalMarkdownPercentage();
-      
-      if (markdownInfo.hasMarkdown) {
-        logger.info('Applying global markdown to all crypto prices', {
-          markdownPercentage: markdownInfo.percentage,
-          affectedTokens: Array.from(priceMap.keys()).filter(token => {
-            const tokenInfo = SUPPORTED_TOKENS[token];
-            return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
-          })
-        });
-        priceMap = applyMarkdownToPrices(priceMap, markdownInfo.percentage);
-      }
-      
-      // Update cache with marked-down prices
+      const md = await getGlobalMarkdownPercentage();
+      if (md.hasMarkdown) priceMap = applyMarkdownToPrices(priceMap, md.percentage);
       priceCache.data = priceMap;
       priceCache.lastUpdated = Date.now();
-      
-      logger.info('Price cache updated successfully', { 
-        tokenCount: priceMap.size,
-        tokens: Array.from(priceMap.keys()),
-        markdownApplied: markdownInfo.hasMarkdown,
-        markdownPercentage: markdownInfo.hasMarkdown ? `${markdownInfo.percentage}%` : 'None'
-      });
-      
       return priceMap;
-    } catch (error) {
-      logger.error('Failed to fetch and process prices', { error: error.message });
-      
-      // Return stale cache if available
-      if (priceCache.data.size > 0) {
-        logger.warn('Returning stale cache data due to fetch failure');
-        return priceCache.data;
-      }
-      
-      // Final fallback without markdown
-      const fallbackPrices = await getFallbackPrices(normalizedTokens);
-      priceCache.data = fallbackPrices;
+    } catch {
+      if (priceCache.data.size > 0) return priceCache.data;
+      const fallback = await getFallbackPrices(tokens);
+      priceCache.data = fallback;
       priceCache.lastUpdated = Date.now();
-      return fallbackPrices;
+      return fallback;
     } finally {
       priceCache.isUpdating = false;
       priceCache.updatePromise = null;
     }
   })();
-  
-  const priceMap = await priceCache.updatePromise;
-  
-  return Object.fromEntries(
-    normalizedTokens.map(token => [token, priceMap.get(token) || 0])
-  );
+
+  const result = await priceCache.updatePromise;
+  return Object.fromEntries(tokens.map(t => [t, result.get(t) || 0]));
 }
 
-// ====================================================
-// UPDATED: Updates user balance directly for internal transfers - DOGE REMOVED
-// ====================================================
-async function updateUserBalance(userId, currency, amount, session = null) {
+/** Update one currency balance (not used for swaps) */
+async function updateUserBalance(userId, currency, amount, session=null) {
   if (!userId || !currency || typeof amount !== 'number') {
     throw new Error('Invalid parameters for balance update');
   }
-  
-  try {
-    const currencyUpper = currency.toUpperCase();
-    
-    // Validate currency is supported
-    if (!SUPPORTED_TOKENS[currencyUpper]) {
-      throw new Error(`Unsupported currency: ${currencyUpper}`);
-    }
-    
-    // Get current price for USD value calculation
-    const prices = await getPricesWithCache([currencyUpper]);
-    const currentPrice = prices[currencyUpper] || 0;
-    const usdAmount = amount * currentPrice;
-    
-    // Map currency to correct balance fields
-    const currencyLower = currencyUpper.toLowerCase();
-    const balanceField = `${currencyLower}Balance`;
-    const usdBalanceField = `${currencyLower}BalanceUSD`;
-    
-    // Build update object
-    const updateFields = {
-      $inc: {
-        [balanceField]: amount,
-        [usdBalanceField]: usdAmount
-      },
-      $set: {
-        lastBalanceUpdate: new Date()
-      }
-    };
-    
-    // Execute update with or without session
-    const updateOptions = { 
-      new: true, 
-      runValidators: true,
-      ...(session && { session })
-    };
-    
-    const user = await User.findByIdAndUpdate(userId, updateFields, updateOptions);
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    // Recalculate total portfolio balance - DOGE REMOVED
-    const totalPortfolioBalance = 
-      (user.btcBalanceUSD || 0) +
-      (user.ethBalanceUSD || 0) +
-      (user.solBalanceUSD || 0) +
-      (user.usdtBalanceUSD || 0) +
-      (user.usdcBalanceUSD || 0) +
-      (user.bnbBalanceUSD || 0) +
-      // (user.dogeBalanceUSD || 0) + // REMOVED
-      (user.maticBalanceUSD || 0) +
-      (user.avaxBalanceUSD || 0) +
-      (user.ngnzBalanceUSD || 0);
-    
-    // Update total portfolio balance
-    await User.findByIdAndUpdate(
-      userId,
-      { 
-        $set: { 
-          totalPortfolioBalance: parseFloat(totalPortfolioBalance.toFixed(2)),
-          portfolioLastUpdated: new Date()
-        }
-      },
-      { session, runValidators: true }
-    );
-    
-    logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper} (${amount > 0 ? '+' : ''}$${usdAmount.toFixed(2)} USD)`);
-    
-    return user;
-  } catch (error) {
-    logger.error(`Failed to update balance for user ${userId}`, { 
-      currency, 
-      amount, 
-      error: error.message 
-    });
-    throw error;
-  }
+  const cu = currency.toUpperCase();
+  if (!SUPPORTED_TOKENS[cu]) throw new Error(`Unsupported currency: ${cu}`);
+  const prices = await getPricesWithCache([cu]);
+  const usdAmt = (prices[cu]||0) * amount;
+  const lower = cu.toLowerCase();
+  const inc = { [`${lower}Balance`]: amount, [`${lower}BalanceUSD`]: usdAmt };
+  await User.findByIdAndUpdate(userId, { $inc: inc, $set: { lastBalanceUpdate: new Date() } }, { new: true, runValidators: true, session });
+  const u = await User.findById(userId);
+  const total = ['btc','eth','sol','usdt','usdc','bnb','matic','avax','ngnz']
+    .reduce((sum, tok) => sum + (u[`${tok}BalanceUSD`]||0), 0);
+  await User.findByIdAndUpdate(userId, { $set: { totalPortfolioBalance: parseFloat(total.toFixed(2)), portfolioLastUpdated: new Date() } }, { session });
+  return u;
 }
 
-// Calculates user portfolio balance
-async function getUserPortfolioBalance(userId, asOfDate = null) {
-  if (!userId) {
-    throw new Error('User ID is required');
+/**
+ * Calculate user balances from transactions (treat SWAP_IN/OUT properly)
+ */
+async function getUserPortfolioBalance(userId, asOfDate=null) {
+  if (!userId) throw new Error('User ID is required');
+
+  const query = { userId, status: { $in: ['CONFIRMED','SUCCESSFUL'] } };
+  if (asOfDate) {
+    const d = new Date(asOfDate);
+    if (isNaN(d)) throw new Error('Invalid asOfDate');
+    query.createdAt = { $lte: d };
   }
-  
-  try {
-    const query = { 
-      userId, 
-      status: { $in: ['CONFIRMED', 'SUCCESSFUL'] } 
-    };
-    
-    if (asOfDate) {
-      const date = new Date(asOfDate);
-      if (isNaN(date.getTime())) {
-        throw new Error('Invalid asOfDate provided');
-      }
-      query.createdAt = { $lte: date };
+
+  const txs = await Transaction.find(query).lean();
+  logger.info(`Found ${txs.length} transactions for ${userId}`);
+
+  const balances = new Map();
+  for (const tx of txs) {
+    if (!tx.currency || typeof tx.amount !== 'number' || !tx.type) continue;
+    const tok = tx.currency.toUpperCase();
+    if (!SUPPORTED_TOKENS[tok]) continue;
+    const curr = balances.get(tok) || 0;
+    if (tx.type === 'DEPOSIT' || tx.type === 'SWAP_IN') {
+      balances.set(tok, curr + tx.amount);
+    } else if (tx.type === 'WITHDRAWAL' || tx.type === 'SWAP_OUT') {
+      balances.set(tok, curr - tx.amount);
     }
-    
-    const transactions = await Transaction.find(query).lean();
-    logger.info(`Found ${transactions.length} transactions for user ${userId}`);
-    
-    // Calculate token balances - filter to supported tokens only
-    const tokenBalances = new Map();
-    
-    for (const tx of transactions) {
-      if (!tx.currency || !tx.amount || !tx.type) {
-        logger.warn('Skipping invalid transaction', { txId: tx._id });
-        continue;
-      }
-      
-      const token = tx.currency.toUpperCase();
-      
-      // Skip unsupported tokens
-      if (!SUPPORTED_TOKENS[token]) {
-        logger.warn('Skipping unsupported token in transaction', { txId: tx._id, token });
-        continue;
-      }
-      
-      const amount = parseFloat(tx.amount);
-      
-      if (isNaN(amount)) {
-        logger.warn('Invalid amount in transaction', { txId: tx._id, amount: tx.amount });
-        continue;
-      }
-      
-      const currentBalance = tokenBalances.get(token) || 0;
-      
-      if (tx.type === 'DEPOSIT') {
-        tokenBalances.set(token, currentBalance + amount);
-      } else if (tx.type === 'WITHDRAWAL') {
-        tokenBalances.set(token, currentBalance - amount);
-      }
-    }
-    
-    // Filter out zero balances
-    const nonZeroBalances = new Map();
-    for (const [token, balance] of tokenBalances) {
-      if (Math.abs(balance) > 0.00000001) {
-        nonZeroBalances.set(token, balance);
-      }
-    }
-    
-    const tokens = Array.from(nonZeroBalances.keys());
-    
-    if (tokens.length === 0) {
-      return {
-        totalPortfolioUSD: 0,
-        tokens: [],
-        lastUpdated: priceCache.lastUpdated ? new Date(priceCache.lastUpdated).toISOString() : null,
-        asOfDate: asOfDate ? new Date(asOfDate).toISOString() : null,
-      };
-    }
-    
-    // Get current prices (with markdown applied)
-    const prices = await getPricesWithCache(tokens);
-    let totalUSD = 0;
-    const portfolio = [];
-    
-    for (const token of tokens) {
-      const balance = nonZeroBalances.get(token);
-      const price = prices[token] || 0;
-      const valueInUSD = balance * price;
-      totalUSD += valueInUSD;
-      
-      portfolio.push({
-        token,
-        balance: parseFloat(balance.toFixed(8)),
-        priceInUSD: parseFloat(price.toFixed(8)),
-        valueInUSD: parseFloat(valueInUSD.toFixed(2)),
-        isNairaPegged: token === 'NGNZ'
-      });
-    }
-    
-    // Sort by value descending
-    portfolio.sort((a, b) => b.valueInUSD - a.valueInUSD);
-    
-    return {
-      totalPortfolioUSD: parseFloat(totalUSD.toFixed(2)),
-      tokens: portfolio,
-      lastUpdated: priceCache.lastUpdated ? new Date(priceCache.lastUpdated).toISOString() : null,
-      asOfDate: asOfDate ? new Date(asOfDate).toISOString() : null,
-    };
-  } catch (error) {
-    logger.error('Error calculating portfolio balance', { userId, error: error.message });
-    throw error;
   }
+
+  // Filter zero balances
+  const nonZero = Array.from(balances.entries()).filter(([,b]) => Math.abs(b) > 1e-8);
+  if (nonZero.length === 0) {
+    return { totalPortfolioUSD: 0, tokens: [], lastUpdated: priceCache.lastUpdated ? new Date(priceCache.lastUpdated).toISOString() : null, asOfDate: asOfDate||null };
+  }
+
+  const tokens = nonZero.map(([t]) => t);
+  const prices = await getPricesWithCache(tokens);
+  let total = 0;
+  const portfolio = nonZero.map(([t,b]) => {
+    const price = prices[t]||0;
+    const val = b * price;
+    total += val;
+    return { token: t, balance: parseFloat(b.toFixed(8)), priceInUSD: parseFloat(price.toFixed(8)), valueInUSD: parseFloat(val.toFixed(2)), isNairaPegged: t==='NGNZ' };
+  });
+
+  portfolio.sort((a,b) => b.valueInUSD - a.valueInUSD);
+
+  return {
+    totalPortfolioUSD: parseFloat(total.toFixed(2)),
+    tokens: portfolio,
+    lastUpdated: priceCache.lastUpdated ? new Date(priceCache.lastUpdated).toISOString() : null,
+    asOfDate: asOfDate || null
+  };
 }
 
-// UPDATED: Updates user's portfolio balance in the database - DOGE REMOVED
-async function updateUserPortfolioBalance(userId, asOfDate = null) {
-  if (!userId) {
-    throw new Error('User ID is required');
-  }
-  
-  try {
-    const portfolio = await getUserPortfolioBalance(userId, asOfDate);
-    const user = await User.findById(userId);
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    // Update fields EXACTLY matching user schema - DOGE REMOVED
-    const updateFields = {
-      totalPortfolioBalance: portfolio.totalPortfolioUSD,
-      portfolioLastUpdated: new Date(),
-      // Reset all balances to 0 first
-      solBalance: 0,
-      solBalanceUSD: 0,
-      btcBalance: 0,
-      btcBalanceUSD: 0,
-      usdtBalance: 0,
-      usdtBalanceUSD: 0,
-      usdcBalance: 0,
-      usdcBalanceUSD: 0,
-      ethBalance: 0,
-      ethBalanceUSD: 0,
-      bnbBalance: 0,
-      bnbBalanceUSD: 0,
-      // dogeBalance: 0, // REMOVED
-      // dogeBalanceUSD: 0, // REMOVED
-      maticBalance: 0,
-      maticBalanceUSD: 0,
-      avaxBalance: 0,
-      avaxBalanceUSD: 0,
-      ngnzBalance: 0,
-      ngnzBalanceUSD: 0,
-    };
-    
-    // Update balances for tokens that exist in user schema
-    for (const { token, balance, valueInUSD } of portfolio.tokens) {
-      const tokenLower = token.toLowerCase();
-      const balanceField = `${tokenLower}Balance`;
-      const usdField = `${tokenLower}BalanceUSD`;
-      
-      if (updateFields.hasOwnProperty(balanceField)) {
-        updateFields[balanceField] = balance;
-        updateFields[usdField] = valueInUSD;
-      }
-    }
-    
-    const updatedUser = await User.findByIdAndUpdate(
-      userId, 
-      updateFields, 
-      { new: true, runValidators: true }
-    );
-    
-    logger.info(`Successfully updated portfolio balances for user ${userId}`, {
-      totalUSD: portfolio.totalPortfolioUSD,
-      tokenCount: portfolio.tokens.length
-    });
-    
-    return updatedUser;
-  } catch (error) {
-    logger.error(`Failed to update portfolio balance for user ${userId}`, { error: error.message });
-    return null;
-  }
+/** Persist calculated portfolio into User document */
+async function updateUserPortfolioBalance(userId, asOfDate=null) {
+  if (!userId) throw new Error('User ID is required');
+  const pf = await getUserPortfolioBalance(userId, asOfDate);
+  const user = await User.findById(userId);
+  if (!user) throw new Error(`User not found: ${userId}`);
+
+  // reset all balances
+  const reset = {
+    solBalance:0, solBalanceUSD:0,
+    btcBalance:0, btcBalanceUSD:0,
+    usdtBalance:0, usdtBalanceUSD:0,
+    usdcBalance:0, usdcBalanceUSD:0,
+    ethBalance:0, ethBalanceUSD:0,
+    bnbBalance:0, bnbBalanceUSD:0,
+    maticBalance:0, maticBalanceUSD:0,
+    avaxBalance:0, avaxBalanceUSD:0,
+    ngnzBalance:0, ngnzBalanceUSD:0
+  };
+
+  const fields = {
+    totalPortfolioBalance: pf.totalPortfolioUSD,
+    portfolioLastUpdated: new Date(),
+    ...reset
+  };
+
+  // fill in non-zero tokens
+  pf.tokens.forEach(({ token, balance, valueInUSD }) => {
+    const lower = token.toLowerCase();
+    fields[`${lower}Balance`]    = balance;
+    fields[`${lower}BalanceUSD`] = valueInUSD;
+  });
+
+  const updated = await User.findByIdAndUpdate(userId, fields, { new: true, runValidators: true });
+  logger.info(`Updated portfolio for ${userId}`, { totalUSD: pf.totalPortfolioUSD });
+  return updated;
 }
 
-// Reserves user balance for pending transactions
+/** Reserve and release (unchanged) */
 async function reserveUserBalance(userId, currency, amount) {
-  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
-    throw new Error('Invalid parameters for balance reservation');
-  }
-  
-  try {
-    const currencyUpper = currency.toUpperCase();
-    
-    // Validate currency is supported
-    if (!SUPPORTED_TOKENS[currencyUpper]) {
-      throw new Error(`Unsupported currency: ${currencyUpper}`);
-    }
-    
-    // Map currency to correct pending balance field
-    const pendingBalanceKey = `${currencyUpper.toLowerCase()}PendingBalance`;
-    
-    const update = { 
-      $inc: { [pendingBalanceKey]: amount },
-      $set: { lastBalanceUpdate: new Date() }
-    };
-    
-    const user = await User.findByIdAndUpdate(
-      userId, 
-      update, 
-      { new: true, runValidators: true }
-    );
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    logger.info(`Reserved ${amount} ${currencyUpper} for user ${userId}`);
-    return user;
-  } catch (error) {
-    logger.error(`Failed to reserve balance for user ${userId}`, { 
-      currency, 
-      amount, 
-      error: error.message 
-    });
-    throw error;
-  }
+  if (!userId||!currency||typeof amount!=='number'||amount<=0) throw new Error('Invalid params');
+  const cu = currency.toUpperCase();
+  if (!SUPPORTED_TOKENS[cu]) throw new Error(`Unsupported currency: ${cu}`);
+  const key = `${cu.toLowerCase()}PendingBalance`;
+  const user = await User.findByIdAndUpdate(userId, { $inc: { [key]: amount }, $set: { lastBalanceUpdate: new Date() } }, { new: true, runValidators: true });
+  if (!user) throw new Error(`User not found: ${userId}`);
+  logger.info(`Reserved ${amount} ${cu} for ${userId}`);
+  return user;
 }
 
-// Releases reserved user balance
 async function releaseReservedBalance(userId, currency, amount) {
-  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
-    throw new Error('Invalid parameters for balance release');
-  }
-  
-  try {
-    const currencyUpper = currency.toUpperCase();
-    
-    // Validate currency is supported
-    if (!SUPPORTED_TOKENS[currencyUpper]) {
-      throw new Error(`Unsupported currency: ${currencyUpper}`);
-    }
-    
-    // Map currency to correct pending balance field
-    const pendingBalanceKey = `${currencyUpper.toLowerCase()}PendingBalance`;
-    
-    const update = { 
-      $inc: { [pendingBalanceKey]: -amount },
-      $set: { lastBalanceUpdate: new Date() }
-    };
-    
-    const user = await User.findByIdAndUpdate(
-      userId, 
-      update, 
-      { new: true, runValidators: true }
-    );
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    logger.info(`Released ${amount} ${currencyUpper} for user ${userId}`);
-    return user;
-  } catch (error) {
-    logger.error(`Failed to release reserved balance for user ${userId}`, { 
-      currency, 
-      amount, 
-      error: error.message 
-    });
-    throw error;
-  }
+  if (!userId||!currency||typeof amount!=='number'||amount<=0) throw new Error('Invalid params');
+  const cu = currency.toUpperCase();
+  if (!SUPPORTED_TOKENS[cu]) throw new Error(`Unsupported currency: ${cu}`);
+  const key = `${cu.toLowerCase()}PendingBalance`;
+  const user = await User.findByIdAndUpdate(userId, { $inc: { [key]: -amount }, $set: { lastBalanceUpdate: new Date() } }, { new: true, runValidators: true });
+  if (!user) throw new Error(`User not found: ${userId}`);
+  logger.info(`Released ${amount} ${cu} for ${userId}`);
+  return user;
 }
 
-// Validates if a token is supported
+/** Utilities */
 function isTokenSupported(token) {
   return SUPPORTED_TOKENS.hasOwnProperty(token.toUpperCase());
 }
-
-// Clears the price cache
 function clearPriceCache() {
   priceCache.data.clear();
   priceCache.lastUpdated = null;
@@ -757,8 +347,6 @@ function clearPriceCache() {
   priceCache.updatePromise = null;
   logger.info('Price cache cleared');
 }
-
-// Gets cache statistics
 function getCacheStats() {
   return {
     cacheSize: priceCache.data.size,
@@ -770,85 +358,43 @@ function getCacheStats() {
     supportedTokens: Object.keys(SUPPORTED_TOKENS)
   };
 }
-
-// Force refresh prices for specific tokens
-async function forceRefreshPrices(tokens = []) {
-  logger.info('Force refreshing prices', { tokens });
-  
+async function forceRefreshPrices(tokens=[]) {
   clearPriceCache();
-  
-  const tokensToRefresh = tokens.length > 0 ? tokens : Object.keys(SUPPORTED_TOKENS);
-  
-  return await getPricesWithCache(tokensToRefresh);
+  const toFetch = tokens.length ? tokens : Object.keys(SUPPORTED_TOKENS);
+  return await getPricesWithCache(toFetch);
 }
-
-// NEW FUNCTION: Get prices without markdown (original prices)
 async function getOriginalPricesWithCache(tokenSymbols) {
-  if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
-    logger.warn('Invalid token symbols provided to getOriginalPricesWithCache');
-    return {};
-  }
-  
-  const normalizedTokens = [...new Set(
-    tokenSymbols
-      .map(t => t.toUpperCase())
-      .filter(token => SUPPORTED_TOKENS[token])
-  )];
-  
-  if (normalizedTokens.length === 0) {
-    return {};
-  }
-  
+  if (!Array.isArray(tokenSymbols)||tokenSymbols.length===0) return {};
+  const tokens = [...new Set(tokenSymbols.map(t=>t.toUpperCase()).filter(t=>SUPPORTED_TOKENS[t]))];
+  if (!tokens.length) return {};
   try {
-    let priceMap;
-    
-    try {
-      priceMap = await withRetry(() => fetchCurrencyApiPrices(normalizedTokens));
-    } catch (apiError) {
-      logger.warn('CurrencyAPI failed, using fallback prices for original prices', { error: apiError.message });
-      priceMap = await getFallbackPrices(normalizedTokens);
-    }
-    
-    // Return original prices without markdown
-    return Object.fromEntries(
-      normalizedTokens.map(token => [token, priceMap.get(token) || 0])
-    );
-  } catch (error) {
-    logger.error('Failed to fetch original prices', { error: error.message });
-    return {};
+    let pm = await withRetry(() => fetchCurrencyApiPrices(tokens));
+    return Object.fromEntries(tokens.map(t=>[t,pm.get(t)||0]));
+  } catch {
+    const fb = await getFallbackPrices(tokens);
+    return Object.fromEntries(tokens.map(t=>[t,fb.get(t)||0]));
   }
 }
 
 module.exports = {
-  // Core functions
   getPricesWithCache,
-  getOriginalPricesWithCache, // NEW: Get prices without markdown
+  getOriginalPricesWithCache,
   getUserPortfolioBalance,
   updateUserPortfolioBalance,
   updateUserBalance,
   reserveUserBalance,
   releaseReservedBalance,
-  
-  // NEW: Markdown functions
   getGlobalMarkdownPercentage,
   applyMarkdownToPrices,
-  
-  // Cache management
   clearPriceCache,
   getCacheStats,
   forceRefreshPrices,
   isCacheValid,
-  
-  // Utilities
   isTokenSupported,
   withRetry,
   SUPPORTED_TOKENS,
   handleNGNZPricing,
-  
-  // Configuration
   CONFIG,
   CURRENCY_API_CONFIG: API_CONFIG,
-  
-  // Cache object
   priceCache
 };
