@@ -2,7 +2,7 @@ const express = require('express');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { validateUserBalance, getUserAvailableBalance } = require('../services/balance');
-const { updateUserBalance, updateUserPortfolioBalance, getPricesWithCache } = require('../services/portfolio');
+const { updateUserPortfolioBalance, getPricesWithCache } = require('../services/portfolio');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const logger = require('../utils/logger');
@@ -24,49 +24,92 @@ const TOKEN_MAP = {
   'NGNZ': { currency: 'NGNZ', name: 'Nigerian Naira Bank' }
 };
 
-// Balance field mapping for NGNZ swaps
-const CURRENCY_BALANCE_MAP = {
-  'BTC': 'btcBalance',
-  'ETH': 'ethBalance',
-  'SOL': 'solBalance',
-  'USDT': 'usdtBalance',
-  'USDC': 'usdcBalance',
-  'BNB': 'bnbBalance',
-  'MATIC': 'maticBalance',
-  'AVAX': 'avaxBalance',
-  'NGNZ': 'ngnzBalance'
-};
-
 // Store quote data temporarily (in production, use Redis or database)
 const quoteCache = new Map();
 
 /**
- * Updates user balance for NGNZ swaps
- * @param {String} userId - User ID
- * @param {String} currency - Currency code
- * @param {Number} amount - Amount to add (positive) or subtract (negative)
+ * Processes atomic balance updates for swap (based on NGNB swap pattern)
+ * @param {Object} swapData - Swap parameters
+ * @returns {Promise<Object>} Processing result
  */
-async function updateUserBalanceForNGNZ(userId, currency, amount) {
-  const normalizedCurrency = currency.toUpperCase();
-  const balanceField = CURRENCY_BALANCE_MAP[normalizedCurrency];
-  
-  if (!balanceField) {
-    logger.warn(`No balance field mapping found for currency: ${normalizedCurrency}`);
-    return;
+async function processSwapBalances(swapData) {
+  const { userId, fromCurrency, toCurrency, fromAmount, toAmount, transactionId } = swapData;
+
+  try {
+    // Get user document first to check current balances
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found for balance update');
+    }
+
+    // Helper function to get balance field name
+    const getBalanceField = (currency) => {
+      const currencyLower = currency.toLowerCase();
+      return `${currencyLower}Balance`;
+    };
+
+    // Get balance field names
+    const fromBalanceField = getBalanceField(fromCurrency);
+    const toBalanceField = getBalanceField(toCurrency);
+
+    // Check if user has sufficient balance
+    const currentFromBalance = user[fromBalanceField] || 0;
+    if (currentFromBalance < fromAmount) {
+      throw new Error(`Insufficient ${fromCurrency} balance. Available: ${currentFromBalance}, Required: ${fromAmount}`);
+    }
+
+    // Perform atomic balance update with conditions to prevent negative balances
+    const updateQuery = {
+      $inc: {
+        [fromBalanceField]: -fromAmount, // Debit source currency
+        [toBalanceField]: toAmount // Credit destination currency
+      }
+    };
+
+    // Add conditions to prevent negative balances
+    const conditions = {
+      _id: userId,
+      [fromBalanceField]: { $gte: fromAmount } // Ensure sufficient balance
+    };
+
+    const updateResult = await User.findOneAndUpdate(
+      conditions,
+      updateQuery,
+      { new: true, runValidators: true }
+    );
+
+    if (!updateResult) {
+      throw new Error(`Failed to update balances - insufficient ${fromCurrency} balance or user not found`);
+    }
+
+    logger.info('Swap balances processed successfully with atomic update', {
+      userId,
+      transactionId,
+      fromCurrency,
+      toCurrency,
+      fromAmount,
+      toAmount,
+      newFromBalance: updateResult[fromBalanceField],
+      newToBalance: updateResult[toBalanceField]
+    });
+
+    return { 
+      success: true,
+      balances: {
+        [fromCurrency]: updateResult[fromBalanceField],
+        [toCurrency]: updateResult[toBalanceField]
+      },
+      updatedUser: updateResult
+    };
+
+  } catch (error) {
+    logger.error('Failed to process swap balances', { 
+      swapData, 
+      error: error.message,
+      stack: error.stack 
+    });
+    throw error;
   }
-  
-  const user = await User.findById(userId);
-  if (!user) {
-    throw new Error('User not found');
-  }
-  
-  const currentBalance = user[balanceField] || 0;
-  const newBalance = Math.max(0, currentBalance + amount); // Ensure no negative balances
-  
-  user[balanceField] = newBalance;
-  await user.save();
-  
-  logger.info(`NGNZ Swap: Updated ${userId} ${balanceField}: ${currentBalance} -> ${newBalance} (${amount >= 0 ? '+' : ''}${amount})`);
 }
 
 /**
@@ -684,21 +727,27 @@ router.post('/quote/:quoteId', async (req, res) => {
         swapId: swapTransactions.swapId
       });
 
-      // Update balances directly
+      // Update balances using atomic operations
       try {
-        if (isNGNZQuote) {
-          // For NGNZ swaps, use the NGNZ helper function
-          await updateUserBalanceForNGNZ(userId, sourceCurrency, -payAmount);
-          await updateUserBalanceForNGNZ(userId, targetCurrency, receiveAmount);
-        } else {
-          // For regular swaps, use portfolio service
-          await updateUserBalance(userId, sourceCurrency, -payAmount);
-          await updateUserBalance(userId, targetCurrency, receiveAmount);
-        }
+        const swapBalanceResult = await processSwapBalances({
+          userId,
+          fromCurrency: sourceCurrency,
+          toCurrency: targetCurrency,
+          fromAmount: payAmount,
+          toAmount: receiveAmount,
+          transactionId: `${swapTransactions.swapId}_balance`
+        });
 
-        // Update portfolio balance (with error handling)
+        logger.info('POST /swap/quote/:quoteId - Atomic balance update completed', {
+          userId,
+          swapId: swapTransactions.swapId,
+          balances: swapBalanceResult.balances
+        });
+
+        // Update portfolio balance using portfolio service (with error handling)
         try {
           await updateUserPortfolioBalance(userId);
+          logger.info(`POST /swap/quote/:quoteId - Portfolio balance updated for user ${userId}`);
         } catch (portfolioError) {
           logger.warn('Portfolio update failed (non-critical)', {
             userId,
@@ -909,6 +958,7 @@ logger.info('Clean swap router initialized with portfolio pricing', {
     'Portfolio service pricing (with built-in markdown)',
     'Immediate swap completion',
     'NGNZ onramp/offramp support',
+    'Atomic balance updates (race-condition safe)',
     'No redundant spreads or markdowns',
     'Internal liquidity management'
   ]
