@@ -55,7 +55,7 @@ const transactionSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
-// Define indexes, excluding redundant obiexTransactionId index
+// Define indexes for better query performance
 transactionSchema.index({ transactionId: 1 }, { sparse: true });
 transactionSchema.index({ reference: 1 }, { sparse: true });
 transactionSchema.index({ userId: 1, type: 1, status: 1 });
@@ -65,12 +65,19 @@ transactionSchema.index({ 'swapDetails.swapId': 1 }, { sparse: true });
 transactionSchema.index({ 'swapDetails.quoteId': 1 }, { sparse: true });
 transactionSchema.index({ userId: 1, type: 1, 'swapDetails.swapType': 1 });
 transactionSchema.index({ relatedTransactionId: 1 }, { sparse: true });
+transactionSchema.index({ obiexTransactionId: 1 }, { sparse: true });
 
+// Pre-save middleware to update timestamps
 transactionSchema.pre('save', function(next) {
   this.updatedAt = new Date();
   next();
 });
 
+/**
+ * Creates swap transaction pairs for immediate completion
+ * @param {Object} swapData - Swap transaction data
+ * @returns {Object} Created swap transactions
+ */
 transactionSchema.statics.createSwapTransactions = async function(swapData) {
   const {
     userId,
@@ -85,7 +92,7 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
     markdownApplied = 0,
     swapFee = 0,
     quoteExpiresAt,
-    status = 'PENDING',
+    status = 'SUCCESSFUL', // Default to SUCCESSFUL for immediate completion
     obiexTransactionId = null
   } = swapData;
 
@@ -141,30 +148,55 @@ transactionSchema.statics.createSwapTransactions = async function(swapData) {
       const savedSwapOut = await swapOutTransaction.save({ session });
       const savedSwapIn = await swapInTransaction.save({ session });
 
+      // Link related transactions
       savedSwapOut.relatedTransactionId = savedSwapIn._id;
       savedSwapIn.relatedTransactionId = savedSwapOut._id;
 
       await savedSwapOut.save({ session });
       await savedSwapIn.save({ session });
 
-      if (swapType === 'CRYPTO_TO_CRYPTO' && status === 'SUCCESSFUL') {
-        await portfolioService.updateUserBalance(userId, sourceCurrency, -Math.abs(sourceAmount), session);
-        await portfolioService.updateUserBalance(userId, targetCurrency, Math.abs(targetAmount), session);
-        await portfolioService.updateUserPortfolioBalance(userId, null, session);
-        logger.info(`Crypto-to-crypto swap balance updated: Deducted ${sourceAmount} ${sourceCurrency}, Added ${targetAmount} ${targetCurrency}`, { userId, swapId });
-      }
+      // NOTE: Balance updates are now handled directly in the swap router
+      // This keeps the transaction creation focused on database operations only
 
-      result = { swapOutTransaction: savedSwapOut, swapInTransaction: savedSwapIn, swapId };
+      result = { 
+        swapOutTransaction: savedSwapOut, 
+        swapInTransaction: savedSwapIn, 
+        swapId 
+      };
     });
+    
+    logger.info('Swap transactions created successfully', {
+      userId,
+      swapId,
+      status,
+      sourceCurrency,
+      targetCurrency,
+      sourceAmount,
+      targetAmount,
+      provider,
+      swapType
+    });
+    
     return result;
   } catch (error) {
-    logger.error('Failed to create swap transactions', { userId, quoteId, error: error.message });
+    logger.error('Failed to create swap transactions', { 
+      userId, 
+      quoteId, 
+      error: error.message,
+      stack: error.stack
+    });
     throw error;
   } finally {
     session.endSession();
   }
 };
 
+/**
+ * Updates the status of all transactions related to a swap
+ * @param {String} swapId - The swap ID
+ * @param {String} newStatus - The new status to set
+ * @returns {Object} Update result
+ */
 transactionSchema.statics.updateSwapStatus = async function(swapId, newStatus) {
   const session = await mongoose.startSession();
   try {
@@ -181,60 +213,371 @@ transactionSchema.statics.updateSwapStatus = async function(swapId, newStatus) {
         { session }
       );
 
-      if (newStatus === 'SUCCESSFUL') {
-        const { swapOutTransaction, swapInTransaction } = await this.getSwapTransactions(swapId);
-        if (swapOutTransaction && swapInTransaction && swapOutTransaction.swapDetails.swapType === 'CRYPTO_TO_CRYPTO') {
-          const userId = swapOutTransaction.userId;
-          const sourceCurrency = swapOutTransaction.currency;
-          const sourceAmount = Math.abs(swapOutTransaction.amount);
-          const targetCurrency = swapInTransaction.currency;
-          const targetAmount = Math.abs(swapInTransaction.amount);
-          
-          await portfolioService.updateUserBalance(userId, sourceCurrency, -sourceAmount, session);
-          await portfolioService.updateUserBalance(userId, targetCurrency, targetAmount, session);
-          await portfolioService.updateUserPortfolioBalance(userId, null, session);
-          logger.info(`Crypto-to-crypto swap balance updated via status change: Deducted ${sourceAmount} ${sourceCurrency}, Added ${targetAmount} ${targetCurrency}`, { userId, swapId });
-        }
-      }
+      // NOTE: Balance updates are now handled directly in swap router
+      // This method is mainly for status updates from webhooks (if any) or cleanup operations
+      logger.info('Swap status updated', {
+        swapId,
+        newStatus,
+        modifiedCount: result.modifiedCount
+      });
     });
     return result;
   } catch (error) {
-    logger.error('Failed to update swap status', { swapId, newStatus, error: error.message });
+    logger.error('Failed to update swap status', { 
+      swapId, 
+      newStatus, 
+      error: error.message,
+      stack: error.stack
+    });
     throw error;
   } finally {
     session.endSession();
   }
 };
 
+/**
+ * Gets all transactions related to a swap
+ * @param {String} swapId - The swap ID
+ * @returns {Object} Swap transactions
+ */
 transactionSchema.statics.getSwapTransactions = async function(swapId) {
-  const transactions = await this.find({ 'swapDetails.swapId': swapId });
-  
-  const swapOut = transactions.find(tx => tx.type === 'SWAP_OUT' || tx.type === 'ONRAMP');
-  const swapIn = transactions.find(tx => tx.type === 'SWAP_IN' || tx.type === 'OFFRAMP');
-  
-  return {
-    swapOutTransaction: swapOut,
-    swapInTransaction: swapIn,
-    transactions
-  };
+  try {
+    const transactions = await this.find({ 'swapDetails.swapId': swapId });
+    
+    const swapOut = transactions.find(tx => tx.type === 'SWAP_OUT' || tx.type === 'ONRAMP');
+    const swapIn = transactions.find(tx => tx.type === 'SWAP_IN' || tx.type === 'OFFRAMP');
+    
+    logger.debug('Retrieved swap transactions', {
+      swapId,
+      transactionCount: transactions.length,
+      hasSwapOut: !!swapOut,
+      hasSwapIn: !!swapIn
+    });
+    
+    return {
+      swapOutTransaction: swapOut,
+      swapInTransaction: swapIn,
+      transactions
+    };
+  } catch (error) {
+    logger.error('Failed to get swap transactions', {
+      swapId,
+      error: error.message
+    });
+    throw error;
+  }
 };
 
+/**
+ * Finds swap transactions by Obiex transaction ID
+ * @param {String} obiexTransactionId - The Obiex transaction ID
+ * @returns {Object|null} Swap transactions or null if not found
+ */
 transactionSchema.statics.findSwapByObiexId = async function(obiexTransactionId) {
-  const transactions = await this.find({ obiexTransactionId });
-  
-  if (transactions.length === 0) {
-    return null;
+  try {
+    const transactions = await this.find({ obiexTransactionId });
+    
+    if (transactions.length === 0) {
+      logger.debug('No transactions found for Obiex ID', { obiexTransactionId });
+      return null;
+    }
+    
+    const swapOut = transactions.find(tx => ['SWAP_OUT', 'ONRAMP'].includes(tx.type));
+    const swapIn = transactions.find(tx => ['SWAP_IN', 'OFFRAMP'].includes(tx.type));
+    
+    logger.debug('Found transactions by Obiex ID', {
+      obiexTransactionId,
+      transactionCount: transactions.length,
+      hasSwapOut: !!swapOut,
+      hasSwapIn: !!swapIn
+    });
+    
+    return {
+      swapOutTransaction: swapOut,
+      swapInTransaction: swapIn,
+      transactions,
+      swapId: swapOut?.swapDetails?.swapId || swapIn?.swapDetails?.swapId
+    };
+  } catch (error) {
+    logger.error('Failed to find swap by Obiex ID', {
+      obiexTransactionId,
+      error: error.message
+    });
+    throw error;
   }
-  
-  const swapOut = transactions.find(tx => ['SWAP_OUT', 'ONRAMP'].includes(tx.type));
-  const swapIn = transactions.find(tx => ['SWAP_IN', 'OFFRAMP'].includes(tx.type));
-  
-  return {
-    swapOutTransaction: swapOut,
-    swapInTransaction: swapIn,
-    transactions,
-    swapId: swapOut?.swapDetails?.swapId || swapIn?.swapDetails?.swapId
-  };
+};
+
+/**
+ * Gets user transactions with filtering and pagination
+ * @param {String} userId - User ID
+ * @param {Object} options - Query options
+ * @returns {Object} Paginated transaction results
+ */
+transactionSchema.statics.getUserTransactions = async function(userId, options = {}) {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      type,
+      status,
+      currency,
+      startDate,
+      endDate,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = options;
+
+    // Build query
+    const query = { userId };
+    
+    if (type) {
+      if (Array.isArray(type)) {
+        query.type = { $in: type };
+      } else {
+        query.type = type;
+      }
+    }
+    
+    if (status) {
+      if (Array.isArray(status)) {
+        query.status = { $in: status };
+      } else {
+        query.status = status;
+      }
+    }
+    
+    if (currency) {
+      query.currency = currency.toUpperCase();
+    }
+    
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    // Calculate pagination
+    const skip = (page - 1) * limit;
+    const sortDirection = sortOrder === 'desc' ? -1 : 1;
+
+    // Execute query
+    const [transactions, totalCount] = await Promise.all([
+      this.find(query)
+        .sort({ [sortBy]: sortDirection })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('relatedTransactionId', 'type currency amount status')
+        .lean(),
+      this.countDocuments(query)
+    ]);
+
+    const totalPages = Math.ceil(totalCount / limit);
+    const hasNextPage = page < totalPages;
+    const hasPrevPage = page > 1;
+
+    logger.debug('Retrieved user transactions', {
+      userId,
+      page,
+      limit,
+      totalCount,
+      totalPages,
+      transactionCount: transactions.length
+    });
+
+    return {
+      transactions,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalCount,
+        hasNextPage,
+        hasPrevPage,
+        limit: parseInt(limit)
+      }
+    };
+  } catch (error) {
+    logger.error('Failed to get user transactions', {
+      userId,
+      error: error.message
+    });
+    throw error;
+  }
+};
+
+/**
+ * Gets transaction statistics for a user
+ * @param {String} userId - User ID
+ * @param {Object} options - Query options
+ * @returns {Object} Transaction statistics
+ */
+transactionSchema.statics.getUserTransactionStats = async function(userId, options = {}) {
+  try {
+    const {
+      startDate,
+      endDate,
+      currency
+    } = options;
+
+    // Build match query
+    const matchQuery = { userId };
+    
+    if (startDate || endDate) {
+      matchQuery.createdAt = {};
+      if (startDate) matchQuery.createdAt.$gte = new Date(startDate);
+      if (endDate) matchQuery.createdAt.$lte = new Date(endDate);
+    }
+    
+    if (currency) {
+      matchQuery.currency = currency.toUpperCase();
+    }
+
+    const pipeline = [
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: {
+            type: '$type',
+            status: '$status'
+          },
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      },
+      {
+        $group: {
+          _id: '$_id.type',
+          statuses: {
+            $push: {
+              status: '$_id.status',
+              count: '$count',
+              totalAmount: '$totalAmount'
+            }
+          },
+          totalCount: { $sum: '$count' },
+          totalAmount: { $sum: '$totalAmount' }
+        }
+      }
+    ];
+
+    const stats = await this.aggregate(pipeline);
+    
+    logger.debug('Retrieved transaction stats', {
+      userId,
+      statsCount: stats.length,
+      options
+    });
+
+    return stats;
+  } catch (error) {
+    logger.error('Failed to get transaction stats', {
+      userId,
+      error: error.message
+    });
+    throw error;
+  }
+};
+
+/**
+ * Creates a deposit transaction
+ * @param {Object} depositData - Deposit transaction data
+ * @returns {Object} Created transaction
+ */
+transactionSchema.statics.createDeposit = async function(depositData) {
+  try {
+    const {
+      userId,
+      currency,
+      amount,
+      address,
+      hash,
+      network,
+      transactionId,
+      status = 'PENDING'
+    } = depositData;
+
+    const deposit = new this({
+      userId,
+      type: 'DEPOSIT',
+      currency: currency.toUpperCase(),
+      amount: Math.abs(amount),
+      address,
+      hash,
+      network,
+      transactionId,
+      status,
+      source: 'CRYPTO_WALLET',
+      narration: `Deposit ${currency.toUpperCase()}`
+    });
+
+    const savedDeposit = await deposit.save();
+    
+    logger.info('Deposit transaction created', {
+      userId,
+      transactionId: savedDeposit._id,
+      currency,
+      amount,
+      status
+    });
+
+    return savedDeposit;
+  } catch (error) {
+    logger.error('Failed to create deposit transaction', {
+      userId: depositData.userId,
+      error: error.message
+    });
+    throw error;
+  }
+};
+
+/**
+ * Creates a withdrawal transaction
+ * @param {Object} withdrawalData - Withdrawal transaction data
+ * @returns {Object} Created transaction
+ */
+transactionSchema.statics.createWithdrawal = async function(withdrawalData) {
+  try {
+    const {
+      userId,
+      currency,
+      amount,
+      address,
+      network,
+      fee = 0,
+      status = 'PENDING'
+    } = withdrawalData;
+
+    const withdrawal = new this({
+      userId,
+      type: 'WITHDRAWAL',
+      currency: currency.toUpperCase(),
+      amount: -Math.abs(amount),
+      address,
+      network,
+      fee,
+      status,
+      source: 'CRYPTO_WALLET',
+      narration: `Withdrawal ${currency.toUpperCase()}`
+    });
+
+    const savedWithdrawal = await withdrawal.save();
+    
+    logger.info('Withdrawal transaction created', {
+      userId,
+      transactionId: savedWithdrawal._id,
+      currency,
+      amount,
+      fee,
+      status
+    });
+
+    return savedWithdrawal;
+  } catch (error) {
+    logger.error('Failed to create withdrawal transaction', {
+      userId: withdrawalData.userId,
+      error: error.message
+    });
+    throw error;
+  }
 };
 
 module.exports = mongoose.model('Transaction', transactionSchema);
