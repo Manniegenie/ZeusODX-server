@@ -2,6 +2,7 @@
 
 const User = require('../models/user');
 const { getPricesWithCache } = require('./portfolio');
+const portfolioService = require('./portfolio'); // Added for portfolio recalculation
 const onrampService = require('./onramppriceservice');
 const offrampService = require('./offramppriceservice');
 const logger = require('../utils/logger');
@@ -60,7 +61,7 @@ async function getCurrencyPrice(currency) {
 /**
  * Atomically deducts `fromAmount` of fromCurrency and credits `toAmount` of toCurrency
  * on the user's record, including USD equivalents. Throws if insufficient balance.
- * Now supports NGNZ operations.
+ * Now supports NGNZ operations and includes portfolio recalculation.
  */
 async function updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount, toAmount) {
   const fromKey    = fromCurrency.toLowerCase();
@@ -160,23 +161,53 @@ async function updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount
       logger.info('Applied balance precision fixes', {
         userId, fixedFields: Object.keys(fixUpdate), fixes: fixUpdate
       });
-      
-      return finalUpdated;
     }
 
-    logger.info('Swap balance update successful', {
+    // 🎯 NEW: Recalculate portfolio to ensure consistency
+    try {
+      logger.info('Recalculating portfolio after swap', { userId });
+      
+      // Use the portfolio service to recalculate balances from transaction history
+      // This ensures USD balances are correctly calculated and inconsistencies are fixed
+      await portfolioService.updateUserPortfolioBalance(userId);
+      
+      logger.info('Portfolio recalculation completed successfully after swap', { 
+        userId,
+        fromCurrency,
+        toCurrency 
+      });
+      
+    } catch (portfolioError) {
+      logger.error('Portfolio recalculation failed after swap', {
+        userId,
+        fromCurrency,
+        toCurrency,
+        error: portfolioError.message
+      });
+      
+      // Don't throw - the swap itself was successful, portfolio sync can be retried
+      logger.warn('Swap completed but portfolio sync failed - manual recalculation may be needed', {
+        userId
+      });
+    }
+
+    // Get the final user state after portfolio recalculation
+    const finalUser = await User.findById(userId);
+
+    logger.info('Swap balance update successful with portfolio sync', {
       userId, 
       fromCurrency, 
       toCurrency, 
       fromAmount, 
       toAmount,
-      newFromBalance: updated[fromBal],
-      newToBalance: updated[toBal],
-      newFromBalanceUSD: updated[fromBalUSD]?.toFixed(6),
-      newToBalanceUSD: updated[toBalUSD]?.toFixed(6)
+      finalFromBalance: finalUser[fromBal],
+      finalToBalance: finalUser[toBal],
+      finalFromBalanceUSD: finalUser[fromBalUSD]?.toFixed(6),
+      finalToBalanceUSD: finalUser[toBalUSD]?.toFixed(6),
+      finalTotalPortfolio: finalUser.totalPortfolioBalance
     });
 
-    return updated;
+    return finalUser;
 
   } catch (error) {
     logger.error('Swap balance update failed', {
