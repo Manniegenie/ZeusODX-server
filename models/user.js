@@ -20,10 +20,6 @@ const userSchema = new mongoose.Schema({
   bvn: { type: String }, // Unique index defined below with sparse
   DoB: { type: String },
 
-  // Avatar
-  avatarUrl: { type: String, default: null },
-  avatarLastUpdated: { type: Date, default: null },
-
   // KYC Verification Levels
   kycLevel: { 
     type: Number, 
@@ -83,6 +79,7 @@ const userSchema = new mongoose.Schema({
     USDC_BSC: { address: String, network: String, walletReferenceId: String },
     BNB_ETH: { address: String, network: String, walletReferenceId: String },
     BNB_BSC: { address: String, network: String, walletReferenceId: String },
+    DOGE_DOGE: { address: String, network: String, walletReferenceId: String },
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
     AVAX_BSC: { address: String, network: String, walletReferenceId: String },
     NGNZ: { address: String, network: String, walletReferenceId: String },
@@ -112,6 +109,10 @@ const userSchema = new mongoose.Schema({
   bnbBalance: { type: Number, default: 0, min: 0 },
   bnbBalanceUSD: { type: Number, default: 0, min: 0 },
   bnbPendingBalance: { type: Number, default: 0, min: 0 },
+
+  dogeBalance: { type: Number, default: 0, min: 0 },
+  dogeBalanceUSD: { type: Number, default: 0, min: 0 },
+  dogePendingBalance: { type: Number, default: 0, min: 0 },
 
   maticBalance: { type: Number, default: 0, min: 0 },
   maticBalanceUSD: { type: Number, default: 0, min: 0 },
