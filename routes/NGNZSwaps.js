@@ -3,6 +3,7 @@
 const express = require('express');
 const onrampService  = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
+const { getPricesWithCache }         = require('../services/portfolio');
 const { updateBalancesOnSwap }       = require('../services/swapBalanceService');
 const Transaction                    = require('../models/transaction');
 const User                           = require('../models/user');
@@ -81,24 +82,56 @@ router.post('/quote', async (req, res) => {
       return res.status(400).json(validation);
     }
 
-    const { isOnramp, isOfframp, sourceCurrency, targetCurrency } = validation;
+    const { isOnramp, sourceCurrency, targetCurrency } = validation;
     
     let receiveAmount, rate, provider, flow, swapType;
 
     if (isOnramp) {
       // NGNZ to Crypto (Onramp)
-      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, targetCurrency);
+      // Need to get crypto price for the target currency
+      const cryptoPrices = await getPricesWithCache([targetCurrency]);
+      const cryptoPrice = cryptoPrices[targetCurrency];
+      
+      if (!cryptoPrice) {
+        logger.error(`Onramp failed: Price not available for ${targetCurrency}`);
+        return res.status(400).json({
+          success: false,
+          message: `Price not available for ${targetCurrency}`
+        });
+      }
+      
+      logger.info(`Onramp calculation: ${amount} NGNZ → ${targetCurrency} @ ${cryptoPrice}`);
+      
+      receiveAmount = await onrampService.calculateCryptoFromNaira(amount, targetCurrency, cryptoPrice);
       rate = (await onrampService.getOnrampRate()).finalPrice;
       provider = 'INTERNAL_ONRAMP';
       flow = 'ONRAMP';
       swapType = 'ONRAMP';
+      
+      logger.info(`Onramp result: ${receiveAmount} ${targetCurrency} at rate ₦${rate}/$1`);
     } else {
       // Crypto to NGNZ (Offramp)
-      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, sourceCurrency);
+      // Need to get crypto price for the source currency
+      const cryptoPrices = await getPricesWithCache([sourceCurrency]);
+      const cryptoPrice = cryptoPrices[sourceCurrency];
+      
+      if (!cryptoPrice) {
+        logger.error(`Offramp failed: Price not available for ${sourceCurrency}`);
+        return res.status(400).json({
+          success: false,
+          message: `Price not available for ${sourceCurrency}`
+        });
+      }
+      
+      logger.info(`Offramp calculation: ${amount} ${sourceCurrency} @ ${cryptoPrice} → NGNZ`);
+      
+      receiveAmount = await offrampService.calculateNairaFromCrypto(amount, sourceCurrency, cryptoPrice);
       rate = (await offrampService.getCurrentRate()).finalPrice;
       provider = 'INTERNAL_OFFRAMP';
       flow = 'OFFRAMP';
       swapType = 'OFFRAMP';
+      
+      logger.info(`Offramp result: ₦${receiveAmount} at rate ₦${rate}/$1`);
     }
 
     const id = `ngnz_${flow.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -250,12 +283,16 @@ router.post('/quote/:quoteId', async (req, res) => {
 // Get supported currencies for NGNZ swaps
 router.get('/supported-currencies', (req, res) => {
   try {
-    // You can customize this based on which cryptocurrencies you support for NGNZ swaps
+    // Match the cryptocurrencies supported in your other services
     const supportedCurrencies = [
       { code: 'BTC', name: 'Bitcoin', type: 'cryptocurrency' },
       { code: 'ETH', name: 'Ethereum', type: 'cryptocurrency' },
+      { code: 'SOL', name: 'Solana', type: 'cryptocurrency' },
       { code: 'USDT', name: 'Tether', type: 'stablecoin' },
       { code: 'USDC', name: 'USD Coin', type: 'stablecoin' },
+      { code: 'AVAX', name: 'Avalanche', type: 'cryptocurrency' },
+      { code: 'BNB', name: 'BNB', type: 'cryptocurrency' },
+      { code: 'MATIC', name: 'Polygon', type: 'cryptocurrency' },
       { code: 'NGNZ', name: 'Nigerian Naira Digital', type: 'fiat' }
     ];
 
