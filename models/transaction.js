@@ -56,6 +56,7 @@ const transactionSchema = new mongoose.Schema({
 });
 
 // Define indexes for better query performance
+// Note: obiexTransactionId already has unique: true in schema definition, so no explicit index needed
 transactionSchema.index({ transactionId: 1 }, { sparse: true });
 transactionSchema.index({ reference: 1 }, { sparse: true });
 transactionSchema.index({ userId: 1, type: 1, status: 1 });
@@ -65,7 +66,6 @@ transactionSchema.index({ 'swapDetails.swapId': 1 }, { sparse: true });
 transactionSchema.index({ 'swapDetails.quoteId': 1 }, { sparse: true });
 transactionSchema.index({ userId: 1, type: 1, 'swapDetails.swapType': 1 });
 transactionSchema.index({ relatedTransactionId: 1 }, { sparse: true });
-transactionSchema.index({ obiexTransactionId: 1 }, { sparse: true });
 
 // Pre-save middleware to update timestamps
 transactionSchema.pre('save', function(next) {
