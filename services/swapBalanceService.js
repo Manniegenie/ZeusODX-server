@@ -115,6 +115,55 @@ async function updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount
       throw new Error(`Insufficient ${fromCurrency} balance to perform swap`);
     }
 
+    // 🚨 CRITICAL FIX: Handle precision issues and negative balances
+    const balanceFields = [
+      `${fromKey}BalanceUSD`, `${toKey}BalanceUSD`,
+      `${fromKey}Balance`, `${toKey}Balance`
+    ];
+
+    const fixUpdate = {};
+    let needsFix = false;
+
+    balanceFields.forEach(field => {
+      const value = updated[field];
+      if (typeof value === 'number') {
+        // Fix tiny negative values (likely rounding errors)
+        if (value < 0 && value > -0.01) {
+          fixUpdate[field] = 0;
+          needsFix = true;
+          logger.warn('Fixed negative balance from rounding error', {
+            userId, field, originalValue: value, fixedValue: 0
+          });
+        }
+        // Round to reasonable precision for USD values
+        else if (field.includes('USD') && Math.abs(value) > 0) {
+          const rounded = Math.round(value * 1000000) / 1000000; // 6 decimal places
+          if (rounded !== value) {
+            fixUpdate[field] = rounded;
+            needsFix = true;
+            logger.debug('Rounded USD balance for precision', {
+              userId, field, originalValue: value, roundedValue: rounded
+            });
+          }
+        }
+      }
+    });
+
+    // Apply fixes if needed
+    if (needsFix) {
+      const finalUpdated = await User.findByIdAndUpdate(
+        userId, 
+        { $set: fixUpdate }, 
+        { new: true, runValidators: false } // Skip validation to allow the fix
+      );
+      
+      logger.info('Applied balance precision fixes', {
+        userId, fixedFields: Object.keys(fixUpdate), fixes: fixUpdate
+      });
+      
+      return finalUpdated;
+    }
+
     logger.info('Swap balance update successful', {
       userId, 
       fromCurrency, 
