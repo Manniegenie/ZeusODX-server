@@ -1,5 +1,4 @@
 const express = require('express');
-const GlobalSwapMarkdown = require('../models/swapmarkdown');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { validateUserBalance, getUserAvailableBalance } = require('../services/balance');
@@ -90,7 +89,7 @@ async function calculateInternalExchange(fromCurrency, toCurrency, amount, side)
       side
     });
     
-    // Get current prices from portfolio service
+    // Get current prices from portfolio service (already includes markdown)
     const prices = await getPricesWithCache([fromUpper, toUpper]);
     
     const fromPrice = prices[fromUpper];
@@ -104,7 +103,7 @@ async function calculateInternalExchange(fromCurrency, toCurrency, amount, side)
       throw new Error(`Unable to get price for ${toUpper}`);
     }
     
-    // Calculate exchange rate and amounts
+    // Calculate exchange rate and amounts (no additional spread - already in price cache)
     const exchangeRate = fromPrice / toPrice;
     let receiveAmount;
     
@@ -116,10 +115,6 @@ async function calculateInternalExchange(fromCurrency, toCurrency, amount, side)
       receiveAmount = amount * exchangeRate;
     }
     
-    // Apply a small spread for internal liquidity (0.1%)
-    const spreadMultiplier = 0.999; // 0.1% spread
-    receiveAmount = receiveAmount * spreadMultiplier;
-    
     logger.info('Internal exchange calculation completed', {
       fromCurrency: fromUpper,
       toCurrency: toUpper,
@@ -127,8 +122,7 @@ async function calculateInternalExchange(fromCurrency, toCurrency, amount, side)
       toPrice,
       exchangeRate,
       amount,
-      receiveAmount,
-      spread: '0.1%'
+      receiveAmount
     });
     
     return {
@@ -136,8 +130,7 @@ async function calculateInternalExchange(fromCurrency, toCurrency, amount, side)
       fromPrice,
       toPrice,
       exchangeRate,
-      receiveAmount,
-      spread: 0.1
+      receiveAmount
     };
     
   } catch (error) {
@@ -441,7 +434,7 @@ router.post('/quote', async (req, res) => {
       side
     });
     
-    // Calculate exchange using internal price cache
+    // Calculate exchange using internal price cache (already includes markdown)
     const exchangeResult = await calculateInternalExchange(from, to, amount, side);
     
     if (!exchangeResult.success) {
@@ -476,7 +469,6 @@ router.post('/quote', async (req, res) => {
       provider: 'INTERNAL_EXCHANGE',
       fromPrice: exchangeResult.fromPrice,
       toPrice: exchangeResult.toPrice,
-      spread: exchangeResult.spread,
       expiresIn: 30,
       expiryDate: new Date(Date.now() + 30 * 1000).toISOString(),
       createdAt: new Date().toISOString(),
@@ -493,34 +485,6 @@ router.post('/quote', async (req, res) => {
         acceptable: true
       }
     };
-
-    // Apply global markdown to reduce the amount user receives
-    let finalReceiveAmount = exchangeResult.receiveAmount;
-    try {
-      const markedDownAmount = await GlobalSwapMarkdown.applyGlobalMarkdown(exchangeResult.receiveAmount);
-      finalReceiveAmount = markedDownAmount;
-      
-      // Server-side logging for internal monitoring
-      const markdownConfig = await GlobalSwapMarkdown.getGlobalMarkdown();
-      logger.info('POST /swap/quote - Markdown applied', {
-        userId: req.user?.id,
-        pair: `${from}-${to}`,
-        originalAmount: exchangeResult.receiveAmount,
-        markedDownAmount: finalReceiveAmount,
-        reduction: exchangeResult.receiveAmount - finalReceiveAmount,
-        markdownPercentage: markdownConfig.markdownPercentage
-      });
-      
-      quoteData.amountReceived = finalReceiveAmount;
-      quoteData.originalAmountReceived = exchangeResult.receiveAmount;
-      quoteData.markdownApplied = markdownConfig.markdownPercentage;
-    } catch (markdownError) {
-      logger.error('POST /swap/quote - Markdown error', {
-        userId: req.user?.id,
-        error: markdownError.message
-      });
-      // Continue without markdown if there's an error
-    }
     
     // Store quote data for acceptance
     quoteCache.set(quoteId, quoteData);
@@ -530,9 +494,8 @@ router.post('/quote', async (req, res) => {
       quoteId,
       pair: `${from}-${to}`,
       amount,
-      receiveAmount: finalReceiveAmount,
-      rate: exchangeResult.exchangeRate,
-      spread: exchangeResult.spread
+      receiveAmount: exchangeResult.receiveAmount,
+      rate: exchangeResult.exchangeRate
     });
 
     const finalResponse = {
@@ -542,7 +505,7 @@ router.post('/quote', async (req, res) => {
         data: {
           id: quoteId,
           amount: amount,
-          amountReceived: finalReceiveAmount,
+          amountReceived: exchangeResult.receiveAmount,
           rate: exchangeResult.exchangeRate,
           side: side,
           expiresIn: 30,
@@ -559,7 +522,7 @@ router.post('/quote', async (req, res) => {
         // Also include flat structure for backward compatibility
         id: quoteId,
         amount: amount,
-        amountReceived: finalReceiveAmount,
+        amountReceived: exchangeResult.receiveAmount,
         rate: exchangeResult.exchangeRate,
         side: side,
         expiresIn: 30,
@@ -697,15 +660,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       // Calculate exchange rate
       const exchangeRate = receiveAmount / payAmount;
 
-      // Get markdown info if available
-      let markdownApplied = 0;
-      try {
-        const markdownConfig = await GlobalSwapMarkdown.getGlobalMarkdown();
-        markdownApplied = markdownConfig.markdownPercentage || 0;
-      } catch (err) {
-        logger.warn('Could not get markdown config', { error: err.message });
-      }
-
       // Create swap transaction pair
       const swapTransactions = await Transaction.createSwapTransactions({
         userId,
@@ -717,7 +671,7 @@ router.post('/quote/:quoteId', async (req, res) => {
         exchangeRate,
         swapType,
         provider,
-        markdownApplied,
+        markdownApplied: 0, // Markdown already applied in price cache
         swapFee: 0,
         quoteExpiresAt: new Date(quoteData.expiresAt),
         status: 'SUCCESSFUL',
@@ -942,7 +896,7 @@ router.get('/balance/:currency', async (req, res) => {
 });
 
 // Log router initialization
-logger.info('Simplified swap router initialized with internal pricing', {
+logger.info('Clean swap router initialized with portfolio pricing', {
   endpoints: [
     'POST /swap/quote',
     'POST /swap/quote/:quoteId', 
@@ -952,11 +906,10 @@ logger.info('Simplified swap router initialized with internal pricing', {
   tokenMapSize: Object.keys(TOKEN_MAP).length,
   supportedTokens: Object.keys(TOKEN_MAP),
   features: [
-    'Internal pricing via portfolio service',
+    'Portfolio service pricing (with built-in markdown)',
     'Immediate swap completion',
     'NGNZ onramp/offramp support',
-    'Global markdown application',
-    'No external API dependencies',
+    'No redundant spreads or markdowns',
     'Internal liquidity management'
   ]
 });
