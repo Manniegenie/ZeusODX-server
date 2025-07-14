@@ -113,6 +113,7 @@ const billwebhookRoutes = require('./routes/billwebhook');
 const dashboardRoutes = require('./routes/dashboard');
 const pricemarkdownRoutes = require('./adminRoutes/pricemarkdown');
 const swapRoutes = require('./routes/swap');
+const ngnzSwapRoutes = require('./routes/NGNZSwaps');
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -161,6 +162,7 @@ app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
 app.use("/dashboard", authenticateToken, dashboardRoutes);
 app.use("/swap", authenticateToken, swapRoutes);
+app.use("/ngnz-swap", authenticateToken, ngnzSwapRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
