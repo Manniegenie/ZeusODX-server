@@ -1,4 +1,4 @@
-require("dotenv").config(); 
+require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const helmet = require("helmet");
@@ -8,43 +8,11 @@ const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
 
-// Add User model for wipe-balances script
+// Bring in your User model so we can zero balances
 const User = require("./models/user");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// If run with `--wipe-balances`, zero out every balance field and quit
-if (require.main === module && process.argv.includes("--wipe-balances")) {
-  const zeroFields = {
-    solBalance: 0,    solBalanceUSD: 0,    solPendingBalance: 0,
-    btcBalance: 0,    btcBalanceUSD: 0,    btcPendingBalance: 0,
-    usdtBalance: 0,   usdtBalanceUSD: 0,   usdtPendingBalance: 0,
-    usdcBalance: 0,   usdcBalanceUSD: 0,   usdcPendingBalance: 0,
-    ethBalance: 0,    ethBalanceUSD: 0,    ethPendingBalance: 0,
-    bnbBalance: 0,    bnbBalanceUSD: 0,    bnbPendingBalance: 0,
-    dogeBalance: 0,   dogeBalanceUSD: 0,   dogePendingBalance: 0,
-    maticBalance: 0,  maticBalanceUSD: 0,  maticPendingBalance: 0,
-    avaxBalance: 0,   avaxBalanceUSD: 0,   avaxPendingBalance: 0,
-    ngnzBalance: 0,   ngnzBalanceUSD: 0,   ngnzPendingBalance: 0,
-    totalPortfolioBalance: 0
-  };
-
-  mongoose.connect(process.env.MONGODB_URI, {})
-    .then(async () => {
-      console.log("⚠️  Wiping all user balances to zero…");
-      const result = await User.updateMany({}, { $set: zeroFields });
-      console.log(`✅  Matched ${result.n} users, modified ${result.nModified}`);
-      process.exit(0);
-    })
-    .catch(err => {
-      console.error("❌  Error wiping balances:", err);
-      process.exit(1);
-    });
-
-  // Do not start the HTTP server
-  return;
-}
 
 // CORS Setup
 app.set("trust proxy", 1);
@@ -63,10 +31,14 @@ app.use(morgan("combined"));
 app.use(helmet());
 
 // Raw Body Parser for Webhook Routes
-app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
-  req.rawBody = req.body.toString('utf8');
-  next();
-});
+app.use(
+  "/webhook",
+  express.raw({ type: "application/json" }),
+  (req, res, next) => {
+    req.rawBody = req.body.toString("utf8");
+    next();
+  }
+);
 
 // JSON Body Parser for Other Routes
 app.use(express.json());
@@ -207,12 +179,31 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: "Internal Server Error" });
 });
 
-// Start Server
+// Start Server and auto‑wipe balances on each boot
 const startServer = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
-    
+
+    // Wipe all balances every time the server starts
+    const zeroFields = {
+      solBalance: 0,    solBalanceUSD: 0,    solPendingBalance: 0,
+      btcBalance: 0,    btcBalanceUSD: 0,    btcPendingBalance: 0,
+      usdtBalance: 0,   usdtBalanceUSD: 0,   usdtPendingBalance: 0,
+      usdcBalance: 0,   usdcBalanceUSD: 0,   usdcPendingBalance: 0,
+      ethBalance: 0,    ethBalanceUSD: 0,    ethPendingBalance: 0,
+      bnbBalance: 0,    bnbBalanceUSD: 0,    bnbPendingBalance: 0,
+      dogeBalance: 0,   dogeBalanceUSD: 0,   dogePendingBalance: 0,
+      maticBalance: 0,  maticBalanceUSD: 0,  maticPendingBalance: 0,
+      avaxBalance: 0,   avaxBalanceUSD: 0,   avaxPendingBalance: 0,
+      ngnzBalance: 0,   ngnzBalanceUSD: 0,   ngnzPendingBalance: 0,
+      totalPortfolioBalance: 0
+    };
+
+    console.log("⚠️  Auto‑wiping all user balances to zero…");
+    const result = await User.updateMany({}, { $set: zeroFields });
+    console.log(`✅  Matched ${result.n} users, modified ${result.nModified}`);
+
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
     });
