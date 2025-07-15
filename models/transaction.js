@@ -44,7 +44,7 @@ const transactionSchema = new mongoose.Schema({
   toCurrency: { type: String }, // Target currency for swaps
   fromAmount: { type: Number }, // Amount being swapped from
   toAmount: { type: Number }, // Amount being swapped to
-  swapType: { type: String, enum: ['onramp', 'offramp'] }, // Type of swap
+  swapType: { type: String, enum: ['onramp', 'offramp', 'crypto_to_crypto'] }, // Type of swap
   
   // Additional timestamp fields
   completedAt: { type: Date },
@@ -66,17 +66,108 @@ transactionSchema.index({ currency: 1, status: 1 }); // For currency-based queri
 // Additional indexes for internal transfers
 transactionSchema.index({ recipientUserId: 1, type: 1, status: 1 }); // For recipient queries
 transactionSchema.index({ senderUserId: 1, type: 1, status: 1 }); // For sender queries
-transactionSchema.index({ reference: 1, type: 1 }); // For finding related internal transfer transactions
 
 // Additional indexes for swap transactions
 transactionSchema.index({ userId: 1, type: 1, swapType: 1, status: 1 }); // For swap queries
 transactionSchema.index({ fromCurrency: 1, toCurrency: 1, status: 1 }); // For swap pair queries
 transactionSchema.index({ userId: 1, type: 1, fromCurrency: 1, toCurrency: 1 }); // For user swap history
+transactionSchema.index({ reference: 1, type: 1 }); // For finding related transactions by reference and type
 
 // Update the updatedAt field on save
 transactionSchema.pre('save', function(next) {
   this.updatedAt = new Date();
   next();
 });
+
+/**
+ * Static method to create swap transaction pairs
+ * This method creates two transactions: one debit (outgoing) and one credit (incoming)
+ */
+transactionSchema.statics.createSwapTransactions = async function({
+  userId,
+  quoteId = null,
+  sourceCurrency,
+  targetCurrency,
+  sourceAmount,
+  targetAmount,
+  exchangeRate,
+  swapType,
+  provider = 'INTERNAL_EXCHANGE',
+  markdownApplied = 0,
+  swapFee = 0,
+  quoteExpiresAt = null,
+  status = 'SUCCESSFUL',
+  session = null
+}) {
+  // Generate a unique reference for this swap pair
+  const swapReference = `SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  
+  // Create the outgoing transaction (debit)
+  const swapOutTransaction = new this({
+    userId,
+    type: 'SWAP',
+    currency: sourceCurrency,
+    amount: -sourceAmount, // Negative for outgoing
+    status,
+    source: 'INTERNAL',
+    fromCurrency: sourceCurrency,
+    toCurrency: targetCurrency,
+    fromAmount: sourceAmount,
+    toAmount: targetAmount,
+    swapType,
+    reference: swapReference,
+    narration: `Swap ${sourceAmount} ${sourceCurrency} to ${targetAmount} ${targetCurrency}`,
+    completedAt: status === 'SUCCESSFUL' ? new Date() : null,
+    fee: swapFee,
+    metadata: {
+      swapDirection: 'OUT',
+      exchangeRate,
+      relatedTransactionRef: swapReference,
+      quoteId,
+      provider,
+      markdownApplied,
+      quoteExpiresAt
+    }
+  });
+
+  // Create the incoming transaction (credit)
+  const swapInTransaction = new this({
+    userId,
+    type: 'SWAP',
+    currency: targetCurrency,
+    amount: targetAmount, // Positive for incoming
+    status,
+    source: 'INTERNAL',
+    fromCurrency: sourceCurrency,
+    toCurrency: targetCurrency,
+    fromAmount: sourceAmount,
+    toAmount: targetAmount,
+    swapType,
+    reference: swapReference,
+    narration: `Swap ${sourceAmount} ${sourceCurrency} to ${targetAmount} ${targetCurrency}`,
+    completedAt: status === 'SUCCESSFUL' ? new Date() : null,
+    fee: 0, // Fee is only applied to the outgoing transaction
+    metadata: {
+      swapDirection: 'IN',
+      exchangeRate,
+      relatedTransactionRef: swapReference,
+      quoteId,
+      provider,
+      markdownApplied,
+      quoteExpiresAt
+    }
+  });
+
+  // Save both transactions
+  const saveOptions = session ? { session } : {};
+  await swapOutTransaction.save(saveOptions);
+  await swapInTransaction.save(saveOptions);
+
+  return {
+    swapOutTransaction,
+    swapInTransaction,
+    swapId: swapReference
+  };
+};
 
 module.exports = mongoose.model('Transaction', transactionSchema);
