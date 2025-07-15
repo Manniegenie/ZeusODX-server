@@ -102,6 +102,9 @@ transactionSchema.statics.createSwapTransactions = async function({
   // Generate a unique reference for this swap pair
   const swapReference = `SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
+  // Normalize swapType to lowercase for consistent database storage
+  const normalizedSwapType = swapType?.toLowerCase() || 'crypto_to_crypto';
+  
   // Create the outgoing transaction (debit)
   const swapOutTransaction = new this({
     userId,
@@ -114,7 +117,7 @@ transactionSchema.statics.createSwapTransactions = async function({
     toCurrency: targetCurrency,
     fromAmount: sourceAmount,
     toAmount: targetAmount,
-    swapType,
+    swapType: normalizedSwapType,
     reference: swapReference,
     narration: `Swap ${sourceAmount} ${sourceCurrency} to ${targetAmount} ${targetCurrency}`,
     completedAt: status === 'SUCCESSFUL' ? new Date() : null,
@@ -142,7 +145,7 @@ transactionSchema.statics.createSwapTransactions = async function({
     toCurrency: targetCurrency,
     fromAmount: sourceAmount,
     toAmount: targetAmount,
-    swapType,
+    swapType: normalizedSwapType,
     reference: swapReference,
     narration: `Swap ${sourceAmount} ${sourceCurrency} to ${targetAmount} ${targetCurrency}`,
     completedAt: status === 'SUCCESSFUL' ? new Date() : null,
