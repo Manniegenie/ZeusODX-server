@@ -1,321 +1,120 @@
 // services/swapBalanceService.js
 
+const mongoose = require('mongoose');
 const User = require('../models/user');
+const Transaction = require('../models/transaction');
 const { getPricesWithCache } = require('./portfolio');
-const portfolioService = require('./portfolio'); // Added for portfolio recalculation
-const onrampService = require('./onramppriceservice');
-const offrampService = require('./offramppriceservice');
 const logger = require('../utils/logger');
 
 /**
- * Get price for any currency, including NGNZ
- * @param {string} currency - Currency symbol
- * @returns {Promise<number>} Price in USD
+ * Get USD price for any currency (crypto or NGNZ)
  */
 async function getCurrencyPrice(currency) {
-  const currencyUpper = currency.toUpperCase();
-  
-  if (currencyUpper === 'NGNZ') {
-    // For NGNZ, we need to get the current exchange rate
-    // NGNZ rate is typically NGN per USD, so we need 1/rate to get USD per NGNZ
+  const uc = currency.toUpperCase();
+  if (uc === 'NGNZ') {
+    // NGNZ pegged logic
+    const { getOnrampRate } = require('./onramppriceservice');
+    const { getCurrentRate } = require('./offramppriceservice');
+    let rate;
     try {
-      // Try onramp service first, fallback to offramp
-      let ngnzRate;
-      try {
-        const onrampRate = await onrampService.getOnrampRate();
-        ngnzRate = onrampRate.finalPrice;
-      } catch (onrampError) {
-        logger.warn('Failed to get onramp rate, trying offramp rate:', onrampError.message);
-        const offrampRate = await offrampService.getCurrentRate();
-        ngnzRate = offrampRate.finalPrice;
-      }
-      
-      if (!ngnzRate || ngnzRate <= 0) {
-        throw new Error('Invalid NGNZ exchange rate');
-      }
-      
-      // NGNZ rate is NGN per USD, so 1 NGNZ = 1/rate USD
-      const ngnzPriceInUSD = 1 / ngnzRate;
-      
-      logger.debug(`NGNZ price calculation: 1 NGNZ = $${ngnzPriceInUSD.toFixed(6)} (rate: ₦${ngnzRate}/$1)`);
-      return ngnzPriceInUSD;
-      
-    } catch (error) {
-      logger.error('Failed to get NGNZ exchange rate for balance update:', error.message);
-      // Fallback to a default rate or throw error
-      throw new Error(`Failed to get NGNZ exchange rate: ${error.message}`);
+      rate = (await getOnrampRate()).finalPrice;
+    } catch {
+      rate = (await getCurrentRate()).finalPrice;
     }
-  } else {
-    // For regular cryptocurrencies, use the existing price service
-    const prices = await getPricesWithCache([currency]);
-    const price = prices[currencyUpper];
-    
-    if (!price || price <= 0) {
-      throw new Error(`Price not available for ${currency}`);
-    }
-    
-    return price;
+    return 1 / rate; 
   }
+  const prices = await getPricesWithCache([uc]);
+  if (!prices[uc] || prices[uc] <= 0) {
+    throw new Error(`No price for ${uc}`);
+  }
+  return prices[uc];
 }
 
 /**
- * Atomically deducts `fromAmount` of fromCurrency and credits `toAmount` of toCurrency
- * on the user's record, including USD equivalents. Throws if insufficient balance.
- * Now supports NGNZ operations and includes portfolio recalculation.
+ * updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount, toAmount)
+ *
+ *  - Creates a SWAP_OUT / SWAP_IN pair in transactions
+ *  - Adjusts on‑chain balances atomically
+ *  - Throws on insufficent balance or DB errors
  */
 async function updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount, toAmount) {
-  const fromKey    = fromCurrency.toLowerCase();
-  const toKey      = toCurrency.toLowerCase();
-
-  const fromBal    = `${fromKey}Balance`;
-  const fromBalUSD = `${fromKey}BalanceUSD`;
-  const toBal      = `${toKey}Balance`;
-  const toBalUSD   = `${toKey}BalanceUSD`;
-
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
-    // Get prices for both currencies (handles NGNZ specially)
-    const [fromRate, toRate] = await Promise.all([
+    const u = await User.findById(userId).session(session);
+    if (!u) throw new Error('User not found');
+
+    const fromKey = fromCurrency.toLowerCase() + 'Balance';
+    const toKey   = toCurrency.toLowerCase()   + 'Balance';
+
+    // check balance
+    if ((u[fromKey] || 0) < fromAmount) {
+      throw new Error(`Insufficient ${fromCurrency} balance`);
+    }
+
+    // prices for USD‐fields
+    const [fromPrice, toPrice] = await Promise.all([
       getCurrencyPrice(fromCurrency),
       getCurrencyPrice(toCurrency)
     ]);
+    const fromUsdDelta = fromAmount * fromPrice;
+    const toUsdDelta   = toAmount   * toPrice;
 
-    const fromUsdDelta = fromAmount * fromRate;
-    const toUsdDelta   = toAmount   * toRate;
+    // 1) create swap transactions
+    const { swapOutTransaction, swapInTransaction, swapId } =
+      await Transaction.createSwapTransactions({
+        userId,
+        quoteId:        null,
+        sourceCurrency: fromCurrency,
+        targetCurrency: toCurrency,
+        sourceAmount:   fromAmount,
+        targetAmount:   toAmount,
+        exchangeRate:   toAmount / fromAmount,
+        swapType:       (fromCurrency === 'NGNZ' || toCurrency === 'NGNZ')
+                        ? (fromCurrency === 'NGNZ' ? 'ONRAMP' : 'OFFRAMP')
+                        : 'CRYPTO_TO_CRYPTO',
+        provider:       'INTERNAL_EXCHANGE',
+        markdownApplied: 0,
+        swapFee:         0,
+        quoteExpiresAt:  null,
+        status:         'SUCCESSFUL'
+      });
 
-    logger.info('Balance update calculation', {
-      userId,
-      fromCurrency,
-      toCurrency,
-      fromAmount,
-      toAmount,
-      fromRate,
-      toRate,
-      fromUsdDelta: fromUsdDelta.toFixed(6),
-      toUsdDelta: toUsdDelta.toFixed(6)
-    });
-
-    const conditions = {
-      _id: userId,
-      [fromBal]: { $gte: fromAmount }
-    };
-
-    const update = {
-      $inc: {
-        [fromBal]:    -fromAmount,
-        [fromBalUSD]: -fromUsdDelta,
-        [toBal]:       toAmount,
-        [toBalUSD]:    toUsdDelta
+    // 2) adjust balances
+    const res = await User.findOneAndUpdate(
+      { _id: userId, [fromKey]: { $gte: fromAmount } },
+      {
+        $inc: {
+          [fromKey]:              -fromAmount,
+          [toKey]:                 toAmount,
+          [`${fromCurrency.toLowerCase()}BalanceUSD`]: -fromUsdDelta,
+          [`${toCurrency.toLowerCase()}BalanceUSD`]:    toUsdDelta
+        },
+        $set: { portfolioLastUpdated: new Date() }
       },
-      $set: { portfolioLastUpdated: new Date() }
-    };
+      { new: true, runValidators: true, session }
+    );
+    if (!res) throw new Error('Balance update failed');
 
-    const options = { new: true, runValidators: true };
+    await session.commitTransaction();
+    session.endSession();
 
-    const updated = await User.findOneAndUpdate(conditions, update, options);
-    if (!updated) {
-      throw new Error(`Insufficient ${fromCurrency} balance to perform swap`);
-    }
-
-    // 🚨 CRITICAL FIX: Handle precision issues and negative balances
-    const balanceFields = [
-      `${fromKey}BalanceUSD`, `${toKey}BalanceUSD`,
-      `${fromKey}Balance`, `${toKey}Balance`
-    ];
-
-    const fixUpdate = {};
-    let needsFix = false;
-
-    balanceFields.forEach(field => {
-      const value = updated[field];
-      if (typeof value === 'number') {
-        // Fix tiny negative values (likely rounding errors)
-        if (value < 0 && value > -0.01) {
-          fixUpdate[field] = 0;
-          needsFix = true;
-          logger.warn('Fixed negative balance from rounding error', {
-            userId, field, originalValue: value, fixedValue: 0
-          });
-        }
-        // Round to reasonable precision for USD values
-        else if (field.includes('USD') && Math.abs(value) > 0) {
-          const rounded = Math.round(value * 1000000) / 1000000; // 6 decimal places
-          if (rounded !== value) {
-            fixUpdate[field] = rounded;
-            needsFix = true;
-            logger.debug('Rounded USD balance for precision', {
-              userId, field, originalValue: value, roundedValue: rounded
-            });
-          }
-        }
-      }
+    logger.info('Swap complete', {
+      userId, swapId,
+      fromCurrency, toCurrency, fromAmount, toAmount
     });
 
-    // Apply fixes if needed
-    if (needsFix) {
-      const finalUpdated = await User.findByIdAndUpdate(
-        userId, 
-        { $set: fixUpdate }, 
-        { new: true, runValidators: false } // Skip validation to allow the fix
-      );
-      
-      logger.info('Applied balance precision fixes', {
-        userId, fixedFields: Object.keys(fixUpdate), fixes: fixUpdate
-      });
-    }
+    return res;
 
-    // 🎯 NEW: Recalculate portfolio to ensure consistency
-    try {
-      logger.info('Recalculating portfolio after swap', { userId });
-      
-      // Use the portfolio service to recalculate balances from transaction history
-      // This ensures USD balances are correctly calculated and inconsistencies are fixed
-      await portfolioService.updateUserPortfolioBalance(userId);
-      
-      logger.info('Portfolio recalculation completed successfully after swap', { 
-        userId,
-        fromCurrency,
-        toCurrency 
-      });
-      
-    } catch (portfolioError) {
-      logger.error('Portfolio recalculation failed after swap', {
-        userId,
-        fromCurrency,
-        toCurrency,
-        error: portfolioError.message
-      });
-      
-      // Don't throw - the swap itself was successful, portfolio sync can be retried
-      logger.warn('Swap completed but portfolio sync failed - manual recalculation may be needed', {
-        userId
-      });
-    }
-
-    // Get the final user state after portfolio recalculation
-    const finalUser = await User.findById(userId);
-
-    logger.info('Swap balance update successful with portfolio sync', {
-      userId, 
-      fromCurrency, 
-      toCurrency, 
-      fromAmount, 
-      toAmount,
-      finalFromBalance: finalUser[fromBal],
-      finalToBalance: finalUser[toBal],
-      finalFromBalanceUSD: finalUser[fromBalUSD]?.toFixed(6),
-      finalToBalanceUSD: finalUser[toBalUSD]?.toFixed(6),
-      finalTotalPortfolio: finalUser.totalPortfolioBalance
-    });
-
-    return finalUser;
-
-  } catch (error) {
-    logger.error('Swap balance update failed', {
-      userId,
-      fromCurrency,
-      toCurrency,
-      fromAmount,
-      toAmount,
-      error: error.message
-    });
-    throw error;
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    logger.error('Swap balance service failed', { error: err.stack });
+    throw err;
   }
 }
 
-/**
- * Validate that user has sufficient balance for a swap
- * @param {string} userId - User ID
- * @param {string} currency - Currency to check
- * @param {number} amount - Amount needed
- * @returns {Promise<Object>} Validation result
- */
-async function validateSwapBalance(userId, currency, amount) {
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return { success: false, message: 'User not found' };
-    }
-
-    const balanceField = `${currency.toLowerCase()}Balance`;
-    const availableBalance = user[balanceField] || 0;
-
-    if (availableBalance < amount) {
-      return {
-        success: false,
-        message: `Insufficient ${currency} balance. Available: ${availableBalance}, Required: ${amount}`,
-        availableBalance,
-        requiredAmount: amount,
-        currency
-      };
-    }
-
-    return {
-      success: true,
-      availableBalance,
-      currency
-    };
-
-  } catch (error) {
-    logger.error('Balance validation failed', {
-      userId,
-      currency,
-      amount,
-      error: error.message
-    });
-    
-    return {
-      success: false,
-      message: 'Failed to validate balance',
-      error: error.message
-    };
-  }
-}
-
-/**
- * Get user balance for a specific currency
- * @param {string} userId - User ID
- * @param {string} currency - Currency symbol
- * @returns {Promise<Object>} Balance information
- */
-async function getUserBalance(userId, currency) {
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      throw new Error('User not found');
-    }
-
-    const balanceField = `${currency.toLowerCase()}Balance`;
-    const balanceUSDField = `${currency.toLowerCase()}BalanceUSD`;
-    
-    const balance = user[balanceField] || 0;
-    const balanceUSD = user[balanceUSDField] || 0;
-
-    return {
-      success: true,
-      currency: currency.toUpperCase(),
-      balance,
-      balanceUSD,
-      lastUpdated: user.portfolioLastUpdated
-    };
-
-  } catch (error) {
-    logger.error('Get user balance failed', {
-      userId,
-      currency,
-      error: error.message
-    });
-    
-    return {
-      success: false,
-      message: 'Failed to get user balance',
-      error: error.message
-    };
-  }
-}
-
-module.exports = { 
+module.exports = {
   updateBalancesOnSwap,
-  validateSwapBalance,
-  getUserBalance,
   getCurrencyPrice
 };
