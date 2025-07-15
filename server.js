@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config(); 
 const express = require("express");
 const mongoose = require("mongoose");
 const helmet = require("helmet");
@@ -8,8 +8,43 @@ const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
 
+// Add User model for wipe-balances script
+const User = require("./models/user");
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// If run with `--wipe-balances`, zero out every balance field and quit
+if (require.main === module && process.argv.includes("--wipe-balances")) {
+  const zeroFields = {
+    solBalance: 0,    solBalanceUSD: 0,    solPendingBalance: 0,
+    btcBalance: 0,    btcBalanceUSD: 0,    btcPendingBalance: 0,
+    usdtBalance: 0,   usdtBalanceUSD: 0,   usdtPendingBalance: 0,
+    usdcBalance: 0,   usdcBalanceUSD: 0,   usdcPendingBalance: 0,
+    ethBalance: 0,    ethBalanceUSD: 0,    ethPendingBalance: 0,
+    bnbBalance: 0,    bnbBalanceUSD: 0,    bnbPendingBalance: 0,
+    dogeBalance: 0,   dogeBalanceUSD: 0,   dogePendingBalance: 0,
+    maticBalance: 0,  maticBalanceUSD: 0,  maticPendingBalance: 0,
+    avaxBalance: 0,   avaxBalanceUSD: 0,   avaxPendingBalance: 0,
+    ngnzBalance: 0,   ngnzBalanceUSD: 0,   ngnzPendingBalance: 0,
+    totalPortfolioBalance: 0
+  };
+
+  mongoose.connect(process.env.MONGODB_URI, {})
+    .then(async () => {
+      console.log("⚠️  Wiping all user balances to zero…");
+      const result = await User.updateMany({}, { $set: zeroFields });
+      console.log(`✅  Matched ${result.n} users, modified ${result.nModified}`);
+      process.exit(0);
+    })
+    .catch(err => {
+      console.error("❌  Error wiping balances:", err);
+      process.exit(1);
+    });
+
+  // Do not start the HTTP server
+  return;
+}
 
 // CORS Setup
 app.set("trust proxy", 1);
@@ -66,7 +101,6 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ success: false, error: "Forbidden: Invalid token." });
-
     req.user = user;
     next();
   });
@@ -95,23 +129,23 @@ const clearpendingRoutes = require("./adminRoutes/pendingbalance");
 const fetchwalletRoutes = require("./adminRoutes/fetchwallet");
 const fetchtransactionRoutes = require("./adminRoutes/fetchtransactions");
 const deletepinRoutes = require("./adminRoutes/deletepin");
-const nairaPriceRouter = require('./routes/nairaprice');
-const onrampRoutes = require('./adminRoutes/onramp');
-const offrampRoutes = require('./adminRoutes/offramp');
-const walletRoutes = require('./routes/wallet');
-const TwoFARoutes = require('./auth/setup-2fa');
-const AirtimeRoutes = require('./routes/airtime');
-const DataRoutes = require('./routes/data');
-const VerifybillRoutes = require('./routes/verifybill');
-const ElectricityRoutes = require('./routes/electricity');
-const BettingRoutes = require('./routes/betting');
-const CableTVRoutes = require('./routes/cabletv');
-const fetchdataplans = require('./routes/dataplans');
-const billwebhookRoutes = require('./routes/billwebhook');
-const dashboardRoutes = require('./routes/dashboard');
-const pricemarkdownRoutes = require('./adminRoutes/pricemarkdown');
-const swapRoutes = require('./routes/swap');
-const ngnzSwapRoutes = require('./routes/NGNZSwaps');
+const nairaPriceRouter = require("./routes/nairaprice");
+const onrampRoutes = require("./adminRoutes/onramp");
+const offrampRoutes = require("./adminRoutes/offramp");
+const walletRoutes = require("./routes/wallet");
+const TwoFARoutes = require("./auth/setup-2fa");
+const AirtimeRoutes = require("./routes/airtime");
+const DataRoutes = require("./routes/data");
+const VerifybillRoutes = require("./routes/verifybill");
+const ElectricityRoutes = require("./routes/electricity");
+const BettingRoutes = require("./routes/betting");
+const CableTVRoutes = require("./routes/cabletv");
+const fetchdataplans = require("./routes/dataplans");
+const billwebhookRoutes = require("./routes/billwebhook");
+const dashboardRoutes = require("./routes/dashboard");
+const pricemarkdownRoutes = require("./adminRoutes/pricemarkdown");
+const swapRoutes = require("./routes/swap");
+const ngnzSwapRoutes = require("./routes/NGNZSwaps");
 
 // Public Routes
 app.use("/signin", signinRoutes);
