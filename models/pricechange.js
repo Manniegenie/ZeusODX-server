@@ -5,7 +5,7 @@ const priceChangeSchema = new mongoose.Schema({
     type: String,
     required: true,
     uppercase: true,
-    enum: ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX', 'NGNB'] // DOGE REMOVED
+    enum: ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX', 'NGNZ'] // DOGE REMOVED, NGNZ added
   },
   price: {
     type: Number,
@@ -27,7 +27,7 @@ const priceChangeSchema = new mongoose.Schema({
   collection: 'pricechanges'
 });
 
-// Index for efficient queries
+// Indexes for efficient queries
 priceChangeSchema.index({ symbol: 1, timestamp: -1 });
 priceChangeSchema.index({ timestamp: -1 });
 priceChangeSchema.index({ symbol: 1, timestamp: 1 });
@@ -39,9 +39,10 @@ priceChangeSchema.statics.storePrices = async function(prices, source = 'portfol
     const timestamp = new Date();
     
     for (const [symbol, price] of Object.entries(prices)) {
-      if (price && price > 0) {
+      const upper = symbol.toUpperCase();
+      if (price && price > 0 && this.schema.paths.symbol.enumValues.includes(upper)) {
         priceEntries.push({
-          symbol: symbol.toUpperCase(),
+          symbol: upper,
           price: parseFloat(price),
           timestamp,
           source
@@ -68,9 +69,7 @@ priceChangeSchema.statics.getHistoricalPrice = async function(symbol, hoursAgo =
     
     const priceEntry = await this.findOne({
       symbol: symbol.toUpperCase(),
-      timestamp: {
-        $lte: targetTime
-      }
+      timestamp: { $lte: targetTime }
     }).sort({ timestamp: -1 });
     
     return priceEntry ? priceEntry.price : null;
@@ -84,7 +83,7 @@ priceChangeSchema.statics.getHistoricalPrice = async function(symbol, hoursAgo =
 priceChangeSchema.statics.getPriceChanges = async function(currentPrices, hoursAgo = 12) {
   try {
     const volatileTokens = Object.keys(currentPrices).filter(token => 
-      !['USDT', 'USDC', 'NGNB'].includes(token.toUpperCase())
+      !['USDT', 'USDC', 'NGNZ'].includes(token.toUpperCase())
     );
     
     const priceChanges = {};
