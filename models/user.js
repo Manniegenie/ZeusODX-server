@@ -20,6 +20,10 @@ const userSchema = new mongoose.Schema({
   bvn: { type: String }, // Unique index defined below with sparse
   DoB: { type: String },
 
+  // Avatar
+  avatarUrl: { type: String, default: null },
+  avatarLastUpdated: { type: Date, default: null },
+
   // KYC Verification Levels
   kycLevel: { 
     type: Number, 
@@ -82,175 +86,43 @@ const userSchema = new mongoose.Schema({
     DOGE_DOGE: { address: String, network: String, walletReferenceId: String },
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
     AVAX_BSC: { address: String, network: String, walletReferenceId: String },
-    NGNZ: { address: String, network: String, walletReferenceId: String },
+    NGNB: { address: String, network: String, walletReferenceId: String },
   },
 
-  // Wallet Balances - Full precision preserved
-  solBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  solBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  solPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  // OPTIMIZED: Token Balances Only (No USD fields, calculated on-demand)
+  solBalance: { type: Number, default: 0, min: 0 },
+  solPendingBalance: { type: Number, default: 0, min: 0 },
 
-  btcBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  btcBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  btcPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  btcBalance: { type: Number, default: 0, min: 0 },
+  btcPendingBalance: { type: Number, default: 0, min: 0 },
 
-  usdtBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  usdtBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  usdtPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  usdtBalance: { type: Number, default: 0, min: 0 },
+  usdtPendingBalance: { type: Number, default: 0, min: 0 },
 
-  usdcBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  usdcBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  usdcPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  usdcBalance: { type: Number, default: 0, min: 0 },
+  usdcPendingBalance: { type: Number, default: 0, min: 0 },
 
-  ethBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  ethBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  ethPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  ethBalance: { type: Number, default: 0, min: 0 },
+  ethPendingBalance: { type: Number, default: 0, min: 0 },
 
-  bnbBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  bnbBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  bnbPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  bnbBalance: { type: Number, default: 0, min: 0 },
+  bnbPendingBalance: { type: Number, default: 0, min: 0 },
 
-  dogeBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  dogeBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  dogePendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  dogeBalance: { type: Number, default: 0, min: 0 },
+  dogePendingBalance: { type: Number, default: 0, min: 0 },
 
-  maticBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  maticBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  maticPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  maticBalance: { type: Number, default: 0, min: 0 },
+  maticPendingBalance: { type: Number, default: 0, min: 0 },
 
-  avaxBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  avaxBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  avaxPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  avaxBalance: { type: Number, default: 0, min: 0 },
+  avaxPendingBalance: { type: Number, default: 0, min: 0 },
 
-  ngnzBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  ngnzBalanceUSD: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
-  ngnzPendingBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  ngnbBalance: { type: Number, default: 0, min: 0 },
+  ngnbPendingBalance: { type: Number, default: 0, min: 0 },
 
-  totalPortfolioBalance: { 
-    type: Number, 
-    default: 0, 
-    min: 0
-  },
+  // Balance metadata (optional tracking)
+  lastBalanceUpdate: { type: Date, default: null },
+  portfolioLastUpdated: { type: Date, default: null },
 
   // Wallet Generation Status
   walletGenerationStatus: {
@@ -337,6 +209,16 @@ userSchema.pre('save', async function (next) {
         this.isUsernameCustom = true; // Mark as customized
         console.log(`Username updated from auto-generated to custom: ${this.username}`);
       }
+    }
+
+    // Update balance metadata when any balance field changes
+    const balanceFields = [
+      'solBalance', 'btcBalance', 'usdtBalance', 'usdcBalance', 'ethBalance', 
+      'bnbBalance', 'dogeBalance', 'maticBalance', 'avaxBalance', 'ngnbBalance'
+    ];
+    
+    if (balanceFields.some(field => this.isModified(field))) {
+      this.lastBalanceUpdate = new Date();
     }
 
     next();
