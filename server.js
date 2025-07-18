@@ -176,28 +176,6 @@ app.use((err, req, res, next) => {
 // Start Server
 const startServer = async () => {
   try {
-    // ⚠️⚠️⚠️ TEMPORARY DATABASE CLEARING - REMOVE AFTER ONE USE ⚠️⚠️⚠️
-    if (process.env.NODE_ENV === 'development' && 
-        process.env.CLEAR_DEV_DB === 'YES_CLEAR_MY_TEST_DATA' &&
-        process.env.DB_NAME_CONFIRM === 'test') {
-      
-      console.log('🚨🚨🚨 WARNING: About to clear ALL data in 3 seconds...');
-      console.log('🚨🚨🚨 CTRL+C NOW if you don\'t want to lose data!');
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      await mongoose.connect(process.env.MONGODB_URI, {});
-      
-      // Import User model for clearing
-      const User = require('./models/user'); // Adjust path if needed
-      
-      const deletedCount = await User.deleteMany({});
-      console.log(`✅ Cleared ${deletedCount.deletedCount} users from test database`);
-      console.log('🚨🚨🚨 REMEMBER TO REMOVE THIS CODE FROM SERVER.JS NOW! 🚨🚨🚨');
-      
-      await mongoose.disconnect();
-    }
-    // ⚠️⚠️⚠️ END TEMPORARY CLEARING CODE ⚠️⚠️⚠️
-
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
     
