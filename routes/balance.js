@@ -1,7 +1,78 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
+const { getPricesWithCache, SUPPORTED_TOKENS, getOfframpRate } = require('../services/portfolio');
 const logger = require('../utils/logger');
+
+/**
+ * OPTIMIZED: Calculate USD balances on-demand using cached prices
+ * @param {Object} user - User document with token balances
+ * @returns {Promise<Object>} Object with calculated USD balances and total
+ */
+async function calculateUSDBalances(user) {
+  try {
+    // Get all supported tokens
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    
+    // Get current prices with offramp rate for NGNB
+    const prices = await getPricesWithCache(tokens, 'portfolio');
+    
+    const calculatedBalances = {};
+    let totalPortfolioUSD = 0;
+    
+    // Calculate USD values for each token
+    for (const token of tokens) {
+      const tokenLower = token.toLowerCase();
+      const balanceField = `${tokenLower}Balance`;
+      const usdBalanceField = `${tokenLower}BalanceUSD`;
+      
+      // Get token amount from user
+      const tokenAmount = user[balanceField] || 0;
+      const tokenPrice = prices[token] || 0;
+      
+      // Calculate USD value
+      const usdValue = tokenAmount * tokenPrice;
+      
+      // Store calculated USD balance
+      calculatedBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
+      
+      // Add to total portfolio
+      totalPortfolioUSD += usdValue;
+      
+      logger.debug(`Calculated USD balance for ${token}`, {
+        tokenAmount,
+        tokenPrice,
+        usdValue: calculatedBalances[usdBalanceField],
+        usingDynamicRate: token === 'NGNB'
+      });
+    }
+    
+    // Set total portfolio balance
+    calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
+    
+    logger.debug('Calculated total portfolio balance', { 
+      totalPortfolioUSD: calculatedBalances.totalPortfolioBalance,
+      tokensProcessed: tokens.length
+    });
+    
+    return calculatedBalances;
+  } catch (error) {
+    logger.error('Error calculating USD balances', { error: error.message });
+    
+    // Return zeros if calculation fails
+    const fallbackBalances = {};
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    
+    for (const token of tokens) {
+      const tokenLower = token.toLowerCase();
+      const usdBalanceField = `${tokenLower}BalanceUSD`;
+      fallbackBalances[usdBalanceField] = 0;
+    }
+    fallbackBalances.totalPortfolioBalance = 0;
+    
+    return fallbackBalances;
+  }
+}
 
 // POST /api/balance with { "types": ["all"] } or a list of allowed balance fields
 router.post('/balance', async (req, res) => {
@@ -19,7 +90,7 @@ router.post('/balance', async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid "types" array in request body' });
     }
 
-    // Complete list of allowed balance fields from User schema - DOGE REMOVED, NGNB FIXED TO NGNZ
+    // UPDATED: Complete list of allowed balance fields (token + calculated USD + pending + total)
     const allowedFields = [
       // SOL balances
       'solBalance', 'solBalanceUSD', 'solPendingBalance',
@@ -39,17 +110,14 @@ router.post('/balance', async (req, res) => {
       // BNB balances
       'bnbBalance', 'bnbBalanceUSD', 'bnbPendingBalance',
       
-      // DOGE balances - REMOVED
-      // 'dogeBalance', 'dogeBalanceUSD', 'dogePendingBalance',
-      
       // MATIC balances
       'maticBalance', 'maticBalanceUSD', 'maticPendingBalance',
       
       // AVAX balances
       'avaxBalance', 'avaxBalanceUSD', 'avaxPendingBalance',
       
-      // NGNZ balances (FIXED FROM NGNB)
-      'ngnzBalance', 'ngnzBalanceUSD', 'ngnzPendingBalance',
+      // NGNB balances
+      'ngnbBalance', 'ngnbBalanceUSD', 'ngnbPendingBalance',
       
       // Total portfolio
       'totalPortfolioBalance'
@@ -69,8 +137,32 @@ router.post('/balance', async (req, res) => {
       finalFields = types;
     }
 
+    // OPTIMIZED: Only fetch token balances and pending balances from database
+    const tokenFields = [];
+    const usdFields = [];
+    const pendingFields = [];
+    let needsTotalPortfolio = false;
+    
+    for (const field of finalFields) {
+      if (field === 'totalPortfolioBalance') {
+        needsTotalPortfolio = true;
+      } else if (field.endsWith('BalanceUSD')) {
+        usdFields.push(field);
+      } else if (field.endsWith('PendingBalance')) {
+        pendingFields.push(field);
+      } else if (field.endsWith('Balance')) {
+        tokenFields.push(field);
+      }
+    }
+
+    // Build projection for database query (only token + pending balances exist in DB)
     const projection = {};
-    finalFields.forEach(field => projection[field] = 1);
+    tokenFields.forEach(field => projection[field] = 1);
+    pendingFields.forEach(field => projection[field] = 1);
+
+    // Always include metadata fields
+    projection.lastBalanceUpdate = 1;
+    projection.portfolioLastUpdated = 1;
 
     const user = await User.findById(userId, projection);
 
@@ -79,16 +171,48 @@ router.post('/balance', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // OPTIMIZED: Calculate USD balances on-demand if needed
+    let calculatedUSDBalances = {};
+    if (usdFields.length > 0 || needsTotalPortfolio) {
+      calculatedUSDBalances = await calculateUSDBalances(user);
+    }
+
+    // Build response with requested fields
     const response = {};
-    finalFields.forEach(field => {
-      response[field] = user[field];
+    
+    for (const field of finalFields) {
+      if (field.endsWith('BalanceUSD') || field === 'totalPortfolioBalance') {
+        // Use calculated USD value
+        response[field] = calculatedUSDBalances[field] || 0;
+      } else {
+        // Use value from database (token balances, pending balances)
+        response[field] = user[field] || 0;
+      }
+    }
+
+    // Add metadata about the calculation
+    const metadata = {
+      calculatedAt: new Date().toISOString(),
+      usdValuesCalculated: usdFields.length > 0 || needsTotalPortfolio,
+      portfolioCalculated: needsTotalPortfolio,
+      lastBalanceUpdate: user.lastBalanceUpdate,
+      portfolioLastUpdated: user.portfolioLastUpdated
+    };
+
+    logger.info('Balances fetched with dynamic USD calculations', { 
+      userId, 
+      requestedFields: finalFields,
+      tokenFieldsFromDB: tokenFields.length,
+      usdFieldsCalculated: usdFields.length,
+      totalPortfolioCalculated: needsTotalPortfolio
     });
 
-    logger.info('Balances fetched', { userId, requestedFields: finalFields });
-
-    return res.status(200).json(response);
+    return res.status(200).json({
+      ...response,
+      _metadata: metadata
+    });
   } catch (error) {
-    logger.error('Error fetching balances', {
+    logger.error('Error fetching balances with USD calculations', {
       userId: req.user?.id || 'unknown',
       error: error.message,
       stack: error.stack

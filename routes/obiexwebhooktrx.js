@@ -2,9 +2,180 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
 const Transaction = require('../models/transaction');
-const { updateUserPortfolioBalance, releaseReservedBalance } = require('../services/portfolio');
 const webhookAuth = require('../auth/webhookauth');
 const logger = require('../utils/logger');
+
+// Supported tokens - aligned with user schema (DOGE REMOVED)
+const SUPPORTED_TOKENS = {
+  BTC: 'btc',
+  ETH: 'eth', 
+  SOL: 'sol',
+  USDT: 'usdt',
+  USDC: 'usdc',
+  BNB: 'bnb',
+  MATIC: 'matic',
+  AVAX: 'avax',
+  NGNB: 'ngnb'
+};
+
+/**
+ * Update user balance directly for deposits
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code
+ * @param {Number} amount - Amount to add
+ * @returns {Promise<Object>} Updated user
+ */
+async function updateUserBalance(userId, currency, amount) {
+  if (!userId || !currency || typeof amount !== 'number') {
+    throw new Error('Invalid parameters for balance update');
+  }
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Map currency to correct balance field
+    const currencyLower = SUPPORTED_TOKENS[currencyUpper];
+    const balanceField = `${currencyLower}Balance`;
+    
+    // Build update object
+    const updateFields = {
+      $inc: {
+        [balanceField]: amount
+      },
+      $set: {
+        lastBalanceUpdate: new Date()
+      }
+    };
+    
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      updateFields, 
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
+    
+    return user;
+  } catch (error) {
+    logger.error(`Failed to update balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
+}
+
+/**
+ * Reserve user balance for pending transactions
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code  
+ * @param {Number} amount - Amount to reserve
+ * @returns {Promise<Object>} Updated user
+ */
+async function reserveUserBalance(userId, currency, amount) {
+  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
+    throw new Error('Invalid parameters for balance reservation');
+  }
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Map currency to correct pending balance field
+    const currencyLower = SUPPORTED_TOKENS[currencyUpper];
+    const pendingBalanceKey = `${currencyLower}PendingBalance`;
+    
+    const update = { 
+      $inc: { [pendingBalanceKey]: amount },
+      $set: { lastBalanceUpdate: new Date() }
+    };
+    
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      update, 
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    logger.info(`Reserved ${amount} ${currencyUpper} for user ${userId}`);
+    return user;
+  } catch (error) {
+    logger.error(`Failed to reserve balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
+}
+
+/**
+ * Release reserved user balance
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code
+ * @param {Number} amount - Amount to release
+ * @returns {Promise<Object>} Updated user
+ */
+async function releaseReservedBalance(userId, currency, amount) {
+  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
+    throw new Error('Invalid parameters for balance release');
+  }
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Map currency to correct pending balance field
+    const currencyLower = SUPPORTED_TOKENS[currencyUpper];
+    const pendingBalanceKey = `${currencyLower}PendingBalance`;
+    
+    const update = { 
+      $inc: { [pendingBalanceKey]: -amount },
+      $set: { lastBalanceUpdate: new Date() }
+    };
+    
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      update, 
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    logger.info(`Released ${amount} ${currencyUpper} for user ${userId}`);
+    return user;
+  } catch (error) {
+    logger.error(`Failed to release reserved balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
+}
 
 router.post('/transaction', webhookAuth, async (req, res) => {
   const body = req.body;
@@ -31,7 +202,11 @@ router.post('/transaction', webhookAuth, async (req, res) => {
     // Validate required fields
     const requiredFields = { type, currency, amount, transactionId, status, reference };
     const missingFields = Object.keys(requiredFields).filter(key => !requiredFields[key]);
-    if (type === 'DEPOSIT' && !address) missingFields.push('address');
+    
+    // Add network to required fields for deposits
+    if (type === 'DEPOSIT' && (!address || !network)) {
+      missingFields.push('address', 'network');
+    }
 
     if (missingFields.length > 0) {
       logger.warn('Webhook Transaction - Missing Fields:', {
@@ -42,17 +217,29 @@ router.post('/transaction', webhookAuth, async (req, res) => {
         status: !!status,
         reference: !!reference,
         address: !!address,
+        network: !!network,
       });
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Validate positive amounts
+    if (parseFloat(amount) <= 0) {
+      return res.status(400).json({ error: 'Amount must be positive' });
+    }
+
     const normalizedCurrency = currency.trim().toUpperCase();
+
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[normalizedCurrency]) {
+      logger.warn(`Unsupported currency: ${normalizedCurrency}`);
+      return res.status(400).json({ error: `Unsupported currency: ${normalizedCurrency}` });
+    }
 
     let user;
     let transaction;
     
     if (type === 'DEPOSIT') {
-      // 🔧 FIXED: Find user by correct wallet key structure
+      // Find user by correct wallet key structure
       const walletKey = `${normalizedCurrency}_${network.trim().toUpperCase()}`;
       logger.info(`Looking for user with address ${address} in wallets.${walletKey}.address`);
       user = await User.findOne({
@@ -98,7 +285,23 @@ router.post('/transaction', webhookAuth, async (req, res) => {
     if (source) updatePayload.source = source;
     if (createdAt) updatePayload.createdAt = new Date(createdAt);
 
-    // Update the existing transaction (for withdrawals) or create new (for deposits)
+    let updatedUser = user;
+
+    // For confirmed deposits, update balance BEFORE saving transaction
+    if (type === 'DEPOSIT' && status === 'CONFIRMED') {
+      try {
+        updatedUser = await updateUserBalance(user._id, normalizedCurrency, parseFloat(amount));
+        logger.info(`Credited ${amount} ${normalizedCurrency} to user ${user._id} for confirmed deposit`);
+      } catch (err) {
+        logger.error(`Error crediting balance for confirmed deposit:`, err);
+        return res.status(500).json({ 
+          error: 'Failed to credit user balance',
+          details: err.message 
+        });
+      }
+    }
+
+    // Only save transaction if balance update succeeded (or wasn't needed)
     if (type === 'WITHDRAWAL' && transaction) {
       // Update existing withdrawal transaction
       Object.assign(transaction, updatePayload);
@@ -114,73 +317,48 @@ router.post('/transaction', webhookAuth, async (req, res) => {
       logger.info(transaction.isNew ? 'New transaction created' : 'Transaction updated');
     }
 
-    // Handle pending balance for withdrawals with FAILED or REJECTED
-    if (type === 'WITHDRAWAL' && ['FAILED', 'REJECTED'].includes(status)) {
-      await releaseReservedBalance(user._id, normalizedCurrency, parseFloat(amount) + (transaction.fee || 0));
-      logger.info(`Released reserved balance for failed/rejected withdrawal: ${parseFloat(amount) + (transaction.fee || 0)} ${normalizedCurrency}`);
-    }
-
-    // Reduce user's pending balance on SUCCESSFUL withdrawal
-    if (type === 'WITHDRAWAL' && status === 'SUCCESSFUL') {
-      try {
-        const currencyKey = normalizedCurrency.toLowerCase();
-        let pendingBalanceField;
-
-        if (currencyKey.startsWith('usdt')) {
-          pendingBalanceField = 'usdtPendingBalance';
-        } else if (currencyKey.startsWith('usdc')) {
-          pendingBalanceField = 'usdcPendingBalance';
-        } else if (currencyKey.startsWith('btc')) {
-          pendingBalanceField = 'btcPendingBalance';
-        } else if (currencyKey.startsWith('sol')) {
-          pendingBalanceField = 'solPendingBalance';
-        } else if (currencyKey.startsWith('eth')) {
-          pendingBalanceField = 'ethPendingBalance';
-        } else if (currencyKey.startsWith('bnb')) {
-          pendingBalanceField = 'bnbPendingBalance';
-        } else if (currencyKey.startsWith('doge')) {
-          pendingBalanceField = 'dogePendingBalance';
-        } else if (currencyKey.startsWith('matic')) {
-          pendingBalanceField = 'maticPendingBalance';
-        } else if (currencyKey.startsWith('avax')) {
-          pendingBalanceField = 'avaxPendingBalance';
-        } else {
-          logger.warn(`Unknown currency for pending balance adjustment: ${normalizedCurrency}`);
-          pendingBalanceField = null;
+    // Handle withdrawal balance updates (after transaction is saved)
+    if (type === 'WITHDRAWAL') {
+      if (['FAILED', 'REJECTED'].includes(status)) {
+        // Release reserved balance for failed/rejected withdrawals
+        try {
+          const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
+          await releaseReservedBalance(user._id, normalizedCurrency, totalReservedAmount);
+          logger.info(`Released reserved balance for failed/rejected withdrawal: ${totalReservedAmount} ${normalizedCurrency}`);
+        } catch (err) {
+          logger.error(`Error releasing reserved balance for failed withdrawal:`, err);
         }
-
-        if (pendingBalanceField) {
+      } else if (status === 'SUCCESSFUL') {
+        // Reduce pending balance for successful withdrawals
+        try {
+          const currencyLower = SUPPORTED_TOKENS[normalizedCurrency];
+          const pendingBalanceField = `${currencyLower}PendingBalance`;
+          
           const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
           let newPendingBalance = Math.max(0, (user[pendingBalanceField] || 0) - totalReservedAmount);
-          user[pendingBalanceField] = newPendingBalance;
-          await user.save();
+          
+          updatedUser = await User.findByIdAndUpdate(
+            user._id,
+            { 
+              [pendingBalanceField]: newPendingBalance,
+              lastBalanceUpdate: new Date()
+            },
+            { new: true, runValidators: true }
+          );
 
           logger.info(`Reduced user ${user._id} pending balance field ${pendingBalanceField} by ${totalReservedAmount} (amount: ${amount} + fee: ${transaction.fee || 0}). New value: ${newPendingBalance}`);
+        } catch (err) {
+          logger.error(`Error reducing pending balance for user ${user._id}:`, err);
         }
-      } catch (err) {
-        logger.error(`Error reducing pending balance for user ${user._id}:`, err);
       }
     }
 
-    const shouldUpdatePortfolio =
-      (type === 'DEPOSIT' && status === 'CONFIRMED') ||
-      (type === 'WITHDRAWAL' && status === 'SUCCESSFUL');
+    return res.status(200).json({ 
+      success: true, 
+      transaction,
+      user: updatedUser
+    });
 
-    if (shouldUpdatePortfolio) {
-      try {
-        const updatedUser = await updateUserPortfolioBalance(user._id);
-        return res.status(200).json({ success: true, transaction, user: updatedUser });
-      } catch (err) {
-        logger.error('Portfolio update failed:', err);
-        return res.status(200).json({
-          success: true,
-          transaction,
-          warning: 'Transaction saved but portfolio update failed',
-        });
-      }
-    }
-
-    return res.status(200).json({ success: true, transaction });
   } catch (error) {
     logger.error('Webhook processing failed:', error);
     return res.status(500).json({ error: 'Internal server error' });

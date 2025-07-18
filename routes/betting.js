@@ -1,9 +1,9 @@
 const express = require('express');
+const bcrypt = require('bcryptjs'); // ADD: bcrypt for password pin comparison
 const User = require('../models/user');
 const BillTransaction = require('../models/billstransaction');
 const { vtuAuth } = require('../auth/billauth');
 const { validateUserBalance } = require('../services/balance');
-const { reserveUserBalance, releaseReservedBalance } = require('../services/portfolio');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice'); // Add KYC service import
 const logger = require('../utils/logger');
@@ -18,6 +18,244 @@ const BETTING_SERVICES = [
   'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet',
   'NairaBet', 'SupaBet'
 ];
+
+// Supported tokens - aligned with user schema (DOGE REMOVED)
+const SUPPORTED_TOKENS = {
+  BTC: { name: 'Bitcoin' },
+  ETH: { name: 'Ethereum' }, 
+  SOL: { name: 'Solana' },
+  USDT: { name: 'Tether' },
+  USDC: { name: 'USD Coin' },
+  BNB: { name: 'Binance Coin' },
+  MATIC: { name: 'Polygon' },
+  AVAX: { name: 'Avalanche' },
+  NGNB: { name: 'NGNB Token' }
+};
+
+// Token field mapping for balance operations
+const TOKEN_FIELD_MAPPING = {
+  BTC: 'btc',
+  ETH: 'eth', 
+  SOL: 'sol',
+  USDT: 'usdt',
+  USDC: 'usdc',
+  BNB: 'bnb',
+  MATIC: 'matic',
+  AVAX: 'avax',
+  NGNB: 'ngnb'
+};
+
+/**
+ * INTERNAL: Reserve user balance for pending transactions
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code  
+ * @param {Number} amount - Amount to reserve
+ * @returns {Promise<Object>} Updated user
+ */
+async function reserveUserBalance(userId, currency, amount) {
+  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
+    throw new Error('Invalid parameters for balance reservation');
+  }
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Map currency to correct pending balance field
+    const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
+    const pendingBalanceKey = `${currencyLower}PendingBalance`;
+    
+    const update = { 
+      $inc: { [pendingBalanceKey]: amount },
+      $set: { lastBalanceUpdate: new Date() }
+    };
+    
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      update, 
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    logger.info(`Reserved ${amount} ${currencyUpper} for user ${userId}`);
+    return user;
+  } catch (error) {
+    logger.error(`Failed to reserve balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
+}
+
+/**
+ * INTERNAL: Release reserved user balance
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code
+ * @param {Number} amount - Amount to release
+ * @returns {Promise<Object>} Updated user
+ */
+async function releaseReservedBalance(userId, currency, amount) {
+  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
+    throw new Error('Invalid parameters for balance release');
+  }
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Map currency to correct pending balance field
+    const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
+    const pendingBalanceKey = `${currencyLower}PendingBalance`;
+    
+    const update = { 
+      $inc: { [pendingBalanceKey]: -amount },
+      $set: { lastBalanceUpdate: new Date() }
+    };
+    
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      update, 
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    logger.info(`Released ${amount} ${currencyUpper} for user ${userId}`);
+    return user;
+  } catch (error) {
+    logger.error(`Failed to release reserved balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
+}
+
+/**
+ * INTERNAL: Update user balance directly (for completed transactions)
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code
+ * @param {Number} amount - Amount to add/subtract (negative for deductions)
+ * @returns {Promise<Object>} Updated user
+ */
+async function updateUserBalance(userId, currency, amount) {
+  if (!userId || !currency || typeof amount !== 'number') {
+    throw new Error('Invalid parameters for balance update');
+  }
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Map currency to correct balance field
+    const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
+    const balanceField = `${currencyLower}Balance`;
+    
+    // Build update object - only update token balance
+    const updateFields = {
+      $inc: {
+        [balanceField]: amount
+      },
+      $set: {
+        lastBalanceUpdate: new Date()
+      }
+    };
+    
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      updateFields, 
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
+    
+    return user;
+  } catch (error) {
+    logger.error(`Failed to update balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
+}
+
+/**
+ * INTERNAL: Simple portfolio balance update (just sets portfolioLastUpdated)
+ * @param {String} userId - User ID
+ * @returns {Promise<Object>} Updated user
+ */
+async function updateUserPortfolioBalance(userId) {
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
+  
+  try {
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { 
+        $set: { 
+          portfolioLastUpdated: new Date()
+        }
+      },
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    logger.info(`Updated portfolio timestamp for user ${userId}`);
+    return user;
+  } catch (error) {
+    logger.error(`Failed to update portfolio for user ${userId}`, { 
+      error: error.message 
+    });
+    throw error;
+  }
+}
+
+/**
+ * ADD: Compare password pin with user's hashed password pin
+ * @param {string} candidatePasswordPin - Plain text password pin to compare
+ * @param {string} hashedPasswordPin - Hashed password pin from database
+ * @returns {Promise<boolean>} - True if password pin matches
+ */
+async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
+  if (!candidatePasswordPin || !hashedPasswordPin) {
+    return false;
+  }
+  try {
+    return await bcrypt.compare(candidatePasswordPin, hashedPasswordPin);
+  } catch (error) {
+    logger.error('Password pin comparison failed:', error);
+    return false;
+  }
+}
 
 /**
  * Generate a unique order ID for betting
@@ -54,7 +292,7 @@ async function checkForPendingBettingTransactions(userId, customOrderId, customR
 }
 
 /**
- * Validate betting funding request - NGNZ ONLY with 2FA
+ * UPDATED: Validate betting funding request - NGNB ONLY with 2FA and Password PIN
  */
 function validateBettingRequest(body) {
   const errors = [];
@@ -86,18 +324,20 @@ function validateBettingRequest(body) {
       errors.push('Amount must be a positive number');
     } else if (numericAmount > 100000) {
       errors.push('Amount above maximum. Maximum is ₦100,000');
+    } else if (numericAmount < 1000) {
+      errors.push('Amount below minimum. Minimum is ₦1,000');
     } else {
       sanitized.amount = numericAmount;
     }
   }
   
-  // NGNZ is now the only accepted currency
+  // NGNB is now the only accepted currency
   if (!body.payment_currency) {
-    errors.push('Payment currency is required and must be NGNZ');
-  } else if (body.payment_currency.toUpperCase() !== 'NGNZ') {
-    errors.push('Payment currency must be NGNZ only');
+    errors.push('Payment currency is required and must be NGNB');
+  } else if (body.payment_currency.toUpperCase() !== 'NGNB') {
+    errors.push('Payment currency must be NGNB only');
   } else {
-    sanitized.payment_currency = 'NGNZ';
+    sanitized.payment_currency = 'NGNB';
   }
   
   // Validate 2FA code
@@ -105,6 +345,18 @@ function validateBettingRequest(body) {
     errors.push('Two-factor authentication code is required');
   } else {
     sanitized.twoFactorCode = String(body.twoFactorCode).trim();
+  }
+  
+  // ADD: Validate password pin
+  if (!body.passwordpin?.trim()) {
+    errors.push('Password PIN is required');
+  } else {
+    sanitized.passwordpin = String(body.passwordpin).trim();
+    
+    // Password PIN must be exactly 6 numeric digits
+    if (!/^\d{6}$/.test(sanitized.passwordpin)) {
+      errors.push('Password PIN must be exactly 6 numbers');
+    }
   }
   
   return {
@@ -115,28 +367,28 @@ function validateBettingRequest(body) {
 }
 
 /**
- * Validate NGNZ transaction limits for betting
+ * Validate NGNB transaction limits for betting
  */
-function validateNGNZLimits(amount) {
-  const MIN_NGNZ = 1000; // Higher minimum for betting funding
-  const MAX_NGNZ = 100000; // Higher limit for betting funding
+function validateNGNBLimits(amount) {
+  const MIN_NGNB = 1000; // Higher minimum for betting funding
+  const MAX_NGNB = 100000; // Higher limit for betting funding
   
-  if (amount < MIN_NGNZ) {
+  if (amount < MIN_NGNB) {
     return {
       isValid: false,
-      error: 'NGNZ_MINIMUM_NOT_MET',
-      message: `Minimum NGNZ betting funding amount is ${MIN_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
-      minimumRequired: MIN_NGNZ,
+      error: 'NGNB_MINIMUM_NOT_MET',
+      message: `Minimum NGNB betting funding amount is ${MIN_NGNB} NGNB. Your amount: ${amount} NGNB.`,
+      minimumRequired: MIN_NGNB,
       providedAmount: amount
     };
   }
   
-  if (amount > MAX_NGNZ) {
+  if (amount > MAX_NGNB) {
     return {
       isValid: false,
-      error: 'NGNZ_MAXIMUM_EXCEEDED',
-      message: `Maximum NGNZ betting funding amount is ${MAX_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
-      maximumAllowed: MAX_NGNZ,
+      error: 'NGNB_MAXIMUM_EXCEEDED',
+      message: `Maximum NGNB betting funding amount is ${MAX_NGNB} NGNB. Your amount: ${amount} NGNB.`,
+      maximumAllowed: MAX_NGNB,
       providedAmount: amount
     };
   }
@@ -223,10 +475,12 @@ async function callEBillsBettingAPI({ customer_id, service_id, amount, request_i
 }
 
 /**
- * Main betting funding endpoint with guaranteed unique order IDs - NGNZ ONLY with 2FA and KYC
+ * UPDATED: Main betting funding endpoint - NGNB ONLY with 2FA, Password PIN, and KYC (mirroring airtime flow)
  */
 router.post('/fund', async (req, res) => {
-  let reservationMade = false;
+  const startTime = Date.now();
+  let balanceActionTaken = false;
+  let balanceActionType = null; // 'reserved' or 'updated'
   let transactionCreated = false;
   let pendingTransaction = null;
   let ebillsResponse = null;
@@ -235,7 +489,10 @@ router.post('/fund', async (req, res) => {
     const requestBody = req.body;
     const userId = req.user.id;
     
-    logger.info(`Betting funding request from user ${userId}:`, requestBody);
+    logger.info(`🎰 Betting funding request from user ${userId}:`, {
+      ...requestBody,
+      passwordpin: '[REDACTED]' // Don't log the actual password pin
+    });
     
     // Step 1: Validate request and use sanitized data
     const validation = validateBettingRequest(requestBody);
@@ -247,8 +504,8 @@ router.post('/fund', async (req, res) => {
       });
     }
     
-    const { customer_id, service_id, amount, payment_currency, twoFactorCode } = validation.sanitized;
-    const currency = 'NGNZ'; // Force NGNZ as the only currency
+    const { customer_id, service_id, amount, payment_currency, twoFactorCode, passwordpin } = validation.sanitized;
+    const currency = 'NGNB'; // Force NGNB as the only currency
     
     // Step 2: Generate unique IDs
     const uniqueOrderId = generateUniqueBettingOrderId();
@@ -283,31 +540,51 @@ router.post('/fund', async (req, res) => {
     }
 
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
-      logger.warn('Invalid 2FA attempt for betting funding', { userId });
+      logger.warn('🚫 2FA validation failed for betting funding', { 
+        userId, errorType: 'INVALID_2FA'
+      });
       return res.status(401).json({
         success: false,
+        error: 'INVALID_2FA_CODE',
         message: 'Invalid two-factor authentication code'
       });
     }
 
-    logger.info('2FA validation successful for betting funding', { 
-      timestamp: new Date().toISOString().slice(0, 19).replace('T', ' '),
-      userId 
-    });
+    logger.info('✅ 2FA validation successful for betting funding', { userId });
 
-    // ========================================
-    // KYC LIMIT VALIDATION - NEW ADDITION
-    // ========================================
-    logger.info('Validating KYC limits for betting funding', { userId, amount, currency: 'NGNZ' });
+    // Step 5: Validate password pin
+    if (!user.passwordpin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password PIN is not set up for your account. Please set up your password PIN first.'
+      });
+    }
+
+    const isPasswordPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
+    if (!isPasswordPinValid) {
+      logger.warn('🚫 Password PIN validation failed for betting funding', { 
+        userId, errorType: 'INVALID_PASSWORDPIN'
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'INVALID_PASSWORDPIN',
+        message: 'Invalid password PIN'
+      });
+    }
+
+    logger.info('✅ Password PIN validation successful for betting funding', { userId });
+
+    // Step 6: KYC validation
+    logger.info('Validating KYC limits for betting funding', { userId, amount, currency: 'NGNB' });
     
     try {
-      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'BETTING');
+      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', 'BETTING');
       
       if (!kycValidation.allowed) {
         logger.warn('Betting funding blocked by KYC limits', {
           userId,
           amount,
-          currency: 'NGNZ',
+          currency: 'NGNB',
           customer_id,
           service_id,
           kycCode: kycValidation.code,
@@ -337,10 +614,10 @@ router.post('/fund', async (req, res) => {
       }
 
       // Log successful KYC validation with details
-      logger.info('KYC validation passed for betting funding', {
+      logger.info('✅ KYC validation passed for betting funding', {
         userId,
         amount,
-        currency: 'NGNZ',
+        currency: 'NGNB',
         customer_id,
         service_id,
         kycLevel: kycValidation.data?.kycLevel,
@@ -353,7 +630,7 @@ router.post('/fund', async (req, res) => {
       logger.error('KYC validation failed with error for betting funding', {
         userId,
         amount,
-        currency: 'NGNZ',
+        currency: 'NGNB',
         customer_id,
         service_id,
         error: kycError.message,
@@ -367,36 +644,33 @@ router.post('/fund', async (req, res) => {
         code: 'KYC_VALIDATION_ERROR'
       });
     }
-    // ========================================
-    // END KYC VALIDATION
-    // ========================================
     
-    // Step 5: Calculate NGNZ amount needed (1:1 with Naira)
-    const ngnzAmount = amount; // NGNZ is 1:1 with Naira
-    const ngnzToUsdRate = 1 / 1554.42; // Approximate NGNZ to USD rate
+    // Step 7: Calculate NGNB amount needed (1:1 with Naira)
+    const ngnbAmount = amount; // NGNB is 1:1 with Naira
+    const ngnbToUsdRate = 1 / 1554.42; // Approximate NGNB to USD rate
     
-    logger.info(`NGNZ calculation: ₦${amount} = ${ngnzAmount} NGNZ (1:1 rate)`);
+    logger.info(`NGNB calculation: ₦${amount} = ${ngnbAmount} NGNB (1:1 rate)`);
     
-    // Step 6: Validate NGNZ limits
-    const ngnzLimitValidation = validateNGNZLimits(ngnzAmount);
-    if (!ngnzLimitValidation.isValid) {
+    // Step 8: Validate NGNB limits
+    const ngnbLimitValidation = validateNGNBLimits(ngnbAmount);
+    if (!ngnbLimitValidation.isValid) {
       return res.status(400).json({
         success: false,
-        error: ngnzLimitValidation.error,
-        message: ngnzLimitValidation.message,
+        error: ngnbLimitValidation.error,
+        message: ngnbLimitValidation.message,
         details: {
           currency: currency,
-          providedAmount: ngnzLimitValidation.providedAmount,
-          minimumRequired: ngnzLimitValidation.minimumRequired,
-          maximumAllowed: ngnzLimitValidation.maximumAllowed,
+          providedAmount: ngnbLimitValidation.providedAmount,
+          minimumRequired: ngnbLimitValidation.minimumRequired,
+          maximumAllowed: ngnbLimitValidation.maximumAllowed,
           bettingAmount: amount,
           bettingProvider: service_id
         }
       });
     }
     
-    // Step 7: Validate user balance ONLY (don't reserve yet!)
-    const balanceValidation = await validateUserBalance(userId, currency, ngnzAmount, {
+    // Step 9: Validate user balance
+    const balanceValidation = await validateUserBalance(userId, currency, ngnbAmount, {
       includeBalanceDetails: true,
       logValidation: true
     });
@@ -408,27 +682,26 @@ router.post('/fund', async (req, res) => {
         message: balanceValidation.message,
         details: {
           availableBalance: balanceValidation.availableBalance,
-          requiredAmount: ngnzAmount,
+          requiredAmount: ngnbAmount,
           currency: currency,
           shortfall: balanceValidation.shortfall,
           bettingAmount: amount,
-          bettingAmountUSD: (ngnzAmount * ngnzToUsdRate).toFixed(2),
+          bettingAmountUSD: (ngnbAmount * ngnbToUsdRate).toFixed(2),
           bettingProvider: service_id
         }
       });
     }
 
-    logger.info('Betting funding NGNZ balance validation successful', {
+    logger.info('✅ Betting funding NGNB balance validation successful', {
       userId,
       customer_id,
       amount,
       payment_currency: currency,
       availableBalance: balanceValidation.availableBalance,
-      requiredAmount: ngnzAmount,
-      timestamp: new Date().toISOString().slice(0, 19).replace('T', ' ')
+      requiredAmount: ngnbAmount
     });
 
-    // Step 8: Create transaction record with unique order ID (NO BALANCE RESERVATION YET)
+    // Step 10: Create transaction record with unique order ID
     const initialTransactionData = {
       orderId: uniqueOrderId, // Guaranteed unique order ID
       status: 'initiated-api',
@@ -437,9 +710,9 @@ router.post('/fund', async (req, res) => {
       quantity: 1,
       amount: amount,
       amountNaira: amount,
-      amountCrypto: ngnzAmount,
+      amountCrypto: ngnbAmount,
       paymentCurrency: currency,
-      cryptoPrice: ngnzToUsdRate,
+      cryptoPrice: ngnbToUsdRate,
       requestId: uniqueRequestId, // Guaranteed unique request ID
       metaData: {
         customer_id,
@@ -447,12 +720,13 @@ router.post('/fund', async (req, res) => {
         betting_provider: service_id,
         user_id: userId,
         payment_currency: currency,
-        crypto_price: ngnzToUsdRate,
+        crypto_price: ngnbToUsdRate,
         balance_reserved: false,
-        betting_amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
-        is_ngnz_transaction: true,
+        betting_amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
+        is_ngnb_transaction: true,
         twofa_validated: true,
-        kyc_validated: true, // Track that KYC was validated
+        passwordpin_validated: true,
+        kyc_validated: true,
         unique_order_id: uniqueOrderId,
         unique_request_id: uniqueRequestId,
         order_id_type: 'system_generated_unique'
@@ -466,21 +740,21 @@ router.post('/fund', async (req, res) => {
       userId: userId,
       timestamp: new Date(),
       webhookProcessedAt: null,
-      twoFactorValidated: true, // New schema field
-      kycValidated: true // New schema field
+      balanceReserved: false,
+      twoFactorValidated: true,
+      passwordPinValidated: true,
+      kycValidated: true
     };
     
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | betting | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ⚠️ Not Reserved`);
-    logger.info(`Created betting transaction ${pendingTransaction._id} with unique OrderID: ${uniqueOrderId}, RequestID: ${uniqueRequestId}`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | betting | ${ngnbAmount} NGNB | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`);
     
-    // Step 9: Call eBills API FIRST (before reserving balance) - FIXED to use VTUAuth
+    // Step 11: Call eBills API
     try {
       logger.info(`Calling eBills Betting API with unique RequestID: ${uniqueRequestId}...`);
       
-      // 🔑 CRITICAL FIX: Use the fixed callEBillsBettingAPI function that uses VTUAuth properly
       ebillsResponse = await callEBillsBettingAPI({
         customer_id,
         service_id,
@@ -500,7 +774,7 @@ router.post('/fund', async (req, res) => {
         timeout: apiError.code === 'ECONNABORTED' || apiError.message.includes('timeout')
       });
       
-      // Update transaction status to failed (NO balance reservation since API failed)
+      // Update transaction status to failed
       await BillTransaction.findByIdAndUpdate(
         pendingTransaction._id,
         { 
@@ -522,51 +796,6 @@ router.post('/fund', async (req, res) => {
         statusCode = 504;
         errorMessage = 'eBills Betting API request timed out. Please try again.';
         errorCode = 'EBILLS_TIMEOUT';
-      } else if (errorData) {
-        switch (errorData.code) {
-          case 'missing_fields':
-            statusCode = 400;
-            errorMessage = 'Required fields missing';
-            errorCode = 'MISSING_FIELDS';
-            break;
-          case 'invalid_service_id':
-            statusCode = 400;
-            errorMessage = 'Invalid betting service provider';
-            errorCode = 'INVALID_SERVICE_ID';
-            break;
-          case 'below_minimum_amount':
-            statusCode = 400;
-            errorMessage = 'Amount below minimum (₦1,000)';
-            errorCode = 'AMOUNT_TOO_LOW';
-            break;
-          case 'above_maximum_amount':
-            statusCode = 400;
-            errorMessage = 'Amount above maximum (₦100,000)';
-            errorCode = 'AMOUNT_TOO_HIGH';
-            break;
-          case 'insufficient_funds':
-            statusCode = 502;
-            errorMessage = 'Service temporarily unavailable (provider insufficient funds)';
-            errorCode = 'PROVIDER_INSUFFICIENT_FUNDS';
-            break;
-          case 'duplicate_request_id':
-            statusCode = 409;
-            errorMessage = 'Duplicate request detected by eBills API. Please try again.';
-            errorCode = 'DUPLICATE_REQUEST';
-            break;
-          case 'duplicate_order':
-            statusCode = 409;
-            errorMessage = 'Duplicate order within 3 minutes';
-            errorCode = 'DUPLICATE_ORDER';
-            break;
-          case 'rest_forbidden':
-            statusCode = 403;
-            errorMessage = 'Unauthorized access to eBills API';
-            errorCode = 'EBILLS_AUTH_ERROR';
-            break;
-          default:
-            errorMessage = errorData.message || errorMessage;
-        }
       }
       
       return res.status(statusCode).json({
@@ -578,52 +807,101 @@ router.post('/fund', async (req, res) => {
           requestId: uniqueRequestId,
           status: 'failed'
         },
-        note: 'No balance was reserved since the eBills Betting API call failed',
-        details: {
-          unique_order_id: uniqueOrderId,
-          unique_request_id: uniqueRequestId,
-          userId: userId,
-          customer_id,
-          service_id,
-          amount,
-          amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
-          betting_provider: service_id
-        }
+        note: 'No balance was reserved since the eBills Betting API call failed'
       });
     }
     
-    // Step 10: eBills Betting API SUCCESS! Now reserve user balance
-    try {
-      logger.info(`eBills Betting API successful for ${uniqueRequestId}. Now reserving balance...`);
+    // =====================================
+    // STEP 12: HANDLE BALANCE BASED ON STATUS - USING INTERNAL FUNCTIONS
+    // =====================================
+    const ebillsStatus = ebillsResponse.data.status;
+    
+    if (ebillsStatus === 'completed-api') {
+      // Transaction completed immediately - UPDATE BALANCE DIRECTLY
+      logger.info(`✅ Transaction completed immediately, updating balance directly for ${uniqueRequestId}`);
       
-      await reserveUserBalance(userId, currency, ngnzAmount);
-      reservationMade = true;
+      try {
+        // Deduct balance directly (negative amount) - USING INTERNAL FUNCTION
+        await updateUserBalance(userId, currency, -ngnbAmount);
+        
+        // Update user's portfolio timestamp - USING INTERNAL FUNCTION
+        await updateUserPortfolioBalance(userId);
+        
+        balanceActionTaken = true;
+        balanceActionType = 'updated';
+        
+        logger.info(`✅ Balance updated directly: -${ngnbAmount} ${currency} for user ${userId}`);
+        
+      } catch (balanceError) {
+        logger.error('CRITICAL: Balance update failed for completed transaction:', {
+          request_id: uniqueRequestId,
+          userId,
+          currency,
+          ngnbAmount,
+          error: balanceError.message,
+          ebills_order_id: ebillsResponse.data?.order_id
+        });
+        
+        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+          status: 'failed',
+          processingErrors: [{
+            error: `Balance update failed for completed transaction: ${balanceError.message}`,
+            timestamp: new Date(),
+            phase: 'balance_update',
+            ebills_order_id: ebillsResponse.data?.order_id
+          }]
+        });
+        
+        return res.status(500).json({
+          success: false,
+          error: 'BALANCE_UPDATE_FAILED',
+          message: 'eBills betting transaction succeeded but balance update failed. Please contact support immediately.',
+          details: {
+            orderId: uniqueOrderId,
+            requestId: uniqueRequestId,
+            ebills_order_id: ebillsResponse.data?.order_id,
+            ebills_status: ebillsResponse.data?.status,
+            service_name: ebillsResponse.data?.service_name,
+            customer_name: ebillsResponse.data?.customer_name,
+            amount: amount,
+            amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
+            customer_id: customer_id
+          }
+        });
+      }
       
-      await BillTransaction.findByIdAndUpdate(
-        pendingTransaction._id,
-        { 
-          'metaData.balance_reserved': true,
-          'metaData.balance_reserved_at': new Date()
-        }
-      );
+    } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
+      // Transaction pending - RESERVE BALANCE - USING INTERNAL FUNCTION
+      logger.info(`⏳ Transaction pending (${ebillsStatus}), reserving balance for ${uniqueRequestId}`);
       
-      logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | betting | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ KYC | ✅ Reserved`);
-      logger.info(`Successfully reserved ${ngnzAmount} ${currency} for user ${userId} after eBills Betting API success`);
-      
-    } catch (balanceError) {
-      logger.error('CRITICAL: Balance reservation failed after successful eBills Betting API call:', {
-        unique_order_id: uniqueOrderId,
-        unique_request_id: uniqueRequestId,
-        userId,
-        currency,
-        ngnzAmount,
-        error: balanceError.message,
-        ebills_order_id: ebillsResponse.data?.order_id
-      });
-      
-      await BillTransaction.findByIdAndUpdate(
-        pendingTransaction._id,
-        { 
+      try {
+        await reserveUserBalance(userId, currency, ngnbAmount);
+        
+        await BillTransaction.findByIdAndUpdate(
+          pendingTransaction._id,
+          { 
+            balanceReserved: true,
+            'metaData.balance_reserved': true,
+            'metaData.balance_reserved_at': new Date()
+          }
+        );
+        
+        balanceActionTaken = true;
+        balanceActionType = 'reserved';
+        
+        logger.info(`✅ Balance reserved: ${ngnbAmount} ${currency} for user ${userId}`);
+        
+      } catch (balanceError) {
+        logger.error('CRITICAL: Balance reservation failed after successful eBills Betting API call:', {
+          request_id: uniqueRequestId,
+          userId,
+          currency,
+          ngnbAmount,
+          error: balanceError.message,
+          ebills_order_id: ebillsResponse.data?.order_id
+        });
+        
+        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
           status: 'failed',
           processingErrors: [{
             error: `Balance reservation failed after eBills Betting success: ${balanceError.message}`,
@@ -631,32 +909,38 @@ router.post('/fund', async (req, res) => {
             phase: 'balance_reservation',
             ebills_order_id: ebillsResponse.data?.order_id
           }]
-        }
-      );
+        });
+        
+        return res.status(500).json({
+          success: false,
+          error: 'BALANCE_RESERVATION_FAILED',
+          message: 'eBills betting transaction succeeded but balance reservation failed. Please contact support immediately.',
+          details: {
+            orderId: uniqueOrderId,
+            requestId: uniqueRequestId,
+            ebills_order_id: ebillsResponse.data?.order_id,
+            ebills_status: ebillsResponse.data?.status,
+            service_name: ebillsResponse.data?.service_name,
+            customer_name: ebillsResponse.data?.customer_name,
+            amount: amount,
+            amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
+            customer_id: customer_id
+          }
+        });
+      }
       
-      return res.status(500).json({
-        success: false,
-        error: 'BALANCE_RESERVATION_FAILED',
-        message: 'eBills betting transaction succeeded but balance reservation failed. Please contact support immediately.',
-        details: {
-          orderId: uniqueOrderId,
-          requestId: uniqueRequestId,
-          ebills_order_id: ebillsResponse.data?.order_id,
-          ebills_status: ebillsResponse.data?.status,
-          service_name: ebillsResponse.data?.service_name,
-          customer_name: ebillsResponse.data?.customer_name,
-          amount: amount,
-          amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
-          customer_id: customer_id
-        },
-        transaction: pendingTransaction,
-        support_note: 'This requires manual intervention - eBills charged but balance not reserved'
-      });
+    } else if (ebillsStatus === 'refunded') {
+      // Handle refunded status - no balance action needed
+      logger.info(`💰 Betting funding refunded for user ${userId}, order ${uniqueOrderId}`);
+      
+    } else {
+      // Handle other statuses
+      logger.warn(`⚠️ Unexpected status ${ebillsStatus} for betting order ${uniqueOrderId}`);
     }
     
-    // Step 11: Update transaction with eBills response data while keeping our unique order ID
+    // Step 13: Update transaction with eBills response data
     const updatedTransactionData = {
-      // Keep our unique orderId but store eBills order_id in metadata
+      orderId: ebillsResponse.data.order_id.toString(), // Use eBills order ID
       status: ebillsResponse.data.status,
       productName: ebillsResponse.data.product_name,
       metaData: {
@@ -671,14 +955,21 @@ router.post('/fund', async (req, res) => {
         ebills_initial_balance: ebillsResponse.data.initial_balance,
         ebills_final_balance: ebillsResponse.data.final_balance,
         ebills_request_id: ebillsResponse.data.request_id,
-        balance_reserved: true,
-        balance_reserved_at: new Date(),
-        twofa_validated: true,
-        kyc_validated: true,
-        ebills_order_id: ebillsResponse.data.order_id, // Store eBills order ID separately
+        balance_action_taken: balanceActionTaken,
+        balance_action_type: balanceActionType,
+        balance_action_at: new Date(),
+        ebills_order_id: ebillsResponse.data.order_id,
         order_id_type: 'system_generated_unique'
       }
     };
+    
+    // Set balance status based on action taken
+    if (balanceActionType === 'reserved') {
+      updatedTransactionData.balanceReserved = true;
+    } else if (balanceActionType === 'updated') {
+      updatedTransactionData.balanceReserved = false;
+      updatedTransactionData.balanceCompleted = true;
+    }
     
     const finalTransaction = await BillTransaction.findByIdAndUpdate(
       pendingTransaction._id,
@@ -686,12 +977,11 @@ router.post('/fund', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`Betting transaction updated. Our OrderID: ${uniqueOrderId}, eBills OrderID: ${ebillsResponse.data.order_id}, Status: ${ebillsResponse.data.status}`);
+    logger.info(`📋 Transaction updated: ${ebillsResponse.data.order_id} | ${ebillsResponse.data.status} | Balance: ${balanceActionType || 'none'}`);
     
-    // Step 12: Handle different response statuses
+    // Step 14: Return response based on status
     const responseData = {
-      order_id: uniqueOrderId, // Return our unique order ID
-      ebills_order_id: ebillsResponse.data.order_id, // Also provide eBills order ID
+      order_id: ebillsResponse.data.order_id,
       request_id: uniqueRequestId,
       status: ebillsResponse.data.status,
       service_name: ebillsResponse.data.service_name,
@@ -705,19 +995,21 @@ router.post('/fund', async (req, res) => {
       discount: ebillsResponse.data.discount,
       payment_details: {
         currency: currency,
-        ngnz_amount: ngnzAmount,
-        ngnz_to_usd_rate: ngnzToUsdRate,
-        amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2)
+        ngnb_amount: ngnbAmount,
+        ngnb_to_usd_rate: ngnbToUsdRate,
+        amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2)
       },
       security_info: {
         twofa_validated: true,
+        passwordpin_validated: true,
         kyc_validated: true,
         unique_ids_generated: true
-      }
+      },
+      balance_action: balanceActionType || 'none'
     };
 
     if (ebillsResponse.data.status === 'completed-api') {
-      logger.info(`✅ Betting funding completed immediately for user ${userId}, order ${uniqueOrderId}`);
+      logger.info(`✅ Betting funding completed immediately for user ${userId}, order ${ebillsResponse.data.order_id}`);
       
       return res.status(200).json({
         success: true,
@@ -726,8 +1018,8 @@ router.post('/fund', async (req, res) => {
         transaction: finalTransaction
       });
       
-    } else if (ebillsResponse.data.status === 'processing-api') {
-      logger.info(`⏳ Betting funding processing for user ${userId}, order ${uniqueOrderId}`);
+    } else if (['initiated-api', 'processing-api'].includes(ebillsResponse.data.status)) {
+      logger.info(`⏳ Betting funding processing for user ${userId}, order ${ebillsResponse.data.order_id}`);
       
       return res.status(202).json({
         success: true,
@@ -738,7 +1030,7 @@ router.post('/fund', async (req, res) => {
       });
       
     } else if (ebillsResponse.data.status === 'refunded') {
-      logger.info(`💰 Betting funding refunded for user ${userId}, order ${uniqueOrderId}`);
+      logger.info(`💰 Betting funding refunded for user ${userId}, order ${ebillsResponse.data.order_id}`);
       
       return res.status(200).json({
         success: true,
@@ -749,7 +1041,7 @@ router.post('/fund', async (req, res) => {
       });
       
     } else {
-      logger.warn(`⚠️ Unexpected status ${ebillsResponse.data.status} for betting order ${uniqueOrderId}`);
+      logger.warn(`⚠️ Unexpected status ${ebillsResponse.data.status} for betting order ${ebillsResponse.data.order_id}`);
       
       return res.status(200).json({
         success: true,
@@ -763,23 +1055,25 @@ router.post('/fund', async (req, res) => {
     logger.error('Betting funding unexpected error:', {
       userId: req.user?.id,
       error: error.message,
-      reservationMade,
+      balanceActionTaken,
+      balanceActionType,
       transactionCreated,
-      ebillsApiCalled: !!ebillsResponse
+      ebillsApiCalled: !!ebillsResponse,
+      processingTime: Date.now() - startTime
     });
 
-    // Cleanup: Release reserved balance ONLY if reservation was made
-    if (reservationMade && validation?.sanitized) {
+    // Cleanup based on what action was taken - USING INTERNAL FUNCTIONS
+    if (balanceActionTaken && balanceActionType === 'reserved') {
       try {
-        await releaseReservedBalance(userId, currency, validation.sanitized.amount || 0);
-        logger.info('🔄 Released reserved balance due to post-API error', { 
-          userId, 
-          currency: currency, 
-          amount: validation.sanitized.amount || 0 
-        });
+        await releaseReservedBalance(req.user.id, currency, validation?.sanitized?.amount || 0);
+        logger.info('🔄 Released reserved NGNB balance due to error');
       } catch (releaseError) {
-        logger.error('❌ Failed to release reserved balance after post-API error:', releaseError);
+        logger.error('❌ Failed to release reserved NGNB balance after error:', releaseError.message);
       }
+    } else if (balanceActionTaken && balanceActionType === 'updated') {
+      // For direct balance updates, we'd need to reverse the transaction
+      // This is more complex and should be handled manually
+      logger.error('❌ CRITICAL: Direct balance update completed but transaction failed. Manual intervention required.');
     }
 
     // Update transaction status if it was created
