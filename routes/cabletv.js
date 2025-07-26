@@ -16,7 +16,7 @@ const EBILLS_BASE_URL = process.env.EBILLS_BASE_URL || 'https://ebills.africa/wp
 const CABLE_TV_SERVICES = ['dstv', 'gotv', 'startimes', 'showmax'];
 const VALID_SUBSCRIPTION_TYPES = ['change', 'renew'];
 
-// Supported tokens - aligned with user schema (DOGE REMOVED)
+// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' }, 
@@ -26,10 +26,10 @@ const SUPPORTED_TOKENS = {
   BNB: { name: 'Binance Coin' },
   MATIC: { name: 'Polygon' },
   AVAX: { name: 'Avalanche' },
-  NGNB: { name: 'NGNB Token' }
+  NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations
+// Token field mapping for balance operations (NGNB changed to NGNZ)
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth', 
@@ -39,7 +39,7 @@ const TOKEN_FIELD_MAPPING = {
   BNB: 'bnb',
   MATIC: 'matic',
   AVAX: 'avax',
-  NGNB: 'ngnb'
+  NGNZ: 'ngnz'
 };
 
 /**
@@ -390,7 +390,7 @@ function validateAmountMatchesPackage(userAmount, expectedAmount, tolerance = 0.
 }
 
 /**
- * UPDATED: Enhanced validation with price verification and Password PIN
+ * UPDATED: Enhanced validation with price verification and Password PIN (NGNZ currency)
  */
 function validateCableTVRequest(body) {
   const errors = [];
@@ -449,13 +449,13 @@ function validateCableTVRequest(body) {
     }
   }
   
-  // NGNB currency validation
+  // NGNZ currency validation (UPDATED from NGNB)
   if (!body.payment_currency) {
-    errors.push('Payment currency is required and must be NGNB');
-  } else if (body.payment_currency.toUpperCase() !== 'NGNB') {
-    errors.push('Payment currency must be NGNB only');
+    errors.push('Payment currency is required and must be NGNZ');
+  } else if (body.payment_currency.toUpperCase() !== 'NGNZ') {
+    errors.push('Payment currency must be NGNZ only');
   } else {
-    sanitized.payment_currency = 'NGNB';
+    sanitized.payment_currency = 'NGNZ';
   }
   
   // 2FA validation
@@ -481,28 +481,28 @@ function validateCableTVRequest(body) {
 }
 
 /**
- * Validate NGNB limits
+ * Validate NGNZ limits (UPDATED from NGNB)
  */
-function validateNGNBLimits(amount) {
-  const MIN_NGNB = 500;
-  const MAX_NGNB = 50000;
+function validateNGNZLimits(amount) {
+  const MIN_NGNZ = 500;
+  const MAX_NGNZ = 50000;
   
-  if (amount < MIN_NGNB) {
+  if (amount < MIN_NGNZ) {
     return {
       isValid: false,
-      error: 'NGNB_MINIMUM_NOT_MET',
-      message: `Minimum NGNB cable TV purchase amount is ${MIN_NGNB} NGNB. Your amount: ${amount} NGNB.`,
-      minimumRequired: MIN_NGNB,
+      error: 'NGNZ_MINIMUM_NOT_MET',
+      message: `Minimum NGNZ cable TV purchase amount is ${MIN_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
+      minimumRequired: MIN_NGNZ,
       providedAmount: amount
     };
   }
   
-  if (amount > MAX_NGNB) {
+  if (amount > MAX_NGNZ) {
     return {
       isValid: false,
-      error: 'NGNB_MAXIMUM_EXCEEDED',
-      message: `Maximum NGNB cable TV purchase amount is ${MAX_NGNB} NGNB. Your amount: ${amount} NGNB.`,
-      maximumAllowed: MAX_NGNB,
+      error: 'NGNZ_MAXIMUM_EXCEEDED',
+      message: `Maximum NGNZ cable TV purchase amount is ${MAX_NGNZ} NGNZ. Your amount: ${amount} NGNZ.`,
+      maximumAllowed: MAX_NGNZ,
       providedAmount: amount
     };
   }
@@ -612,7 +612,7 @@ async function callEBillsCableTVAPI({ customer_id, service_id, variation_id, sub
 }
 
 /**
- * UPDATED: Main cable TV purchase endpoint - mirroring airtime flow
+ * UPDATED: Main cable TV purchase endpoint - mirroring airtime flow (NGNZ currency)
  */
 router.post('/purchase', async (req, res) => {
   const startTime = Date.now();
@@ -642,7 +642,7 @@ router.post('/purchase', async (req, res) => {
     }
     
     const { customer_id, service_id, variation_id, subscription_type, amount, twoFactorCode, passwordpin } = validation.sanitized;
-    const currency = 'NGNB';
+    const currency = 'NGNZ'; // UPDATED from NGNB
     
     // Step 2: Generate unique IDs
     const uniqueOrderId = generateUniqueOrderId();
@@ -708,17 +708,17 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ Password PIN validation successful for cable TV purchase', { userId });
 
-    // Step 6: KYC validation
-    logger.info('Validating KYC limits for cable TV purchase', { userId, amount, currency: 'NGNB' });
+    // Step 6: KYC validation - UPDATED: NGNB to NGNZ
+    logger.info('Validating KYC limits for cable TV purchase', { userId, amount, currency: 'NGNZ' });
     
     try {
-      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', 'CABLE_TV');
+      const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'CABLE_TV');
       
       if (!kycValidation.allowed) {
         logger.warn('Cable TV purchase blocked by KYC limits', {
           userId,
           amount,
-          currency: 'NGNB',
+          currency: 'NGNZ',
           customer_id,
           service_id,
           variation_id,
@@ -753,7 +753,7 @@ router.post('/purchase', async (req, res) => {
       logger.info('✅ KYC validation passed for cable TV purchase', {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         customer_id,
         service_id,
         variation_id,
@@ -768,7 +768,7 @@ router.post('/purchase', async (req, res) => {
       logger.error('KYC validation failed with error for cable TV purchase', {
         userId,
         amount,
-        currency: 'NGNB',
+        currency: 'NGNZ',
         customer_id,
         service_id,
         variation_id,
@@ -822,31 +822,31 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 9: Use verified amount
+    // Step 9: Use verified amount - UPDATED: ngnb to ngnz variables
     const purchaseAmount = customerValidation.expectedAmount;
-    const ngnbAmount = purchaseAmount;
-    const ngnbToUsdRate = 1 / 1554.42;
+    const ngnzAmount = purchaseAmount;
+    const ngnzToUsdRate = 1 / 1554.42;
     
-    logger.info(`NGNB amount needed: ₦${purchaseAmount} → ${ngnbAmount} NGNB (1:1 ratio)`);
+    logger.info(`NGNZ amount needed: ₦${purchaseAmount} → ${ngnzAmount} NGNZ (1:1 ratio)`);
     
-    // Step 10: Validate NGNB limits
-    const ngnbLimitValidation = validateNGNBLimits(ngnbAmount);
-    if (!ngnbLimitValidation.isValid) {
+    // Step 10: Validate NGNZ limits (UPDATED from NGNB)
+    const ngnzLimitValidation = validateNGNZLimits(ngnzAmount);
+    if (!ngnzLimitValidation.isValid) {
       return res.status(400).json({
         success: false,
-        error: ngnbLimitValidation.error,
-        message: ngnbLimitValidation.message,
+        error: ngnzLimitValidation.error,
+        message: ngnzLimitValidation.message,
         details: {
           currency: currency,
-          providedAmount: ngnbLimitValidation.providedAmount,
-          minimumRequired: ngnbLimitValidation.minimumRequired,
-          maximumAllowed: ngnbLimitValidation.maximumAllowed
+          providedAmount: ngnzLimitValidation.providedAmount,
+          minimumRequired: ngnzLimitValidation.minimumRequired,
+          maximumAllowed: ngnzLimitValidation.maximumAllowed
         }
       });
     }
     
     // Step 11: Validate user balance
-    const balanceValidation = await validateUserBalance(userId, currency, ngnbAmount, {
+    const balanceValidation = await validateUserBalance(userId, currency, ngnzAmount, {
       includeBalanceDetails: true,
       logValidation: true
     });
@@ -858,23 +858,23 @@ router.post('/purchase', async (req, res) => {
         message: balanceValidation.message,
         details: {
           availableBalance: balanceValidation.availableBalance,
-          requiredAmount: ngnbAmount,
+          requiredAmount: ngnzAmount,
           currency: currency,
           shortfall: balanceValidation.shortfall
         }
       });
     }
 
-    logger.info('✅ Cable TV purchase NGNB balance validation successful', {
+    logger.info('✅ Cable TV purchase NGNZ balance validation successful', {
       userId,
       customer_id,
       amount: purchaseAmount,
       payment_currency: currency,
       availableBalance: balanceValidation.availableBalance,
-      requiredAmount: ngnbAmount
+      requiredAmount: ngnzAmount
     });
 
-    // Step 12: Create transaction record with unique order ID
+    // Step 12: Create transaction record with unique order ID - UPDATED: NGNZ references
     const initialTransactionData = {
       orderId: uniqueOrderId, // Guaranteed unique order ID
       status: 'initiated-api',
@@ -883,9 +883,9 @@ router.post('/purchase', async (req, res) => {
       quantity: 1,
       amount: purchaseAmount,
       amountNaira: purchaseAmount,
-      amountCrypto: ngnbAmount,
+      amountCrypto: ngnzAmount,
       paymentCurrency: currency,
-      cryptoPrice: ngnbToUsdRate,
+      cryptoPrice: ngnzToUsdRate,
       requestId: uniqueRequestId, // Guaranteed unique request ID
       metaData: {
         customer_id,
@@ -895,8 +895,8 @@ router.post('/purchase', async (req, res) => {
         user_id: userId,
         payment_currency: currency,
         balance_reserved: false,
-        purchase_amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2),
-        is_ngnb_transaction: true,
+        purchase_amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2),
+        is_ngnz_transaction: true, // UPDATED from is_ngnb_transaction
         twofa_validated: true,
         passwordpin_validated: true,
         kyc_validated: true,
@@ -921,7 +921,7 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | cable_tv | ${ngnbAmount} NGNB | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | cable_tv | ${ngnzAmount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`); // UPDATED: NGNB to NGNZ
     
     // Step 13: Call eBills API
     try {
@@ -990,7 +990,7 @@ router.post('/purchase', async (req, res) => {
       
       try {
         // Deduct balance directly (negative amount) - USING INTERNAL FUNCTION
-        await updateUserBalance(userId, currency, -ngnbAmount);
+        await updateUserBalance(userId, currency, -ngnzAmount);
         
         // Update user's portfolio timestamp - USING INTERNAL FUNCTION
         await updateUserPortfolioBalance(userId);
@@ -998,14 +998,14 @@ router.post('/purchase', async (req, res) => {
         balanceActionTaken = true;
         balanceActionType = 'updated';
         
-        logger.info(`✅ Balance updated directly: -${ngnbAmount} ${currency} for user ${userId}`);
+        logger.info(`✅ Balance updated directly: -${ngnzAmount} ${currency} for user ${userId}`);
         
       } catch (balanceError) {
         logger.error('CRITICAL: Balance update failed for completed transaction:', {
           request_id: uniqueRequestId,
           userId,
           currency,
-          ngnbAmount,
+          ngnzAmount,
           error: balanceError.message,
           ebills_order_id: ebillsResponse.data?.order_id
         });
@@ -1040,7 +1040,7 @@ router.post('/purchase', async (req, res) => {
       logger.info(`⏳ Transaction pending (${ebillsStatus}), reserving balance for ${uniqueRequestId}`);
       
       try {
-        await reserveUserBalance(userId, currency, ngnbAmount);
+        await reserveUserBalance(userId, currency, ngnzAmount);
         
         await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
           balanceReserved: true,
@@ -1051,14 +1051,14 @@ router.post('/purchase', async (req, res) => {
         balanceActionTaken = true;
         balanceActionType = 'reserved';
         
-        logger.info(`✅ Balance reserved: ${ngnbAmount} ${currency} for user ${userId}`);
+        logger.info(`✅ Balance reserved: ${ngnzAmount} ${currency} for user ${userId}`);
         
       } catch (balanceError) {
         logger.error(`CRITICAL: Balance reservation failed after successful eBills cable TV API call:`, {
           request_id: uniqueRequestId,
           userId,
           currency,
-          ngnbAmount,
+          ngnzAmount,
           error: balanceError.message,
           ebills_order_id: ebillsResponse.data?.order_id
         });
@@ -1132,7 +1132,7 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Transaction updated: ${ebillsResponse.data.order_id} | ${ebillsResponse.data.status} | Balance: ${balanceActionType || 'none'}`);
     
-    // Step 16: Return response based on status
+    // Step 16: Return response based on status - UPDATED: NGNZ references
     const responseData = {
       order_id: ebillsResponse.data.order_id,
       request_id: uniqueRequestId,
@@ -1147,8 +1147,8 @@ router.post('/purchase', async (req, res) => {
       package_variation: variation_id,
       payment_details: {
         currency: currency,
-        ngnb_amount: ngnbAmount,
-        amount_usd: (ngnbAmount * ngnbToUsdRate).toFixed(2)
+        ngnz_amount: ngnzAmount, // UPDATED: ngnb_amount to ngnz_amount
+        amount_usd: (ngnzAmount * ngnzToUsdRate).toFixed(2)
       },
       security_info: {
         price_verified: true,
@@ -1212,9 +1212,9 @@ router.post('/purchase', async (req, res) => {
     if (balanceActionTaken && balanceActionType === 'reserved') {
       try {
         await releaseReservedBalance(req.user.id, currency, validation?.sanitized?.amount || 0);
-        logger.info('🔄 Released reserved NGNB balance due to error');
+        logger.info('🔄 Released reserved NGNZ balance due to error'); // UPDATED: NGNB to NGNZ
       } catch (releaseError) {
-        logger.error('❌ Failed to release reserved NGNB balance after error:', releaseError.message);
+        logger.error('❌ Failed to release reserved NGNZ balance after error:', releaseError.message); // UPDATED: NGNB to NGNZ
       }
     } else if (balanceActionTaken && balanceActionType === 'updated') {
       // For direct balance updates, we'd need to reverse the transaction

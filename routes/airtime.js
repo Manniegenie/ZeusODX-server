@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
-// Supported tokens - aligned with user schema (DOGE REMOVED)
+// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' }, 
@@ -20,10 +20,10 @@ const SUPPORTED_TOKENS = {
   BNB: { name: 'Binance Coin' },
   MATIC: { name: 'Polygon' },
   AVAX: { name: 'Avalanche' },
-  NGNB: { name: 'NGNB Token' }
+  NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations
+// Token field mapping for balance operations (NGNB changed to NGNZ)
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth', 
@@ -33,7 +33,7 @@ const TOKEN_FIELD_MAPPING = {
   BNB: 'bnb',
   MATIC: 'matic',
   AVAX: 'avax',
-  NGNB: 'ngnb'
+  NGNZ: 'ngnz'
 };
 
 /**
@@ -287,7 +287,7 @@ function validateAirtimeRequest(body) {
     }
   }
   
-  // Amount validation
+  // Amount validation - UPDATED: Minimum changed to ₦50 and references NGNZ
   if (body.amount === undefined || body.amount === null || body.amount === '') {
     errors.push('Amount is required');
   } else {
@@ -299,13 +299,13 @@ function validateAirtimeRequest(body) {
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
       
-      const minAmount = 100;
+      const minAmount = 50; // UPDATED: Minimum changed from 100 to 50
       const maxAmount = 50000;
       if (sanitized.amount < minAmount) {
-        errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNB`);
+        errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNZ`); // UPDATED: NGNB to NGNZ
       }
       if (sanitized.amount > maxAmount) {
-        errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNB`);
+        errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNZ`); // UPDATED: NGNB to NGNZ
       }
     }
   }
@@ -327,7 +327,7 @@ function validateAirtimeRequest(body) {
     }
   }
   
-  sanitized.payment_currency = 'NGNB';
+  sanitized.payment_currency = 'NGNZ'; // UPDATED: NGNB to NGNZ
   
   return {
     isValid: errors.length === 0,
@@ -388,7 +388,7 @@ async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) 
 }
 
 /**
- * Main airtime purchase endpoint - UPDATED WITH INTERNAL BALANCE MANAGEMENT
+ * Main airtime purchase endpoint - UPDATED WITH INTERNAL BALANCE MANAGEMENT AND NGNZ
  */
 router.post('/purchase', async (req, res) => {
   const startTime = Date.now();
@@ -418,7 +418,7 @@ router.post('/purchase', async (req, res) => {
     }
     
     const { phone, service_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
-    const currency = 'NGNB';
+    const currency = 'NGNZ'; // UPDATED: NGNB to NGNZ
     
     // Step 2: Validate user and 2FA
     const user = await User.findById(userId);
@@ -471,8 +471,8 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ Password PIN validation successful for airtime purchase', { userId });
 
-    // Step 4: KYC validation
-    const kycValidation = await validateTransactionLimit(userId, amount, 'NGNB', 'AIRTIME');
+    // Step 4: KYC validation - UPDATED: NGNB to NGNZ
+    const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'AIRTIME');
     if (!kycValidation.allowed) {
       return res.status(403).json({
         success: false,
@@ -522,7 +522,7 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 8: Create transaction record
+    // Step 8: Create transaction record - UPDATED: NGNZ references
     const initialTransactionData = {
       orderId: uniqueOrderId,
       status: 'initiated-api',
@@ -539,11 +539,12 @@ router.post('/purchase', async (req, res) => {
         service_id,
         user_id: userId,
         payment_currency: currency,
-        ngnb_amount: amount,
+        ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
         exchange_rate: 1,
         twofa_validated: true,
         passwordpin_validated: true,
-        kyc_validated: true
+        kyc_validated: true,
+        is_ngnz_transaction: true // UPDATED: Added for consistency
       },
       network: service_id.toUpperCase(),
       customerPhone: phone,
@@ -558,7 +559,7 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNB | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`); // UPDATED: NGNB to NGNZ
     
     // Step 9: Call eBills API
     try {
@@ -722,7 +723,7 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Transaction updated: ${ebillsResponse.data.order_id} | ${ebillsResponse.data.status} | Balance: ${balanceActionType || 'none'}`);
     
-    // Step 12: Return response based on status
+    // Step 12: Return response based on status - UPDATED: NGNZ references
     if (ebillsResponse.data.status === 'completed-api') {
       return res.status(200).json({
         success: true,
@@ -734,7 +735,12 @@ router.post('/purchase', async (req, res) => {
           amount: ebillsResponse.data.amount,
           service_name: ebillsResponse.data.service_name,
           request_id: finalRequestId,
-          balance_action: 'updated_directly'
+          balance_action: 'updated_directly',
+          payment_details: {
+            currency: currency,
+            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
+            amount_usd: (amount * (1 / 1554.42)).toFixed(2)
+          }
         }
       });
     } else if (['initiated-api', 'processing-api'].includes(ebillsResponse.data.status)) {
@@ -748,7 +754,12 @@ router.post('/purchase', async (req, res) => {
           amount: ebillsResponse.data.amount,
           service_name: ebillsResponse.data.service_name,
           request_id: finalRequestId,
-          balance_action: 'reserved'
+          balance_action: 'reserved',
+          payment_details: {
+            currency: currency,
+            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
+            amount_usd: (amount * (1 / 1554.42)).toFixed(2)
+          }
         },
         note: 'You will receive a notification when the transaction is completed'
       });
@@ -759,7 +770,12 @@ router.post('/purchase', async (req, res) => {
         data: {
           ...ebillsResponse.data,
           request_id: finalRequestId,
-          balance_action: balanceActionType || 'none'
+          balance_action: balanceActionType || 'none',
+          payment_details: {
+            currency: currency,
+            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
+            amount_usd: (amount * (1 / 1554.42)).toFixed(2)
+          }
         }
       });
     }
@@ -774,10 +790,10 @@ router.post('/purchase', async (req, res) => {
     // Cleanup based on what action was taken - USING INTERNAL FUNCTIONS
     if (balanceActionTaken && balanceActionType === 'reserved') {
       try {
-        await releaseReservedBalance(req.user.id, 'NGNB', validation?.sanitized?.amount || 0);
-        logger.info('🔄 Released reserved NGNB balance due to error');
+        await releaseReservedBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0); // UPDATED: NGNB to NGNZ
+        logger.info('🔄 Released reserved NGNZ balance due to error'); // UPDATED: NGNB to NGNZ
       } catch (releaseError) {
-        logger.error('❌ Failed to release reserved NGNB balance after error:', releaseError.message);
+        logger.error('❌ Failed to release reserved NGNZ balance after error:', releaseError.message); // UPDATED: NGNB to NGNZ
       }
     } else if (balanceActionTaken && balanceActionType === 'updated') {
       // For direct balance updates, we'd need to reverse the transaction

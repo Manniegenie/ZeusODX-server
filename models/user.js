@@ -86,7 +86,7 @@ const userSchema = new mongoose.Schema({
     DOGE_DOGE: { address: String, network: String, walletReferenceId: String },
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
     AVAX_BSC: { address: String, network: String, walletReferenceId: String },
-    NGNB: { address: String, network: String, walletReferenceId: String },
+    NGNZ: { address: String, network: String, walletReferenceId: String },
   },
 
   // OPTIMIZED: Token Balances Only (No USD fields, calculated on-demand)
@@ -117,8 +117,8 @@ const userSchema = new mongoose.Schema({
   avaxBalance: { type: Number, default: 0, min: 0 },
   avaxPendingBalance: { type: Number, default: 0, min: 0 },
 
-  ngnbBalance: { type: Number, default: 0, min: 0 },
-  ngnbPendingBalance: { type: Number, default: 0, min: 0 },
+  ngnzBalance: { type: Number, default: 0, min: 0 },
+  ngnzPendingBalance: { type: Number, default: 0, min: 0 },
 
   // Balance metadata (optional tracking)
   lastBalanceUpdate: { type: Date, default: null },
@@ -214,7 +214,7 @@ userSchema.pre('save', async function (next) {
     // Update balance metadata when any balance field changes
     const balanceFields = [
       'solBalance', 'btcBalance', 'usdtBalance', 'usdcBalance', 'ethBalance', 
-      'bnbBalance', 'dogeBalance', 'maticBalance', 'avaxBalance', 'ngnbBalance'
+      'bnbBalance', 'dogeBalance', 'maticBalance', 'avaxBalance', 'ngnzBalance'
     ];
     
     if (balanceFields.some(field => this.isModified(field))) {
