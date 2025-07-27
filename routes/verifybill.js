@@ -3,7 +3,6 @@ const { vtuAuth } = require('../auth/billauth');
 const logger = require('../utils/logger');
 
 const router = express.Router();
-const EBILLS_BASE_URL = process.env.EBILLS_BASE_URL || 'https://ebills.africa/wp-json';
 
 // Define valid service IDs for each category
 const ELECTRICITY_SERVICES = [
@@ -12,7 +11,7 @@ const ELECTRICITY_SERVICES = [
   'enugu-electric', 'benin-electric', 'aba-electric', 'yola-electric'
 ];
 
-const CABLE_TV_SERVICES = ['dstv', 'gotv', 'startimes'];
+const CABLE_TV_SERVICES = ['dstv', 'gotv', 'startimes', 'showmax'];
 
 const BETTING_SERVICES = [
   '1xBet', 'BangBet', 'Bet9ja', 'BetKing', 'BetLand', 'BetLion',
@@ -75,175 +74,181 @@ function getServiceCategory(service_id) {
 }
 
 /**
- * Main customer verification endpoint
+ * Call eBills API for customer verification - FIXED: Removed explicit headers
  */
-router.post('/customer', async (req, res) => {
+async function callEBillsVerificationAPI({ customer_id, service_id, variation_id, requestId, userId }) {
   try {
-    const requestBody = req.body;
-    const userId = req.user.id; // From global auth middleware
-    
-    logger.info(`Customer verification request from user ${userId}:`, requestBody);
-    
-    // Step 1: Validate request
-    const validation = validateVerificationRequest(requestBody);
-    if (!validation.isValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation failed',
-        errors: validation.errors
-      });
-    }
-    
-    const { customer_id, service_id, variation_id } = requestBody;
-    const serviceCategory = getServiceCategory(service_id);
-    
-    // Step 2: Prepare request payload
     const verificationPayload = {
       customer_id: customer_id.trim(),
       service_id
     };
     
     // Add variation_id only for electricity services
-    if (serviceCategory === 'electricity') {
+    if (ELECTRICITY_SERVICES.includes(service_id)) {
       verificationPayload.variation_id = variation_id;
     }
+
+    logger.info(`🔍 [${requestId}] Making eBills customer verification request:`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***', // Mask for privacy
+      service_id,
+      variation_id: variation_id || 'not_applicable',
+      endpoint: '/api/v2/verify-customer'
+    });
+
+    // 🔑 FIXED: Let VTUAuth handle all headers automatically - removed explicit headers
+    const response = await vtuAuth.makeRequest('POST', '/api/v2/verify-customer', verificationPayload, {
+      timeout: 30000 // 30 seconds timeout for verification
+    });
+
+    logger.info(`📡 [${requestId}] eBills verification API response:`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***',
+      service_id,
+      code: response.code,
+      message: response.message,
+      hasData: !!response.data
+    });
+
+    // Handle eBills API response structure - consistent with other utilities
+    if (response.code !== 'success') {
+      throw new Error(`eBills Customer Verification API error: ${response.message || 'Unknown error'}`);
+    }
+
+    return response;
+
+  } catch (error) {
+    logger.error(`❌ [${requestId}] eBills customer verification failed:`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***',
+      service_id,
+      error: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      ebillsError: error.response?.data
+    });
+
+    // Enhanced error messages for common issues - consistent with other utilities
+    if (error.message.includes('IP Address')) {
+      throw new Error('IP address not whitelisted with eBills. Please contact support.');
+    }
+
+    if (error.message.includes('timeout')) {
+      throw new Error('Customer verification request timed out. Please try again.');
+    }
+
+    if (error.response?.status === 422) {
+      const validationErrors = error.response.data?.errors || {};
+      const errorMessages = Object.values(validationErrors).flat();
+      throw new Error(`Validation error: ${errorMessages.join(', ')}`);
+    }
+
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      throw new Error('Authentication failed with eBills API. Please contact support.');
+    }
+
+    throw new Error(`eBills Customer Verification API error: ${error.message}`);
+  }
+}
+
+/**
+ * Main customer verification endpoint - Updated to match other utilities' patterns
+ */
+router.post('/customer', async (req, res) => {
+  const startTime = Date.now();
+  const requestId = `verify_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  
+  try {
+    // Step 1: Log incoming request
+    logger.info(`🔍 Customer verification request from user:`, {
+      requestId,
+      userId: req.user?.id,
+      userAgent: req.get('User-Agent'),
+      ip: req.ip || req.connection.remoteAddress,
+      timestamp: new Date().toISOString()
+    });
+
+    const requestBody = req.body;
     
-    logger.info(`Verifying ${serviceCategory} customer:`, verificationPayload);
-    
-    // Step 3: Make API call to eBills verification endpoint
-    try {
-      const ebillsResponse = await vtuAuth.makeRequest(
-        'POST',
-        '/api/v2/verify-customer',
-        verificationPayload,
-        {
-          timeout: 30000, // 30 seconds timeout for verification
-          baseURL: EBILLS_BASE_URL,
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          }
-        }
-      );
-      
-      logger.info(`eBills verification response for ${customer_id}:`, {
-        code: ebillsResponse.code,
-        message: ebillsResponse.message,
-        service: service_id,
-        category: serviceCategory
+    // Step 2: Check authentication
+    if (!req.user) {
+      logger.error(`❌ [${requestId}] No user object found in request`);
+      return res.status(401).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'Authentication required',
+        requestId
       });
-      
-      // Handle eBills API response
-      if (ebillsResponse.code !== 'success') {
-        // Map specific eBills error responses
-        let statusCode = 400;
-        let errorCode = 'VERIFICATION_FAILED';
-        let errorMessage = ebillsResponse.message || 'Customer verification failed';
-        
-        switch (ebillsResponse.code) {
-          case 'missing_fields':
-            statusCode = 400;
-            errorCode = 'MISSING_FIELDS';
-            errorMessage = 'Required fields missing';
-            break;
-          case 'invalid_field':
-            statusCode = 400;
-            errorCode = 'INVALID_FIELD';
-            errorMessage = 'Invalid service or variation ID';
-            break;
-          case 'failure':
-            statusCode = 404;
-            errorCode = 'CUSTOMER_NOT_FOUND';
-            errorMessage = 'Customer not found or invalid customer ID';
-            break;
-          case 'rest_forbidden':
-            statusCode = 403;
-            errorCode = 'UNAUTHORIZED';
-            errorMessage = 'Unauthorized access to verification service';
-            break;
-          default:
-            errorMessage = ebillsResponse.message || 'Customer verification failed';
-        }
-        
-        return res.status(statusCode).json({
-          success: false,
-          error: errorCode,
-          message: errorMessage,
-          details: {
-            customer_id,
-            service_id,
-            service_category: serviceCategory,
-            variation_id: variation_id || null
-          }
-        });
-      }
-      
-      // Step 4: Process successful verification response
-      const customerData = ebillsResponse.data;
-      
-      // Enhance response with service category and additional info
-      const enhancedResponse = {
-        success: true,
-        message: 'Customer verification successful',
-        service_category: serviceCategory,
-        data: {
-          ...customerData,
-          service_category: serviceCategory,
-          verified_at: new Date().toISOString()
-        }
-      };
-      
-      // Add category-specific enhancements
-      if (serviceCategory === 'electricity') {
-        enhancedResponse.data.purchase_info = {
-          min_amount: customerData.min_purchase_amount || 1000,
-          max_amount: customerData.max_purchase_amount || 100000,
-          meter_type: variation_id,
-          has_arrears: (customerData.customer_arrears || 0) > 0,
-          outstanding_amount: customerData.outstanding || 0
-        };
-      } else if (serviceCategory === 'cable_tv') {
-        enhancedResponse.data.subscription_info = {
-          current_status: customerData.status || 'Unknown',
-          current_bouquet: customerData.current_bouquet || 'N/A',
-          renewal_amount: customerData.renewal_amount || 0,
-          due_date: customerData.due_date || null,
-          balance: customerData.balance || 0
-        };
-      } else if (serviceCategory === 'betting') {
-        enhancedResponse.data.account_info = {
-          username: customerData.customer_username || 'N/A',
-          email: customerData.customer_email_address || 'N/A',
-          phone: customerData.customer_phone_number || 'N/A',
-          min_amount: customerData.minimum_amount || 100,
-          max_amount: customerData.maximum_amount || 100000
-        };
-      }
-      
-      logger.info(`✅ Customer verification successful for ${customer_id} (${serviceCategory})`);
-      
-      return res.status(200).json(enhancedResponse);
-      
-    } catch (apiError) {
-      logger.error('eBills verification API call failed:', {
+    }
+
+    const userId = req.user.id;
+    
+    // Step 3: Validate request
+    const validation = validateVerificationRequest(requestBody);
+    
+    if (!validation.isValid) {
+      logger.warn(`❌ [${requestId}] Request validation failed`, {
+        requestId,
+        userId,
+        errors: validation.errors
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validation.errors,
+        requestId
+      });
+    }
+    
+    const { customer_id, service_id, variation_id } = requestBody;
+    const serviceCategory = getServiceCategory(service_id);
+    
+    logger.info(`📊 [${requestId}] Service details determined`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***',
+      service_id,
+      serviceCategory,
+      variation_id: variation_id || 'not_provided'
+    });
+    
+    // Step 4: Call eBills API using the consistent pattern
+    let ebillsResponse;
+    try {
+      ebillsResponse = await callEBillsVerificationAPI({
         customer_id,
         service_id,
+        variation_id,
+        requestId,
+        userId
+      });
+    } catch (apiError) {
+      logger.error(`eBills verification API call failed:`, {
+        requestId,
+        userId,
+        customer_id: customer_id?.substring(0, 4) + '***',
+        service_id,
         error: apiError.message,
-        response: apiError.response?.data,
-        status: apiError.response?.status,
-        timeout: apiError.code === 'ECONNABORTED' || apiError.message.includes('timeout')
+        processingTime: Date.now() - startTime
       });
       
-      // Handle API call errors
+      // Map API errors to appropriate responses - consistent with other utilities
       let statusCode = 500;
       let errorCode = 'VERIFICATION_API_ERROR';
-      let errorMessage = 'Customer verification service is currently unavailable';
+      let errorMessage = apiError.message;
       
-      if (apiError.code === 'ECONNABORTED' || apiError.message.includes('timeout')) {
+      if (apiError.message.includes('timeout')) {
         statusCode = 504;
         errorCode = 'VERIFICATION_TIMEOUT';
         errorMessage = 'Customer verification request timed out. Please try again.';
-      } else if (apiError.response?.status === 401 || apiError.response?.status === 403) {
+      } else if (apiError.message.includes('Customer Verification API error')) {
+        statusCode = 400;
+        errorCode = 'CUSTOMER_NOT_FOUND';
+        errorMessage = 'Customer not found or invalid customer details';
+      } else if (apiError.message.includes('Authentication failed')) {
         statusCode = 503;
         errorCode = 'SERVICE_UNAVAILABLE';
         errorMessage = 'Customer verification service is temporarily unavailable';
@@ -257,76 +262,91 @@ router.post('/customer', async (req, res) => {
           customer_id,
           service_id,
           service_category: serviceCategory,
-          variation_id: variation_id || null
+          variation_id: variation_id || null,
+          requestId
         }
       });
     }
     
+    // Step 5: Process successful verification response
+    const customerData = ebillsResponse.data;
+    
+    // Enhance response with service category and additional info
+    const enhancedResponse = {
+      success: true,
+      message: 'Customer verification successful',
+      service_category: serviceCategory,
+      data: {
+        ...customerData,
+        service_category: serviceCategory,
+        verified_at: new Date().toISOString(),
+        requestId
+      }
+    };
+    
+    // Add category-specific enhancements
+    if (serviceCategory === 'electricity') {
+      enhancedResponse.data.purchase_info = {
+        min_amount: customerData.min_purchase_amount || 1000,
+        max_amount: customerData.max_purchase_amount || 100000,
+        meter_type: variation_id,
+        has_arrears: (customerData.customer_arrears || 0) > 0,
+        outstanding_amount: customerData.outstanding || 0
+      };
+      logger.info(`⚡ [${requestId}] Added electricity-specific data`);
+    } else if (serviceCategory === 'cable_tv') {
+      enhancedResponse.data.subscription_info = {
+        current_status: customerData.status || 'Unknown',
+        current_bouquet: customerData.current_bouquet || 'N/A',
+        renewal_amount: customerData.renewal_amount || 0,
+        due_date: customerData.due_date || null,
+        balance: customerData.balance || 0
+      };
+      logger.info(`📺 [${requestId}] Added cable TV-specific data`);
+    } else if (serviceCategory === 'betting') {
+      enhancedResponse.data.account_info = {
+        username: customerData.customer_username || 'N/A',
+        email: customerData.customer_email_address || 'N/A',
+        phone: customerData.customer_phone_number || 'N/A',
+        min_amount: customerData.minimum_amount || 100,
+        max_amount: customerData.maximum_amount || 100000
+      };
+      logger.info(`🎲 [${requestId}] Added betting-specific data`);
+    }
+    
+    const totalDuration = Date.now() - startTime;
+    
+    logger.info(`✅ [${requestId}] Customer verification completed successfully`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***',
+      serviceCategory,
+      totalDuration: `${totalDuration}ms`,
+      hasCustomerData: !!customerData
+    });
+    
+    return res.status(200).json(enhancedResponse);
+    
   } catch (error) {
-    logger.error('Customer verification unexpected error:', {
+    const totalDuration = Date.now() - startTime;
+    
+    logger.error(`💀 [${requestId}] Customer verification unexpected error`, {
+      requestId,
       userId: req.user?.id,
-      error: error.message,
-      stack: error.stack
+      errorMessage: error.message,
+      errorName: error.name,
+      stack: error.stack,
+      totalDuration: `${totalDuration}ms`,
+      requestBody: req.body
     });
     
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
-      message: 'An unexpected error occurred during customer verification'
+      message: 'An unexpected error occurred during customer verification',
+      requestId
     });
   }
-});
-
-/**
- * Get supported services endpoint
- */
-router.get('/services', (req, res) => {
-  try {
-    return res.status(200).json({
-      success: true,
-      message: 'Supported verification services',
-      data: {
-        electricity: {
-          services: ELECTRICITY_SERVICES,
-          meter_types: VALID_METER_TYPES,
-          requires_variation_id: true,
-          description: 'Verify meter/account numbers for electricity providers'
-        },
-        cable_tv: {
-          services: CABLE_TV_SERVICES,
-          requires_variation_id: false,
-          description: 'Verify smartcard numbers for cable TV providers'
-        },
-        betting: {
-          services: BETTING_SERVICES,
-          requires_variation_id: false,
-          description: 'Verify betting account IDs for betting platforms'
-        }
-      },
-      total_services: ELECTRICITY_SERVICES.length + CABLE_TV_SERVICES.length + BETTING_SERVICES.length
-    });
-  } catch (error) {
-    logger.error('Get supported services error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-/**
- * Health check endpoint
- */
-router.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'healthy',
-    service: 'Customer Verification API',
-    timestamp: new Date().toISOString(),
-    ebillsBaseUrl: EBILLS_BASE_URL,
-    version: '1.0.0',
-    supported_categories: ['electricity', 'cable_tv', 'betting'],
-    total_services: ELECTRICITY_SERVICES.length + CABLE_TV_SERVICES.length + BETTING_SERVICES.length
-  });
 });
 
 module.exports = router;
