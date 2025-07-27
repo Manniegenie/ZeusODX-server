@@ -7,7 +7,7 @@ const logger = require('../utils/logger');
 /**
  * OPTIMIZED: Calculate USD balances on-demand using cached prices
  * @param {Object} user - User document with token balances
- * @returns {Promise<Object>} Object with calculated USD balances and total
+ * @returns {Promise<Object>} Object with calculated USD balances and totall
  */
 async function calculateUSDBalances(user) {
   try {
