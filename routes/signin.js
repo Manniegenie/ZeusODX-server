@@ -1,13 +1,11 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const { body, validationResult } = require("express-validator");
-const bcrypt = require("bcryptjs");
 const router = express.Router();
 
 const User = require("../models/user");
 const config = require("./config");
 const logger = require("../utils/logger");
-const { getUserPortfolioBalance } = require("../services/portfolio");
 
 const MAX_LOGIN_ATTEMPTS = 3;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
@@ -32,6 +30,7 @@ const validateJWTSecrets = () => {
   return { jwtSecret, jwtRefreshSecret };
 };
 
+// POST: /signin-pin - Sign in with PIN (handles leading zeros)
 router.post(
   "/signin-pin",
   [
@@ -48,20 +47,26 @@ router.post(
       }),
     body("passwordpin")
       .trim()
-      .notEmpty()
-      .withMessage("Password pin is required.")
-      .isLength({ min: 4, max: 6 })
-      .withMessage("Password pin must be between 4 and 6 digits.")
-      .isNumeric()
-      .withMessage("Password pin must contain only numbers."),
+      .customSanitizer((value) => {
+        // Convert to string and pad with leading zeros to make it 6 digits
+        return String(value).padStart(6, '0');
+      })
+      .custom((value) => {
+        // After sanitization, verify it's exactly 6 digits
+        if (!/^\d{6}$/.test(value)) {
+          throw new Error("Password pin must be 5-6 digits (will be padded to 6).");
+        }
+        return true;
+      }),
   ],
   async (req, res) => {
     const startTime = Date.now();
-    
-    // Enhanced request logging
+
+    // Log signin attempt with masked phone number
     logger.info("PIN sign-in request initiated", {
       phonenumber: req.body.phonenumber?.slice(0, 5) + "****",
-      pinLength: req.body.passwordpin?.length,
+      originalPinLength: req.body.passwordpin?.toString().length,
+      sanitizedPinLength: req.body.passwordpin?.length,
       userAgent: req.get('User-Agent'),
       ip: req.ip || req.connection.remoteAddress,
       timestamp: new Date().toISOString()
@@ -83,6 +88,14 @@ router.post(
 
     const { phonenumber, passwordpin } = req.body;
 
+    // Log the PIN processing details
+    logger.info("PIN processing details", {
+      phonenumber: phonenumber?.slice(0, 5) + "****",
+      processedPin: passwordpin,
+      pinLength: passwordpin.length,
+      isString: typeof passwordpin === 'string'
+    });
+
     try {
       // Find user by phone number
       const user = await User.findOne({ phonenumber }).lean(false);
@@ -97,19 +110,7 @@ router.post(
         });
       }
 
-      // Log user details for debugging
-      logger.info("User located for PIN authentication", {
-        userId: user._id,
-        username: user.username,
-        kycLevel: user.kycLevel,
-        currentLoginAttempts: user.loginAttempts || 0,
-        hasPasswordPin: !!user.passwordpin,
-        passwordPinExists: user.passwordpin ? true : false,
-        isAccountCurrentlyLocked: !!(user.lockUntil && user.lockUntil > Date.now()),
-        lockUntil: user.lockUntil
-      });
-
-      // Check account lock status
+      // Check if account is locked
       if (user.lockUntil && user.lockUntil > Date.now()) {
         const unlockTime = new Date(user.lockUntil);
         const timeRemaining = Math.ceil((user.lockUntil - Date.now()) / (60 * 1000));
@@ -129,7 +130,7 @@ router.post(
         });
       }
 
-      // Verify PIN exists
+      // Check if PIN is set
       if (!user.passwordpin) {
         logger.warn("PIN not set for user attempting sign-in", { 
           userId: user._id,
@@ -141,33 +142,22 @@ router.post(
         });
       }
 
-      // Detailed PIN comparison logging
-      logger.info("Attempting PIN verification", {
-        userId: user._id,
-        inputPinLength: passwordpin.length,
-        inputPinType: typeof passwordpin,
-        storedHashLength: user.passwordpin.length,
-        storedHashPrefix: user.passwordpin.substring(0, 7),
-        // Remove in production - for debugging only
-        inputPinSample: passwordpin.substring(0, 2) + "****"
-      });
-
-      // Compare PIN with stored hash
+      // Verify PIN using model method
       let isValidPin = false;
       try {
-        isValidPin = await bcrypt.compare(passwordpin.toString(), user.passwordpin);
+        isValidPin = await user.comparePasswordPin(passwordpin);
         
         logger.info("PIN comparison completed", {
           userId: user._id,
           comparisonResult: isValidPin,
-          pinMatched: isValidPin
+          pinMethod: 'comparePasswordPin',
+          inputPinLength: passwordpin.length
         });
       } catch (bcryptError) {
-        logger.error("Bcrypt comparison failed", {
+        logger.error("PIN comparison failed", {
           userId: user._id,
           error: bcryptError.message,
-          inputType: typeof passwordpin,
-          hashType: typeof user.passwordpin
+          stack: bcryptError.stack
         });
         
         return res.status(500).json({
@@ -186,10 +176,12 @@ router.post(
           previousAttempts: user.loginAttempts || 0,
           newAttemptCount,
           attemptsRemaining,
-          willLockAccount: newAttemptCount >= MAX_LOGIN_ATTEMPTS
+          willLockAccount: newAttemptCount >= MAX_LOGIN_ATTEMPTS,
+          inputPin: passwordpin,
+          inputPinLength: passwordpin.length
         });
 
-        // Update login attempts
+        // Update failed attempt count
         user.loginAttempts = newAttemptCount;
         user.lastFailedLogin = new Date();
 
@@ -211,6 +203,7 @@ router.post(
           });
         }
 
+        // Save updated attempt count
         await user.save();
         
         return res.status(401).json({
@@ -220,7 +213,7 @@ router.post(
         });
       }
 
-      // Successful PIN verification - reset login attempts
+      // PIN is valid - reset login attempts
       logger.info("PIN verification successful - resetting attempts", {
         userId: user._id,
         previousAttempts: user.loginAttempts || 0
@@ -231,20 +224,17 @@ router.post(
       user.lastFailedLogin = null;
       await user.save();
 
-      // Validate JWT secrets before token generation
+      // Validate JWT configuration
       let jwtSecrets;
       try {
         jwtSecrets = validateJWTSecrets();
         logger.info("JWT secrets validated successfully", {
-          userId: user._id,
-          secretsConfigured: true
+          userId: user._id
         });
       } catch (jwtError) {
         logger.error("JWT configuration error", {
           userId: user._id,
           error: jwtError.message,
-          jwtSecretExists: !!(config.jwtSecret || process.env.JWT_SECRET),
-          refreshJwtSecretExists: !!(config.jwtRefreshSecret || process.env.REFRESH_JWT_SECRET)
         });
         
         return res.status(500).json({
@@ -254,12 +244,12 @@ router.post(
         });
       }
 
-      // Generate JWT tokens with validated secrets
+      // Create JWT tokens
       const tokenPayload = { 
-        id: user._id, 
-        email: user.email, 
+        id: user._id,
+        email: user.email,
         username: user.username,
-        kycLevel: user.kycLevel 
+        kycLevel: user.kycLevel
       };
 
       let accessToken, refreshToken;
@@ -278,20 +268,13 @@ router.post(
 
         logger.info("JWT tokens generated successfully", {
           userId: user._id,
-          accessTokenLength: accessToken.length,
-          refreshTokenLength: refreshToken.length
+          tokenPayloadKeys: Object.keys(tokenPayload)
         });
 
       } catch (tokenError) {
         logger.error("JWT token generation failed", {
           userId: user._id,
           error: tokenError.message,
-          tokenPayload: {
-            id: !!tokenPayload.id,
-            email: !!tokenPayload.email,
-            username: !!tokenPayload.username,
-            kycLevel: tokenPayload.kycLevel
-          }
         });
         
         return res.status(500).json({
@@ -301,68 +284,46 @@ router.post(
         });
       }
 
-      // Store refresh token
+      // Store refresh token (keep only last 5 tokens)
       user.refreshTokens.push({ 
         token: refreshToken, 
         createdAt: new Date() 
       });
 
-      // Clean up old refresh tokens (keep last 5)
       if (user.refreshTokens.length > 5) {
         user.refreshTokens = user.refreshTokens.slice(-5);
       }
 
       await user.save();
 
-      // Get user portfolio
-      let portfolio = null;
-      try {
-        portfolio = await getUserPortfolioBalance(user._id);
-        logger.info("Portfolio retrieved successfully", {
-          userId: user._id,
-          totalBalance: portfolio?.totalPortfolioUSD || 0,
-          tokenCount: portfolio?.tokens?.length || 0
-        });
-      } catch (portfolioError) {
-        logger.error("Failed to retrieve portfolio", {
-          userId: user._id,
-          error: portfolioError.message
-        });
-        // Continue without portfolio - don't fail the login
-      }
-
       const processingTime = Date.now() - startTime;
-      
-      logger.info("PIN sign-in completed successfully", { 
+
+      logger.info("PIN sign-in completed successfully", {
         userId: user._id,
+        email: user.email,
         username: user.username,
-        processingTimeMs: processingTime,
-        portfolioRetrieved: !!portfolio,
-        refreshTokenCount: user.refreshTokens.length
+        kycLevel: user.kycLevel,
+        processingTimeMs: processingTime
       });
 
       // Return success response
       res.status(200).json({
         success: true,
-        message: "Signed in successfully.",
-        user: {
-          id: user._id,
-          username: user.username,
-          email: user.email,
-          phonenumber: user.phonenumber,
-          firstname: user.firstname,
-          lastname: user.lastname,
-          kycLevel: user.kycLevel,
-          kycStatus: user.kycStatus
-        },
+        message: "Sign-in successful",
         accessToken,
         refreshToken,
-        portfolio: portfolio || {
-          totalPortfolioUSD: 0,
-          tokens: [],
-          lastUpdated: null
-        },
-        loginTime: new Date().toISOString()
+        user: {
+          id: user._id,
+          email: user.email,
+          firstname: user.firstname,
+          lastname: user.lastname,
+          username: user.username,
+          phonenumber: user.phonenumber,
+          kycLevel: user.kycLevel,
+          kycStatus: user.kycStatus,
+          walletGenerationStatus: user.walletGenerationStatus,
+          avatarUrl: user.avatarUrl
+        }
       });
 
     } catch (error) {
@@ -379,7 +340,7 @@ router.post(
       res.status(500).json({ 
         success: false,
         message: "Server error during sign-in. Please try again.",
-        errorId: Date.now().toString(36) // For tracking
+        errorId: Date.now().toString(36)
       });
     }
   }
