@@ -2,8 +2,87 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
 const PriceChange = require('../models/pricechange');
-const { getPricesWithCache } = require('../services/portfolio');
+const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 const { getCurrentRate } = require('../services/offramppriceservice');
+const logger = require('../utils/logger');
+
+/**
+ * Calculate USD balances on-demand using cached prices (copied from balance.js)
+ * @param {Object} user - User document with token balances
+ * @returns {Promise<Object>} Object with calculated USD balances and total
+ */
+async function calculateUSDBalances(user) {
+  try {
+    // Get all supported tokens
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    
+    // Get current prices with offramp rate for NGNZ
+    const prices = await getPricesWithCache(tokens, 'portfolio');
+    
+    const calculatedBalances = {};
+    let totalPortfolioUSD = 0;
+    
+    // Calculate USD values for each token
+    for (const token of tokens) {
+      const tokenLower = token.toLowerCase();
+      const balanceField = `${tokenLower}Balance`;
+      const usdBalanceField = `${tokenLower}BalanceUSD`;
+      
+      // Get token amount from user
+      const tokenAmount = user[balanceField] || 0;
+      const tokenPrice = prices[token] || 0;
+      
+      // Calculate USD value
+      const usdValue = tokenAmount * tokenPrice;
+      
+      // Store calculated USD balance
+      calculatedBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
+      
+      // Add to total portfolio
+      totalPortfolioUSD += usdValue;
+      
+      if (logger && logger.debug) {
+        logger.debug(`Calculated USD balance for ${token}`, {
+          tokenAmount,
+          tokenPrice,
+          usdValue: calculatedBalances[usdBalanceField],
+          usingDynamicRate: token === 'NGNB'
+        });
+      }
+    }
+    
+    // Set total portfolio balance
+    calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
+    
+    if (logger && logger.debug) {
+      logger.debug('Calculated total portfolio balance', { 
+        totalPortfolioUSD: calculatedBalances.totalPortfolioBalance,
+        tokensProcessed: tokens.length
+      });
+    }
+    
+    return calculatedBalances;
+  } catch (error) {
+    if (logger && logger.error) {
+      logger.error('Error calculating USD balances', { error: error.message });
+    } else {
+      console.error('Error calculating USD balances:', error.message);
+    }
+    
+    // Return zeros if calculation fails
+    const fallbackBalances = {};
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    
+    for (const token of tokens) {
+      const tokenLower = token.toLowerCase();
+      const usdBalanceField = `${tokenLower}BalanceUSD`;
+      fallbackBalances[usdBalanceField] = 0;
+    }
+    fallbackBalances.totalPortfolioBalance = 0;
+    
+    return fallbackBalances;
+  }
+}
 
 // GET /dashboard - Get all dashboard data
 router.get('/dashboard', async (req, res) => {
@@ -21,22 +100,22 @@ router.get('/dashboard', async (req, res) => {
     };
     const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
 
-    // Get all supported token symbols for pricing
+    // Get all supported token symbols for pricing - DOGE REMOVED
     const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX'];
     
-    // Fetch current token prices and NGNZ rate
-    const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
+    // Fetch current token prices and NGNB rate
+    const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
       getPricesWithCache(tokenSymbols),
       getCurrentRate()
     ]);
 
     // Handle pricing data
     const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
-    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
+    const ngnbRate = ngnbRateInfo.status === 'fulfilled' ? ngnbRateInfo.value : null;
     
-    // Add NGNZ pricing (fixed from NGNB to NGNZ)
-    if (ngnzRate && ngnzRate.finalPrice) {
-      prices.NGNZ = ngnzRate.finalPrice;
+    // Add NGNB pricing
+    if (ngnbRate && ngnbRate.finalPrice) {
+      prices.NGNB = ngnbRate.finalPrice;
     }
 
     // Store current prices in database
@@ -55,6 +134,9 @@ router.get('/dashboard', async (req, res) => {
     } catch (priceChangeError) {
       console.error('Failed to calculate price changes:', priceChangeError.message);
     }
+
+    // CALCULATE USD BALANCES ON-DEMAND (like balance.js)
+    const calculatedUSDBalances = await calculateUSDBalances(user);
 
     // Prepare dashboard data
     const dashboardData = {
@@ -78,11 +160,11 @@ router.get('/dashboard', async (req, res) => {
       },
 
       portfolio: {
-        totalPortfolioBalance: user.totalPortfolioBalance,
+        totalPortfolioBalance: calculatedUSDBalances.totalPortfolioBalance, // CALCULATED
         balances: {
           SOL: {
             balance: user.solBalance,
-            balanceUSD: user.solBalanceUSD,
+            balanceUSD: calculatedUSDBalances.solBalanceUSD, // CALCULATED
             pendingBalance: user.solPendingBalance,
             currentPrice: prices.SOL || 0,
             priceChange12h: changes12Hour.SOL ? changes12Hour.SOL.percentageChange : null,
@@ -90,7 +172,7 @@ router.get('/dashboard', async (req, res) => {
           },
           BTC: {
             balance: user.btcBalance,
-            balanceUSD: user.btcBalanceUSD,
+            balanceUSD: calculatedUSDBalances.btcBalanceUSD, // CALCULATED
             pendingBalance: user.btcPendingBalance,
             currentPrice: prices.BTC || 0,
             priceChange12h: changes12Hour.BTC ? changes12Hour.BTC.percentageChange : null,
@@ -98,7 +180,7 @@ router.get('/dashboard', async (req, res) => {
           },
           USDT: {
             balance: user.usdtBalance,
-            balanceUSD: user.usdtBalanceUSD,
+            balanceUSD: calculatedUSDBalances.usdtBalanceUSD, // CALCULATED
             pendingBalance: user.usdtPendingBalance,
             currentPrice: prices.USDT || 1,
             priceChange12h: null,
@@ -106,7 +188,7 @@ router.get('/dashboard', async (req, res) => {
           },
           USDC: {
             balance: user.usdcBalance,
-            balanceUSD: user.usdcBalanceUSD,
+            balanceUSD: calculatedUSDBalances.usdcBalanceUSD, // CALCULATED
             pendingBalance: user.usdcPendingBalance,
             currentPrice: prices.USDC || 1,
             priceChange12h: null,
@@ -114,7 +196,7 @@ router.get('/dashboard', async (req, res) => {
           },
           ETH: {
             balance: user.ethBalance,
-            balanceUSD: user.ethBalanceUSD,
+            balanceUSD: calculatedUSDBalances.ethBalanceUSD, // CALCULATED
             pendingBalance: user.ethPendingBalance,
             currentPrice: prices.ETH || 0,
             priceChange12h: changes12Hour.ETH ? changes12Hour.ETH.percentageChange : null,
@@ -122,15 +204,16 @@ router.get('/dashboard', async (req, res) => {
           },
           BNB: {
             balance: user.bnbBalance,
-            balanceUSD: user.bnbBalanceUSD,
+            balanceUSD: calculatedUSDBalances.bnbBalanceUSD, // CALCULATED
             pendingBalance: user.bnbPendingBalance,
             currentPrice: prices.BNB || 0,
             priceChange12h: changes12Hour.BNB ? changes12Hour.BNB.percentageChange : null,
             priceChangeData: changes12Hour.BNB || null
           },
+          // DOGE: REMOVED COMPLETELY
           MATIC: {
             balance: user.maticBalance,
-            balanceUSD: user.maticBalanceUSD,
+            balanceUSD: calculatedUSDBalances.maticBalanceUSD, // CALCULATED
             pendingBalance: user.maticPendingBalance,
             currentPrice: prices.MATIC || 0,
             priceChange12h: changes12Hour.MATIC ? changes12Hour.MATIC.percentageChange : null,
@@ -138,29 +221,19 @@ router.get('/dashboard', async (req, res) => {
           },
           AVAX: {
             balance: user.avaxBalance,
-            balanceUSD: user.avaxBalanceUSD,
+            balanceUSD: calculatedUSDBalances.avaxBalanceUSD, // CALCULATED
             pendingBalance: user.avaxPendingBalance,
             currentPrice: prices.AVAX || 0,
             priceChange12h: changes12Hour.AVAX ? changes12Hour.AVAX.percentageChange : null,
             priceChangeData: changes12Hour.AVAX || null
           },
-          // Fixed: Now properly using user.ngnzBalance (from user model)
           NGNZ: {
-            balance: user.ngnzBalance,
-            balanceUSD: user.ngnzBalanceUSD,
+            balance: user.ngnbBalance,
+            balanceUSD: calculatedUSDBalances.ngnzBalanceUSD, // CALCULATED
             pendingBalance: user.ngnzPendingBalance,
             currentPrice: prices.NGNZ || 0,
             priceChange12h: null,
             priceChangeData: null
-          },
-          // Added DOGE since it exists in user model but was missing
-          DOGE: {
-            balance: user.dogeBalance,
-            balanceUSD: user.dogeBalanceUSD,
-            pendingBalance: user.dogePendingBalance,
-            currentPrice: prices.DOGE || 0,
-            priceChange12h: changes12Hour.DOGE ? changes12Hour.DOGE.percentageChange : null,
-            priceChangeData: changes12Hour.DOGE || null
           }
         }
       },
@@ -168,7 +241,6 @@ router.get('/dashboard', async (req, res) => {
       market: {
         prices: prices,
         priceChanges12h: changes12Hour,
-        // Fixed: Changed from ngnbExchangeRate to ngnzExchangeRate for consistency
         ngnzExchangeRate: ngnzRate ? {
           rate: ngnzRate.finalPrice,
           lastUpdated: ngnzRate.lastUpdated,
@@ -204,19 +276,18 @@ router.get('/dashboard', async (req, res) => {
 // Additional endpoints
 router.post('/store-prices', async (req, res) => {
   try {
-    // Include DOGE if you want to support it
-    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX', 'DOGE'];
-    const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
+    // Updated to exclude DOGE
+    const tokenSymbols = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX'];
+    const [tokenPrices, ngnbRateInfo] = await Promise.allSettled([
       getPricesWithCache(tokenSymbols),
       getCurrentRate()
     ]);
 
     const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
-    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
+    const ngnbRate = ngnbRateInfo.status === 'fulfilled' ? ngnbRateInfo.value : null;
     
-    // Fixed: Changed from NGNB to NGNZ
-    if (ngnzRate && ngnzRate.finalPrice) {
-      prices.NGNZ = ngnzRate.finalPrice;
+    if (ngnbRate && ngnbRate.finalPrice) {
+      prices.NGNB = ngnbRate.finalPrice;
     }
 
     const storedCount = await PriceChange.storePrices(prices);
