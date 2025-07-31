@@ -31,6 +31,22 @@ async function getCurrencyPrice(currency) {
 }
 
 /**
+ * Determine swap type based on currencies involved
+ */
+function getSwapType(fromCurrency, toCurrency) {
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  
+  if (from === 'NGNZ' && to !== 'NGNZ') {
+    return 'onramp'; // NGNZ to crypto
+  } else if (from !== 'NGNZ' && to === 'NGNZ') {
+    return 'offramp'; // crypto to NGNZ
+  } else {
+    return 'crypto_to_crypto'; // crypto to crypto
+  }
+}
+
+/**
  * Create swap transaction records
  */
 async function createSwapTransactions({
@@ -91,9 +107,21 @@ async function createSwapTransactions({
     }
   });
 
-  // Save both transactions
+  // Save both transactions within the session
   await swapOutTransaction.save({ session });
   await swapInTransaction.save({ session });
+
+  logger.info('Swap transactions created', {
+    userId,
+    swapReference,
+    fromCurrency,
+    toCurrency,
+    fromAmount,
+    toAmount,
+    swapType,
+    outTransactionId: swapOutTransaction._id,
+    inTransactionId: swapInTransaction._id
+  });
 
   return {
     swapOutTransaction,
@@ -105,95 +133,111 @@ async function createSwapTransactions({
 /**
  * updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount, toAmount)
  *
- *  - Creates a SWAP transaction pair
- *  - Adjusts on‑chain balances atomically
- *  - Throws on insufficient balance or DB errors
+ * - Creates a SWAP transaction pair
+ * - Adjusts balances atomically using MongoDB transactions
+ * - Updates both regular balances and USD balances
+ * - Throws on insufficient balance or DB errors
  */
 async function updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount, toAmount) {
   const session = await mongoose.startSession();
   session.startTransaction();
+  
   try {
-    const u = await User.findById(userId).session(session);
-    if (!u) throw new Error('User not found');
-
-    const fromKey = fromCurrency.toLowerCase() + 'Balance';
-    const toKey   = toCurrency.toLowerCase()   + 'Balance';
-
-    // check balance
-    if ((u[fromKey] || 0) < fromAmount) {
-      throw new Error(`Insufficient ${fromCurrency} balance`);
+    // 1. Validate user exists and has sufficient balance
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      throw new Error('User not found');
     }
 
-    // prices for USD‐fields
+    const fromKey = fromCurrency.toLowerCase() + 'Balance';
+    const toKey = toCurrency.toLowerCase() + 'Balance';
+    const currentBalance = user[fromKey] || 0;
+
+    if (currentBalance < fromAmount) {
+      throw new Error(
+        `Insufficient ${fromCurrency} balance. Available: ${currentBalance}, Required: ${fromAmount}`
+      );
+    }
+
+    // 2. Get current prices for USD balance calculations
     const [fromPrice, toPrice] = await Promise.all([
       getCurrencyPrice(fromCurrency),
       getCurrencyPrice(toCurrency)
     ]);
+    
     const fromUsdDelta = fromAmount * fromPrice;
-    const toUsdDelta   = toAmount   * toPrice;
+    const toUsdDelta = toAmount * toPrice;
 
-    // Determine swap type based on currencies
-    let swapType;
-    if (fromCurrency.toUpperCase() === 'NGNZ') {
-      swapType = 'onramp'; // NGNZ to crypto
-    } else if (toCurrency.toUpperCase() === 'NGNZ') {
-      swapType = 'offramp'; // crypto to NGNZ
-    } else {
-      swapType = 'crypto_to_crypto'; // crypto to crypto
-    }
+    // 3. Determine swap type
+    const swapType = getSwapType(fromCurrency, toCurrency);
 
-    // 1) create swap transactions
-    const { swapOutTransaction, swapInTransaction, swapId } =
-      await createSwapTransactions({
-        userId,
-        fromCurrency,
-        toCurrency,
-        fromAmount,
-        toAmount,
-        swapType,
-        session
-      });
+    // 4. Create swap transaction records
+    const { swapOutTransaction, swapInTransaction, swapId } = await createSwapTransactions({
+      userId,
+      fromCurrency,
+      toCurrency,
+      fromAmount,
+      toAmount,
+      swapType,
+      session
+    });
 
-    // 2) adjust balances
-    const res = await User.findOneAndUpdate(
-      { _id: userId, [fromKey]: { $gte: fromAmount } },
+    // 5. Update user balances atomically
+    const updatedUser = await User.findOneAndUpdate(
+      { 
+        _id: userId, 
+        [fromKey]: { $gte: fromAmount } // Double-check balance in update query
+      },
       {
         $inc: {
-          [fromKey]:              -fromAmount,
-          [toKey]:                 toAmount,
+          [fromKey]: -fromAmount,
+          [toKey]: toAmount,
           [`${fromCurrency.toLowerCase()}BalanceUSD`]: -fromUsdDelta,
-          [`${toCurrency.toLowerCase()}BalanceUSD`]:    toUsdDelta
+          [`${toCurrency.toLowerCase()}BalanceUSD`]: toUsdDelta
         },
         $set: { portfolioLastUpdated: new Date() }
       },
-      { new: true, runValidators: true, session }
+      { 
+        new: true, 
+        runValidators: true, 
+        session 
+      }
     );
-    if (!res) throw new Error('Balance update failed - insufficient balance or user not found');
 
+    if (!updatedUser) {
+      throw new Error('Balance update failed - insufficient balance or user not found during update');
+    }
+
+    // 6. Commit the transaction
     await session.commitTransaction();
     session.endSession();
 
-    logger.info('Swap complete', {
+    logger.info('Swap completed successfully', {
       userId, 
       swapId,
       fromCurrency, 
       toCurrency, 
       fromAmount, 
       toAmount,
+      swapType,
       swapOutTransactionId: swapOutTransaction._id,
-      swapInTransactionId: swapInTransaction._id
+      swapInTransactionId: swapInTransaction._id,
+      newFromBalance: updatedUser[fromKey],
+      newToBalance: updatedUser[toKey]
     });
 
     return {
-      user: res,
+      user: updatedUser,
       swapOutTransaction,
       swapInTransaction,
       swapId
     };
 
   } catch (err) {
+    // Rollback transaction on any error
     await session.abortTransaction();
     session.endSession();
+    
     logger.error('Swap balance service failed', { 
       error: err.message,
       stack: err.stack,
@@ -203,11 +247,14 @@ async function updateBalancesOnSwap(userId, fromCurrency, toCurrency, fromAmount
       fromAmount,
       toAmount
     });
+    
     throw err;
   }
 }
 
 module.exports = {
   updateBalancesOnSwap,
-  getCurrencyPrice
+  getCurrencyPrice,
+  getSwapType,
+  createSwapTransactions
 };

@@ -1,13 +1,13 @@
 // routes/ngnzSwap.js
 
 const express = require('express');
+const mongoose = require('mongoose');
 const onrampService  = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
-const { getPricesWithCache }         = require('../services/portfolio');
-const { updateBalancesOnSwap }       = require('../services/swapBalanceService');
-const Transaction                    = require('../models/transaction');
-const User                           = require('../models/user');
-const logger                         = require('../utils/logger');
+const { getPricesWithCache } = require('../services/portfolio');
+const Transaction = require('../models/transaction');
+const User = require('../models/user');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 const ngnzQuoteCache = new Map();
@@ -50,6 +50,144 @@ async function validateNGNZSwap(from, to) {
   };
 }
 
+/**
+ * Execute NGNZ swap with atomic balance updates and transaction creation
+ */
+async function executeNGNZSwap(userId, quote) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { sourceCurrency, targetCurrency, amount, amountReceived, flow, type } = quote;
+    
+    // Balance field names
+    const fromKey = sourceCurrency.toLowerCase() + 'Balance';
+    const toKey = targetCurrency.toLowerCase() + 'Balance';
+    
+    // Generate swap reference
+    const swapReference = `NGNZ_SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // 1. Update balances atomically with balance validation
+    const updatedUser = await User.findOneAndUpdate(
+      { 
+        _id: userId, 
+        [fromKey]: { $gte: amount } // Ensure sufficient balance
+      },
+      {
+        $inc: {
+          [fromKey]: -amount,      // Deduct source currency
+          [toKey]: amountReceived  // Add target currency
+        },
+        $set: { 
+          lastBalanceUpdate: new Date(),
+          portfolioLastUpdated: new Date()
+        }
+      },
+      { 
+        new: true, 
+        runValidators: true, 
+        session 
+      }
+    );
+
+    if (!updatedUser) {
+      throw new Error(`Balance update failed - insufficient ${sourceCurrency} balance or user not found`);
+    }
+
+    // 2. Create outgoing transaction (debit)
+    const swapOutTransaction = new Transaction({
+      userId,
+      type: 'SWAP',
+      currency: sourceCurrency,
+      amount: -amount, // Negative for outgoing
+      status: 'SUCCESSFUL',
+      source: 'INTERNAL',
+      reference: swapReference,
+      obiexTransactionId: `${swapReference}_OUT`,
+      narration: `NGNZ ${flow}: Swap ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency}`,
+      completedAt: new Date(),
+      metadata: {
+        swapDirection: 'OUT',
+        swapType: type,
+        flow: flow,
+        exchangeRate: amountReceived / amount,
+        relatedTransactionRef: swapReference,
+        fromCurrency: sourceCurrency,
+        toCurrency: targetCurrency,
+        fromAmount: amount,
+        toAmount: amountReceived
+      }
+    });
+
+    // 3. Create incoming transaction (credit)
+    const swapInTransaction = new Transaction({
+      userId,
+      type: 'SWAP',
+      currency: targetCurrency,
+      amount: amountReceived, // Positive for incoming
+      status: 'SUCCESSFUL',
+      source: 'INTERNAL',
+      reference: swapReference,
+      obiexTransactionId: `${swapReference}_IN`,
+      narration: `NGNZ ${flow}: Swap ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency}`,
+      completedAt: new Date(),
+      metadata: {
+        swapDirection: 'IN',
+        swapType: type,
+        flow: flow,
+        exchangeRate: amountReceived / amount,
+        relatedTransactionRef: swapReference,
+        fromCurrency: sourceCurrency,
+        toCurrency: targetCurrency,
+        fromAmount: amount,
+        toAmount: amountReceived
+      }
+    });
+
+    // 4. Save both transactions
+    await swapOutTransaction.save({ session });
+    await swapInTransaction.save({ session });
+
+    // 5. Commit everything
+    await session.commitTransaction();
+    session.endSession();
+
+    logger.info('NGNZ swap executed successfully', {
+      userId,
+      swapReference,
+      flow,
+      sourceCurrency,
+      targetCurrency,
+      sourceAmount: amount,
+      targetAmount: amountReceived,
+      newFromBalance: updatedUser[fromKey],
+      newToBalance: updatedUser[toKey],
+      outTransactionId: swapOutTransaction._id,
+      inTransactionId: swapInTransaction._id
+    });
+
+    return {
+      user: updatedUser,
+      swapOutTransaction,
+      swapInTransaction,
+      swapId: swapReference
+    };
+
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    
+    logger.error('NGNZ swap execution failed', {
+      error: err.message,
+      stack: err.stack,
+      userId,
+      quote
+    });
+    
+    throw err;
+  }
+}
+
 router.post('/quote', async (req, res) => {
   try {
     const { from, to, amount, side } = req.body;
@@ -88,7 +226,6 @@ router.post('/quote', async (req, res) => {
 
     if (isOnramp) {
       // NGNZ to Crypto (Onramp)
-      // Need to get crypto price for the target currency
       const cryptoPrices = await getPricesWithCache([targetCurrency]);
       cryptoPrice = cryptoPrices[targetCurrency];
       
@@ -111,7 +248,6 @@ router.post('/quote', async (req, res) => {
       logger.info(`Onramp result: ${receiveAmount} ${targetCurrency} at rate ₦${rate}/$1`);
     } else {
       // Crypto to NGNZ (Offramp)
-      // Need to get crypto price for the source currency
       const cryptoPrices = await getPricesWithCache([sourceCurrency]);
       cryptoPrice = cryptoPrices[sourceCurrency];
       
@@ -137,15 +273,13 @@ router.post('/quote', async (req, res) => {
     const id = `ngnz_${flow.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const expiresAt = new Date(Date.now() + 30000).toISOString(); // 30 seconds
 
-    // Calculate USD values for better UX
+    // Calculate USD values for display (optional)
     let sourceAmountUSD, targetAmountUSD;
     
     if (isOnramp) {
-      // NGNZ to Crypto
       sourceAmountUSD = amount / rate; // NGNZ amount ÷ rate = USD
       targetAmountUSD = receiveAmount * cryptoPrice; // crypto amount × price = USD
     } else {
-      // Crypto to NGNZ  
       sourceAmountUSD = amount * cryptoPrice; // crypto amount × price = USD
       targetAmountUSD = receiveAmount / rate; // NGNZ amount ÷ rate = USD
     }
@@ -157,7 +291,7 @@ router.post('/quote', async (req, res) => {
       sourceAmountUSD: parseFloat(sourceAmountUSD.toFixed(6)),
       targetAmountUSD: parseFloat(targetAmountUSD.toFixed(6)),
       rate,
-      cryptoPrice, // Include crypto price for reference
+      cryptoPrice,
       side,
       sourceCurrency,
       targetCurrency,
@@ -227,50 +361,21 @@ router.post('/quote/:quoteId', async (req, res) => {
       });
     }
 
-    // Create swap transaction
-    const swapTx = await Transaction.createSwapTransactions({
-      userId,
-      quoteId,
-      sourceCurrency: quote.sourceCurrency,
-      targetCurrency: quote.targetCurrency,
-      sourceAmount: quote.amount,
-      targetAmount: quote.amountReceived,
-      exchangeRate: quote.amountReceived / quote.amount,
-      swapType: quote.type,
-      provider: quote.provider,
-      markdownApplied: 0,
-      swapFee: 0,
-      quoteExpiresAt: new Date(quote.expiresAt),
-      status: 'SUCCESSFUL',
-      obiexTransactionId: `ngnz_${quote.flow.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    });
+    // Execute swap directly (like your webhook does)
+    const swapResult = await executeNGNZSwap(userId, quote);
 
-    logger.info('NGNZ swap transactions created', { 
+    logger.info('NGNZ swap completed', { 
       userId, 
       quoteId, 
-      swapId: swapTx.swapId,
-      flow: quote.flow 
-    });
-
-    // Update balances
-    await updateBalancesOnSwap(
-      userId,
-      quote.sourceCurrency,
-      quote.targetCurrency,
-      quote.amount,
-      quote.amountReceived
-    );
-
-    logger.info('NGNZ swap balances updated', { 
-      userId, 
-      flow: quote.flow 
+      swapId: swapResult.swapId,
+      flow: quote.flow
     });
 
     // Clean up quote from cache
     ngnzQuoteCache.delete(quoteId);
 
     const responsePayload = {
-      swapId: swapTx.swapId,
+      swapId: swapResult.swapId,
       quoteId,
       status: 'SUCCESSFUL',
       flow: quote.flow,
@@ -284,10 +389,16 @@ router.post('/quote/:quoteId', async (req, res) => {
         swapType: quote.type
       },
       transactions: {
-        swapId: swapTx.swapId,
-        obiexTransactionId: swapTx.obiexTransactionId
+        swapId: swapResult.swapId,
+        swapOutTransactionId: swapResult.swapOutTransaction._id,
+        swapInTransactionId: swapResult.swapInTransaction._id,
+        obiexTransactionId: swapResult.swapId
       },
-      balanceUpdated: true
+      balanceUpdated: true,
+      newBalances: {
+        [quote.sourceCurrency.toLowerCase()]: swapResult.user[`${quote.sourceCurrency.toLowerCase()}Balance`],
+        [quote.targetCurrency.toLowerCase()]: swapResult.user[`${quote.targetCurrency.toLowerCase()}Balance`]
+      }
     };
 
     return res.json({
@@ -297,10 +408,15 @@ router.post('/quote/:quoteId', async (req, res) => {
     });
 
   } catch (err) {
-    logger.error('POST /ngnz-swap/quote/:quoteId error', { error: err.stack });
+    logger.error('POST /ngnz-swap/quote/:quoteId error', { 
+      error: err.stack,
+      userId: req.user?.id,
+      quoteId: req.params?.quoteId
+    });
+    
     return res.status(500).json({ 
       success: false, 
-      message: 'Internal server error' 
+      message: err.message || 'Swap failed - please try again'
     });
   }
 });
@@ -308,7 +424,6 @@ router.post('/quote/:quoteId', async (req, res) => {
 // Get supported currencies for NGNZ swaps
 router.get('/supported-currencies', (req, res) => {
   try {
-    // Match the cryptocurrencies supported in your other services
     const supportedCurrencies = [
       { code: 'BTC', name: 'Bitcoin', type: 'cryptocurrency' },
       { code: 'ETH', name: 'Ethereum', type: 'cryptocurrency' },
