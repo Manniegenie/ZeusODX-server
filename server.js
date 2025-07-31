@@ -113,6 +113,7 @@ const pricemarkdownRoutes = require('./adminRoutes/pricemarkdown');
 const swapRoutes = require('./routes/swap');
 const ngnzSwapRoutes = require('./routes/NGNZSwaps');
 const cablepackagesRoutes = require('./routes/cabletvpackages');
+const kycRoutes = require('./routes/KYC');
 
 
 // Public Routes
@@ -164,6 +165,7 @@ app.use("/dashboard", authenticateToken, dashboardRoutes);
 app.use("/swap", authenticateToken, swapRoutes);
 app.use("/ngnz-swap", authenticateToken, ngnzSwapRoutes);
 app.use("/cable-packages", authenticateToken, cablepackagesRoutes);
+app.use("/kyc", authenticateToken, kycRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
