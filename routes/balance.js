@@ -7,14 +7,14 @@ const logger = require('../utils/logger');
 /**
  * OPTIMIZED: Calculate USD balances on-demand using cached prices
  * @param {Object} user - User document with token balances
- * @returns {Promise<Object>} Object with calculated USD balances and totall
+ * @returns {Promise<Object>} Object with calculated USD balances and total
  */
 async function calculateUSDBalances(user) {
   try {
     // Get all supported tokens
     const tokens = Object.keys(SUPPORTED_TOKENS);
     
-    // Get current prices with offramp rate for NGNB
+    // Get current prices with offramp rate for NGNZ
     const prices = await getPricesWithCache(tokens, 'portfolio');
     
     const calculatedBalances = {};
@@ -43,7 +43,7 @@ async function calculateUSDBalances(user) {
         tokenAmount,
         tokenPrice,
         usdValue: calculatedBalances[usdBalanceField],
-        usingDynamicRate: token === 'NGNB'
+        usingDynamicRate: token === 'NGNZ'
       });
     }
     
@@ -90,7 +90,7 @@ router.post('/balance', async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid "types" array in request body' });
     }
 
-    // UPDATED: Complete list of allowed balance fields (token + calculated USD + pending + total)
+    // FIXED: Complete list of allowed balance fields (using NGNZ not NGNB)
     const allowedFields = [
       // SOL balances
       'solBalance', 'solBalanceUSD', 'solPendingBalance',
@@ -116,8 +116,8 @@ router.post('/balance', async (req, res) => {
       // AVAX balances
       'avaxBalance', 'avaxBalanceUSD', 'avaxPendingBalance',
       
-      // NGNB balances
-      'ngnbBalance', 'ngnbBalanceUSD', 'ngnbPendingBalance',
+      // NGNZ balances (FIXED: was ngnbBalance)
+      'ngnzBalance', 'ngnzBalanceUSD', 'ngnzPendingBalance',
       
       // Total portfolio
       'totalPortfolioBalance'
