@@ -1,19 +1,19 @@
-// routes/kyc.js - Updated KYC Route (export line removed)
+// routes/kyc.js - Cleaned KYC Routes
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
 const KYC = require('../models/kyc');
-const { kycLimitService } = require('../services/kyccheckservice'); // Your existing service
+const { kycLimitService } = require('../services/kyccheckservice');
 
 // ==========================================
-// 1. INITIATE KYC PROCESS (with pre-validation)
+// 1. INITIATE KYC PROCESS
 // ==========================================
 router.post('/initiate', async (req, res) => {
   try {
     const { kycLevel, documentType } = req.body;
     const userId = req.user.id;
 
-    // 1. FIRST: Check current KYC status using your existing service
+    // Check current KYC status
     const currentLimits = await kycLimitService.checkLimitsOnly(userId);
     
     if (!currentLimits) {
@@ -23,7 +23,7 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    // 2. Validate KYC level request
+    // Validate KYC level request
     if (!kycLevel || ![1, 2, 3].includes(parseInt(kycLevel))) {
       return res.status(400).json({
         success: false,
@@ -31,7 +31,7 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    // 3. Check if user already has this KYC level
+    // Check if user already has this KYC level
     if (currentLimits.kycLevel >= parseInt(kycLevel)) {
       return res.status(409).json({
         success: false,
@@ -44,7 +44,7 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    // 4. Check prerequisites for Level 2 and 3
+    // Check prerequisites for Level 2 and 3
     if (parseInt(kycLevel) > 1 && currentLimits.kycLevel < parseInt(kycLevel) - 1) {
       const requiredLevel = parseInt(kycLevel) - 1;
       return res.status(400).json({
@@ -58,10 +58,10 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    // 5. Get user details for SDK config
+    // Get user details
     const user = await User.findById(userId);
     
-    // 6. Check if there's already a pending KYC for this level
+    // Check if there's already a pending KYC for this level
     const pendingKyc = await KYC.findOne({
       userId,
       kycLevel: parseInt(kycLevel),
@@ -81,10 +81,10 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    // 7. Generate unique customer reference
+    // Generate unique customer reference
     const customerReference = `KYC_${userId}_L${kycLevel}_${Date.now()}`;
     
-    // 8. Create new KYC record
+    // Create new KYC record
     const kycRecord = new KYC({
       userId,
       userEmail: user.email,
@@ -108,7 +108,7 @@ router.post('/initiate', async (req, res) => {
 
     await kycRecord.save();
 
-    // 9. Generate SDK configuration for React Native
+    // Generate SDK configuration
     const sdkConfig = {
       flowId: 0,
       clientId: process.env.QOREID_CLIENT_ID,
@@ -160,14 +160,14 @@ router.post('/initiate', async (req, res) => {
 });
 
 // ==========================================
-// 2. PROCESS OCR RESULTS (with limit validation)
+// 2. PROCESS OCR RESULTS
 // ==========================================
 router.post('/process-ocr', async (req, res) => {
   try {
     const { customerReference, ocrData } = req.body;
     const userId = req.user.id;
 
-    // 1. Validate request
+    // Validate request
     if (!customerReference || !ocrData) {
       return res.status(400).json({
         success: false,
@@ -175,7 +175,7 @@ router.post('/process-ocr', async (req, res) => {
       });
     }
 
-    // 2. Find KYC record
+    // Find KYC record
     const kycRecord = await KYC.findOne({
       userId,
       'qoreIdData.customerReference': customerReference,
@@ -189,7 +189,7 @@ router.post('/process-ocr', async (req, res) => {
       });
     }
 
-    // 3. Update KYC record with OCR data
+    // Update KYC record with OCR data
     kycRecord.qoreIdData = {
       ...kycRecord.qoreIdData,
       success: ocrData.success || false,
@@ -202,7 +202,7 @@ router.post('/process-ocr', async (req, res) => {
 
     kycRecord.processedAt = new Date();
 
-    // 4. Determine KYC status based on OCR results
+    // Determine KYC status based on OCR results
     let newStatus = 'failed';
     let approvalReason = '';
 
@@ -222,29 +222,25 @@ router.post('/process-ocr', async (req, res) => {
 
     kycRecord.kycStatus = newStatus;
 
-    // 5. Add status history
+    // Add status history
     kycRecord.statusHistory.push({
       status: newStatus,
       reason: approvalReason,
       changedAt: new Date()
     });
 
-    // 6. Validate extracted information
+    // Validate extracted information
     if (ocrData.extractedInfo) {
       kycRecord.verificationResults = validateExtractedInfo(ocrData.extractedInfo, kycRecord.kycLevel);
     }
 
     await kycRecord.save();
 
-    // 7. Update User model if KYC is approved
+    // Update User model if KYC is approved
     let updatedLimits = null;
     if (newStatus === 'approved') {
       await updateUserKycStatus(userId, kycRecord);
-      
-      // 8. Get updated limits after KYC approval using your service
       updatedLimits = await kycLimitService.checkLimitsOnly(userId);
-      
-      // 9. Clear user cache since KYC level changed
       kycLimitService.clearUserCache(userId);
     }
 
@@ -259,7 +255,6 @@ router.post('/process-ocr', async (req, res) => {
         verificationId: kycRecord.qoreIdData.verificationId,
         extractedInfo: kycRecord.qoreIdData.extractedInfo,
         approvalReason,
-        // Include updated limits if approved
         updatedLimits: updatedLimits ? {
           newKycLevel: updatedLimits.kycLevel,
           newLimits: updatedLimits.limits,
@@ -278,13 +273,13 @@ router.post('/process-ocr', async (req, res) => {
 });
 
 // ==========================================
-// 3. GET KYC STATUS (enhanced with spending info)
+// 3. GET KYC STATUS (with detailed limits)
 // ==========================================
 router.get('/status', async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Use your existing service to get comprehensive KYC info
+    // Get comprehensive KYC info
     const currentLimits = await kycLimitService.checkLimitsOnly(userId);
     
     if (!currentLimits) {
@@ -301,6 +296,14 @@ router.get('/status', async (req, res) => {
 
     const user = await User.findById(userId);
 
+    // Get current crypto prices for display
+    let currentPrices = null;
+    try {
+      currentPrices = await kycLimitService.getCurrentPrices();
+    } catch (error) {
+      console.warn('Could not fetch current prices:', error.message);
+    }
+
     res.json({
       success: true,
       data: {
@@ -308,12 +311,29 @@ router.get('/status', async (req, res) => {
         currentKycLevel: currentLimits.kycLevel,
         kycStatus: user.kycStatus,
         
-        // Current limits and spending from your service
-        limits: currentLimits.limits,
-        currentSpending: currentLimits.currentSpending,
-        remaining: currentLimits.remaining,
+        // Current limits and spending
+        limits: {
+          daily: currentLimits.limits.daily,
+          monthly: currentLimits.limits.monthly,
+          description: currentLimits.limits.description
+        },
+        currentSpending: {
+          daily: currentLimits.currentSpending.daily,
+          monthly: currentLimits.currentSpending.monthly,
+          breakdown: currentLimits.currentSpending.breakdown
+        },
+        remaining: {
+          daily: currentLimits.remaining.daily,
+          monthly: currentLimits.remaining.monthly
+        },
         
-        // Individual level statuses from your User model
+        // Utilization percentages
+        utilizationPercentage: {
+          daily: (currentLimits.currentSpending.daily / currentLimits.limits.daily * 100).toFixed(1),
+          monthly: (currentLimits.currentSpending.monthly / currentLimits.limits.monthly * 100).toFixed(1)
+        },
+        
+        // Individual level statuses
         kyc: {
           level1: user.kyc.level1,
           level2: user.kyc.level2,
@@ -331,8 +351,15 @@ router.get('/status', async (req, res) => {
           processedAt: record.processedAt
         })),
         
-        // Upgrade recommendation
-        upgradeRecommendation: kycLimitService.getUpgradeRecommendation(currentLimits.kycLevel)
+        // Upgrade info
+        upgradeInfo: {
+          canUpgrade: currentLimits.kycLevel < 3,
+          nextLevel: currentLimits.kycLevel < 3 ? currentLimits.kycLevel + 1 : null,
+          upgradeRecommendation: kycLimitService.getUpgradeRecommendation(currentLimits.kycLevel)
+        },
+        
+        // Current prices for conversion display
+        currentPrices
       }
     });
 
@@ -341,179 +368,6 @@ router.get('/status', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to get KYC status'
-    });
-  }
-});
-
-// ==========================================
-// 4. VALIDATE TRANSACTION BEFORE PROCESSING
-// ==========================================
-router.post('/validate-transaction', async (req, res) => {
-  try {
-    const { amount, currency = 'NGNB', transactionType = 'WITHDRAWAL' } = req.body;
-    const userId = req.user.id;
-
-    // Validate input
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Valid amount is required'
-      });
-    }
-
-    // Use your existing KYC limit service to validate
-    const validationResult = await kycLimitService.validateTransactionLimit(
-      userId, 
-      amount, 
-      currency, 
-      transactionType
-    );
-
-    // Return the validation result with standardized format
-    if (validationResult.allowed) {
-      res.json({
-        success: true,
-        message: validationResult.message,
-        allowed: true,
-        data: validationResult.data
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        error: validationResult.message,
-        allowed: false,
-        code: validationResult.code,
-        data: validationResult.data
-      });
-    }
-
-  } catch (error) {
-    console.error('Transaction validation error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to validate transaction'
-    });
-  }
-});
-
-// ==========================================
-// 5. GET DETAILED LIMITS AND SPENDING
-// ==========================================
-router.get('/limits-detailed', async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    // Get comprehensive limits info using your service
-    const limitsInfo = await kycLimitService.checkLimitsOnly(userId);
-    
-    if (!limitsInfo) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
-      });
-    }
-
-    // Get current crypto prices for display
-    const currentPrices = await kycLimitService.getCurrentPrices();
-
-    res.json({
-      success: true,
-      data: {
-        kycLevel: limitsInfo.kycLevel,
-        limits: {
-          daily: limitsInfo.limits.daily,
-          monthly: limitsInfo.limits.monthly,
-          description: limitsInfo.limits.description
-        },
-        currentSpending: {
-          daily: limitsInfo.currentSpending.daily,
-          monthly: limitsInfo.currentSpending.monthly,
-          breakdown: limitsInfo.currentSpending.breakdown
-        },
-        remaining: {
-          daily: limitsInfo.remaining.daily,
-          monthly: limitsInfo.remaining.monthly
-        },
-        utilizationPercentage: {
-          daily: (limitsInfo.currentSpending.daily / limitsInfo.limits.daily * 100).toFixed(1),
-          monthly: (limitsInfo.currentSpending.monthly / limitsInfo.limits.monthly * 100).toFixed(1)
-        },
-        upgradeInfo: {
-          canUpgrade: limitsInfo.kycLevel < 3,
-          nextLevel: limitsInfo.kycLevel < 3 ? limitsInfo.kycLevel + 1 : null,
-          upgradeRecommendation: kycLimitService.getUpgradeRecommendation(limitsInfo.kycLevel)
-        },
-        currentPrices // For currency conversion display
-      }
-    });
-
-  } catch (error) {
-    console.error('Detailed limits error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get detailed limits'
-    });
-  }
-});
-
-// ==========================================
-// 6. TEST CURRENCY CONVERSION (for debugging)
-// ==========================================
-router.post('/test-conversion', async (req, res) => {
-  try {
-    const { amount, currency } = req.body;
-
-    if (!amount || !currency) {
-      return res.status(400).json({
-        success: false,
-        error: 'Amount and currency are required'
-      });
-    }
-
-    const conversionResult = await kycLimitService.testConversion(amount, currency);
-
-    res.json({
-      success: conversionResult.success,
-      data: conversionResult
-    });
-
-  } catch (error) {
-    console.error('Conversion test error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to test conversion'
-    });
-  }
-});
-
-// ==========================================
-// 7. CLEAR USER CACHE (for admin use)
-// ==========================================
-router.post('/clear-cache/:userId?', async (req, res) => {
-  try {
-    const targetUserId = req.params.userId || req.user.id;
-
-    if (req.params.userId && req.user.id !== req.params.userId) {
-      // Add admin check here if needed
-      // For now, users can only clear their own cache
-      return res.status(403).json({
-        success: false,
-        error: 'Can only clear your own cache'
-      });
-    }
-
-    kycLimitService.clearUserCache(targetUserId);
-
-    res.json({
-      success: true,
-      message: 'User cache cleared successfully'
-    });
-
-  } catch (error) {
-    console.error('Cache clear error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to clear cache'
     });
   }
 });
@@ -608,7 +462,7 @@ async function updateUserKycStatus(userId, kycRecord) {
     user.kycLevel = Math.max(user.kycLevel, kycRecord.kycLevel);
     user.kycStatus = 'approved';
 
-    // Update specific KYC level status in your existing kyc structure
+    // Update specific KYC level status
     const levelKey = `level${kycRecord.kycLevel}`;
     user.kyc[levelKey].status = 'approved';
     user.kyc[levelKey].approvedAt = new Date();
