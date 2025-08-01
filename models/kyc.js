@@ -2,12 +2,12 @@
 const mongoose = require('mongoose');
 
 const kycSchema = new mongoose.Schema({
-  // User reference
+  // User reference - REMOVED index: true to avoid duplicate
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    index: true
+    required: true
+    // ❌ REMOVED: index: true (causing duplicate with schema.index below)
   },
 
   // NIN Verification
@@ -231,7 +231,7 @@ kycSchema.pre('save', function(next) {
   next();
 });
 
-// Index for efficient queries
+// ✅ SINGLE INDEX DEFINITION - unique index for efficient queries
 kycSchema.index({ userId: 1 }, { unique: true });
 
 // KYC Methods
