@@ -6,10 +6,11 @@ const router = express.Router();
 const User = require("../models/user");
 const config = require("./config");
 const logger = require("../utils/logger");
-// const { sendLoginEmail } = require("../services/EmailService"); // COMMENTED OUT
+const { sendLoginEmail } = require("../services/EmailService"); // UNCOMMENTED
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
+const LOGIN_EMAIL_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
 
 // JWT secrets validation function
 const validateJWTSecrets = () => {
@@ -102,7 +103,6 @@ router.post(
       user.loginAttempts = 0;
       user.lockUntil = null;
       user.lastFailedLogin = null;
-      await user.save();
 
       // Validate JWT configuration
       let jwtSecrets;
@@ -119,20 +119,36 @@ router.post(
       // Store refresh token (keep only last 5 tokens)
       user.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
       if (user.refreshTokens.length > 5) user.refreshTokens = user.refreshTokens.slice(-5);
-      await user.save();
 
-      // **Send login email** - COMMENTED OUT
-      /*
-      try {
-        const device = req.get('User-Agent') || "Unknown Device";
-        const location = req.ip || "Unknown Location";
-        const time = new Date().toLocaleString();
-        await sendLoginEmail(user.email, user.firstname || user.username || "User", device, location, time);
-        logger.info("Login email sent", { userId: user._id, email: user.email });
-      } catch (emailError) {
-        logger.error("Failed to send login email", { userId: user._id, error: emailError.message });
+      // **Send login email with cooldown logic**
+      const now = new Date();
+      const shouldSendEmail = !user.lastLoginEmailSent || 
+                             (now.getTime() - user.lastLoginEmailSent.getTime()) >= LOGIN_EMAIL_COOLDOWN;
+
+      if (shouldSendEmail) {
+        try {
+          const device = req.get('User-Agent') || "Unknown Device";
+          const location = req.ip || "Unknown Location";
+          const time = now.toLocaleString();
+          await sendLoginEmail(user.email, user.firstname || user.username || "User", device, location, time);
+          
+          // Update last login email sent time
+          user.lastLoginEmailSent = now;
+          logger.info("Login email sent", { userId: user._id, email: user.email });
+        } catch (emailError) {
+          logger.error("Failed to send login email", { userId: user._id, error: emailError.message });
+          // Don't fail the login if email fails, but don't update lastLoginEmailSent either
+        }
+      } else {
+        const timeSinceLastEmail = Math.round((now.getTime() - user.lastLoginEmailSent.getTime()) / (60 * 1000));
+        logger.info("Login email skipped due to cooldown", { 
+          userId: user._id, 
+          timeSinceLastEmail: `${timeSinceLastEmail} minutes`,
+          cooldownMinutes: LOGIN_EMAIL_COOLDOWN / (60 * 1000)
+        });
       }
-      */
+
+      await user.save();
 
       res.status(200).json({
         success: true,

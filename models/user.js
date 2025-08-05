@@ -59,6 +59,7 @@ const userSchema = new mongoose.Schema({
   lockUntil: { type: Date, default: null },
   failedLoginAttempts: { type: Number, default: 0 },
   lastFailedLogin: { type: Date },
+  lastLoginEmailSent: { type: Date, default: null },
 
   // Wallets
   wallets: {
