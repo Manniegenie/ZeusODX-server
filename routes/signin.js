@@ -6,7 +6,7 @@ const router = express.Router();
 const User = require("../models/user");
 const config = require("./config");
 const logger = require("../utils/logger");
-const { sendLoginEmail } = require("../services/EmailService"); 
+// const { sendLoginEmail } = require("../services/EmailService"); // COMMENTED OUT
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
@@ -121,7 +121,8 @@ router.post(
       if (user.refreshTokens.length > 5) user.refreshTokens = user.refreshTokens.slice(-5);
       await user.save();
 
-      // **Send login email**
+      // **Send login email** - COMMENTED OUT
+      /*
       try {
         const device = req.get('User-Agent') || "Unknown Device";
         const location = req.ip || "Unknown Location";
@@ -131,6 +132,7 @@ router.post(
       } catch (emailError) {
         logger.error("Failed to send login email", { userId: user._id, error: emailError.message });
       }
+      */
 
       res.status(200).json({
         success: true,
