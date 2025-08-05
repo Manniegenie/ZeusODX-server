@@ -34,8 +34,12 @@ async function sendEmail({ to, name, templateId, params = {}, options = {} }) {
     });
 
     const response = await apiInstance.sendTransacEmail(email);
-    console.log(`Email sent successfully to ${to}:`, response.messageId || response);
-    return response;
+    
+    // Clean logging - just log the message ID
+    const messageId = response.body?.messageId || response.messageId || 'No message ID';
+    console.log(`Email sent successfully to ${to}: ${messageId}`);
+    
+    return { success: true, messageId, response: messageId };
   } catch (error) {
     console.error(`Error sending email to ${to}:`, {
       message: error.message,
