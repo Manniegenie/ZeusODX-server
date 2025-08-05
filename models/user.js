@@ -5,48 +5,37 @@ const SALT_WORK_FACTOR = 10;
 
 const userSchema = new mongoose.Schema({
   // Authentication
-  username: { type: String }, // Unique index defined below with sparse
-  isUsernameCustom: { type: Boolean, default: false }, // Track if username has been customized
-  email: { type: String, required: true, unique: true }, // Only field-level unique constraint
+  username: { type: String }, 
+  isUsernameCustom: { type: Boolean, default: false },
+  email: { type: String, required: true, unique: true },
   password: { type: String },
   passwordpin: { type: String },
   transactionpin: { type: String },
   securitypin: { type: String },
 
-  // Personal Information
+  // Personal Info
   firstname: { type: String },
   lastname: { type: String },
-  phonenumber: { type: String }, // Unique index defined below with sparse
-  bvn: { type: String }, // Unique index defined below with sparse
-  DoB: { type: String },
+  phonenumber: { type: String },
+  bvn: { type: String },
 
   // Avatar
   avatarUrl: { type: String, default: null },
   avatarLastUpdated: { type: Date, default: null },
 
-  // KYC Verification Levels
-  kycLevel: { 
-    type: Number, 
-    default: 0, 
-    min: 0, 
-    max: 3,
-    enum: [0, 1, 2, 3]
-  },
-  kycStatus: { 
-    type: String, 
-    default: 'not_verified',
-    enum: ['not_verified', 'pending', 'approved', 'rejected', 'under_review']
-  },
+  // KYC Levels
+  kycLevel: { type: Number, default: 0, min: 0, max: 3, enum: [0,1,2,3] },
+  kycStatus: { type: String, default: 'not_verified', enum: ['not_verified','pending','approved','rejected','under_review'] },
   kyc: {
     level1: {
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
+      status: { type: String, default: 'not_submitted', enum: ['not_submitted','pending','approved','rejected'] },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
       rejectionReason: { type: String, default: null }
     },
     level2: {
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
+      status: { type: String, default: 'not_submitted', enum: ['not_submitted','pending','approved','rejected'] },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
@@ -55,7 +44,7 @@ const userSchema = new mongoose.Schema({
       documentNumber: { type: String, default: null }
     },
     level3: {
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
+      status: { type: String, default: 'not_submitted', enum: ['not_submitted','pending','approved','rejected'] },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
@@ -65,13 +54,13 @@ const userSchema = new mongoose.Schema({
     }
   },
 
-  // Login Info
+  // Login info
   loginAttempts: { type: Number, default: 0 },
   lockUntil: { type: Date, default: null },
   failedLoginAttempts: { type: Number, default: 0 },
   lastFailedLogin: { type: Date },
 
-  // Wallet Addresses + Reference IDs - NO UNIQUE CONSTRAINTS
+  // Wallets
   wallets: {
     BTC_BTC: { address: String, network: String, walletReferenceId: String },
     ETH_ETH: { address: String, network: String, walletReferenceId: String },
@@ -89,79 +78,63 @@ const userSchema = new mongoose.Schema({
     NGNZ: { address: String, network: String, walletReferenceId: String },
   },
 
-  // OPTIMIZED: Token Balances Only (No USD fields, calculated on-demand)
+  // Balances
   solBalance: { type: Number, default: 0, min: 0 },
   solPendingBalance: { type: Number, default: 0, min: 0 },
-
   btcBalance: { type: Number, default: 0, min: 0 },
   btcPendingBalance: { type: Number, default: 0, min: 0 },
-
   usdtBalance: { type: Number, default: 0, min: 0 },
   usdtPendingBalance: { type: Number, default: 0, min: 0 },
-
   usdcBalance: { type: Number, default: 0, min: 0 },
   usdcPendingBalance: { type: Number, default: 0, min: 0 },
-
   ethBalance: { type: Number, default: 0, min: 0 },
   ethPendingBalance: { type: Number, default: 0, min: 0 },
-
   bnbBalance: { type: Number, default: 0, min: 0 },
   bnbPendingBalance: { type: Number, default: 0, min: 0 },
-
   dogeBalance: { type: Number, default: 0, min: 0 },
   dogePendingBalance: { type: Number, default: 0, min: 0 },
-
   maticBalance: { type: Number, default: 0, min: 0 },
   maticPendingBalance: { type: Number, default: 0, min: 0 },
-
   avaxBalance: { type: Number, default: 0, min: 0 },
   avaxPendingBalance: { type: Number, default: 0, min: 0 },
-
   ngnzBalance: { type: Number, default: 0, min: 0 },
   ngnzPendingBalance: { type: Number, default: 0, min: 0 },
 
-  // Balance metadata (optional tracking)
   lastBalanceUpdate: { type: Date, default: null },
   portfolioLastUpdated: { type: Date, default: null },
 
-  // Wallet Generation Status
-  walletGenerationStatus: {
-    type: String,
-    enum: ['pending', 'in_progress', 'completed', 'failed'],
-    default: 'pending'
-  },
+  // Wallet generation
+  walletGenerationStatus: { type: String, enum: ['pending','in_progress','completed','failed'], default: 'pending' },
   walletGenerationStartedAt: { type: Date, default: null },
   walletGenerationCompletedAt: { type: Date, default: null },
 
-  // 2FA - NO UNIQUE CONSTRAINTS
+  // 2FA
   twoFASecret: { type: String, default: null },
   is2FAEnabled: { type: Boolean, default: false },
   is2FAVerified: { type: Boolean, default: false },
 
-  // Refresh Tokens - NO UNIQUE CONSTRAINTS
+  // Refresh tokens
   refreshTokens: [
-    {
-      token: String,
-      createdAt: { type: Date, default: Date.now },
-    },
-  ],
-});
+    { token: String, createdAt: { type: Date, default: Date.now } },
+  ]
+}, { timestamps: true });
 
-// UNIQUE INDEXES: Only on username, phonenumber, bvn (sparse allows null values)
+// Indexes
 userSchema.index({ username: 1 }, { unique: true, sparse: true });
 userSchema.index({ phonenumber: 1 }, { unique: true, sparse: true });
 userSchema.index({ bvn: 1 }, { unique: true, sparse: true });
-// Note: email already has unique: true in field definition above
+userSchema.index({ kycLevel: 1, kycStatus: 1 });
 
-// Virtual 'id' field
-userSchema.virtual('id').get(function () {
-  return this._id.toHexString();
+// Virtuals
+userSchema.virtual('id').get(function () { return this._id.toHexString(); });
+userSchema.virtual('fullName').get(function () {
+  return this.firstname && this.lastname ? `${this.firstname} ${this.lastname}` : this.firstname || this.lastname || '';
 });
 
-// Clean JSON output
+// JSON cleanup
 userSchema.set('toJSON', {
   virtuals: true,
-  transform: function (doc, ret) {
+  transform: (doc, ret) => {
     delete ret.password;
     delete ret.passwordpin;
     delete ret.transactionpin;
@@ -172,106 +145,108 @@ userSchema.set('toJSON', {
   },
 });
 
-// Hash sensitive fields before saving
+// Pre-save: Hash sensitive fields + balance tracking
 userSchema.pre('save', async function (next) {
   try {
-    if (this.isModified('password') && this.password) {
-      const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
-      this.password = await bcrypt.hash(this.password, salt);
-    }
-
-    if (this.isModified('passwordpin') && this.passwordpin) {
-      const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
-      this.passwordpin = await bcrypt.hash(this.passwordpin, salt);
-    }
-
-    if (this.isModified('transactionpin') && this.transactionpin) {
-      const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
-      this.transactionpin = await bcrypt.hash(this.transactionpin, salt);
-    }
-
-    if (this.isModified('securitypin') && this.securitypin) {
-      const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
-      this.securitypin = await bcrypt.hash(this.securitypin, salt);
-    }
-
-    // USERNAME UPDATE LOGIC - Allow one update from auto-generated to custom
-    if (!this.isNew && this.isModified('username')) {
-      // If username is already custom, prevent any further changes
-      if (this.isUsernameCustom) {
-        const err = new Error('Username cannot be changed once customized.');
-        err.status = 400;
-        return next(err);
-      }
-      
-      // If this is the first custom update (from auto-generated), allow it
-      if (!this.isUsernameCustom && this.username) {
-        this.isUsernameCustom = true; // Mark as customized
-        console.log(`Username updated from auto-generated to custom: ${this.username}`);
+    const fieldsToHash = ['password','passwordpin','transactionpin','securitypin'];
+    for (const field of fieldsToHash) {
+      if (this.isModified(field) && this[field]) {
+        const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
+        this[field] = await bcrypt.hash(this[field], salt);
       }
     }
-
-    // Update balance metadata when any balance field changes
     const balanceFields = [
-      'solBalance', 'btcBalance', 'usdtBalance', 'usdcBalance', 'ethBalance', 
-      'bnbBalance', 'dogeBalance', 'maticBalance', 'avaxBalance', 'ngnzBalance'
+      'solBalance','btcBalance','usdtBalance','usdcBalance','ethBalance',
+      'bnbBalance','dogeBalance','maticBalance','avaxBalance','ngnzBalance'
     ];
-    
-    if (balanceFields.some(field => this.isModified(field))) {
+    if (balanceFields.some(f => this.isModified(f))) {
       this.lastBalanceUpdate = new Date();
     }
-
     next();
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
-// Compare password method
-userSchema.methods.comparePassword = async function (candidatePassword) {
-  if (!this.password) return false;
-  return bcrypt.compare(candidatePassword, this.password);
-};
-
-// Compare password pin method
-userSchema.methods.comparePasswordPin = async function (candidatePin) {
-  if (!this.passwordpin) return false;
-  return bcrypt.compare(candidatePin, this.passwordpin);
-};
-
-// Compare transaction pin method
-userSchema.methods.compareTransactionPin = async function (candidatePin) {
-  if (!this.transactionpin) return false;
-  return bcrypt.compare(candidatePin, this.transactionpin);
-};
-
-// Compare security pin method
-userSchema.methods.compareSecurityPin = async function (candidatePin) {
-  if (!this.securitypin) return false;
-  return bcrypt.compare(candidatePin, this.securitypin);
-};
-
-// KYC helpers
-userSchema.methods.updateKycLevel = function(level, status = 'approved') {
-  if (level >= 1 && level <= 3 && status === 'approved') {
-    this.kycLevel = Math.max(this.kycLevel, level);
-    this.kycStatus = 'approved';
+// Methods
+userSchema.methods.comparePassword = async function (candidate) { return this.password && bcrypt.compare(candidate, this.password); };
+userSchema.methods.comparePasswordPin = async function (candidate) { return this.passwordpin && bcrypt.compare(candidate, this.passwordpin); };
+userSchema.methods.compareTransactionPin = async function (candidate) { return this.transactionpin && bcrypt.compare(candidate, this.transactionpin); };
+userSchema.methods.compareSecurityPin = async function (candidate) { return this.securitypin && bcrypt.compare(candidate, this.securitypin); };
+userSchema.methods.canUpdateUsername = function () { return !this.isUsernameCustom; };
+userSchema.methods.isLocked = function () { return !!(this.lockUntil && this.lockUntil > Date.now()); };
+userSchema.methods.incLoginAttempts = async function () {
+  if (this.lockUntil && this.lockUntil < Date.now()) {
+    return this.updateOne({ $unset: { lockUntil: 1 }, $set: { loginAttempts: 1, failedLoginAttempts: 1, lastFailedLogin: Date.now() } });
   }
+  const updates = { $inc: { loginAttempts: 1, failedLoginAttempts: 1 }, $set: { lastFailedLogin: Date.now() } };
+  if (this.loginAttempts + 1 >= 5 && !this.isLocked()) updates.$set.lockUntil = Date.now() + (2 * 60 * 60 * 1000);
+  return this.updateOne(updates);
 };
+userSchema.methods.resetLoginAttempts = async function () { return this.updateOne({ $unset: { loginAttempts: 1, lockUntil: 1 } }); };
 
+// KYC Limits Methods - Separate limits for different transaction types
 userSchema.methods.getKycLimits = function() {
   const limits = {
-    0: { daily: 0, monthly: 0, description: 'No verification' },
-    1: { daily: 50000, monthly: 200000, description: 'Basic verification' },
-    2: { daily: 5000000, monthly: 20000000, description: 'Identity verified' },
-    3: { daily: 20000000, monthly: 200000000, description: 'Enhanced verification' }
+    0: { 
+      ngnz: { daily: 0, monthly: 0 },
+      crypto: { daily: 0, monthly: 0 }, // USD equivalent
+      utilities: { daily: 0, monthly: 0 },
+      description: 'No verification' 
+    },
+    1: { 
+      ngnz: { daily: 0, monthly: 0 },
+      crypto: { daily: 0, monthly: 0 }, // USD equivalent
+      utilities: { daily: 50000, monthly: 200000 },
+      description: 'Basic verification' 
+    },
+    2: { 
+      ngnz: { daily: 25000000, monthly: 200000000 },
+      crypto: { daily: 2000000, monthly: 2000000 }, // USD equivalent
+      utilities: { daily: 500000, monthly: 2000000 },
+      description: 'Identity verified' 
+    },
+    3: { 
+      ngnz: { daily: 50000000, monthly: 500000000 },
+      crypto: { daily: 5000000, monthly: 5000000 }, // USD equivalent
+      utilities: { daily: 500000, monthly: 2000000 },
+      description: 'Enhanced verification' 
+    }
   };
   return limits[this.kycLevel] || limits[0];
 };
 
-// Helper method to check if user can update username
-userSchema.methods.canUpdateUsername = function() {
-  return !this.isUsernameCustom;
+// Get specific limit type
+userSchema.methods.getNgnzLimits = function() {
+  const limits = this.getKycLimits();
+  return limits.ngnz;
+};
+
+userSchema.methods.getCryptoLimits = function() {
+  const limits = this.getKycLimits();
+  return limits.crypto;
+};
+
+userSchema.methods.getUtilityLimits = function() {
+  const limits = this.getKycLimits();
+  return limits.utilities;
+};
+
+// Get or create KYC record
+userSchema.methods.getOrCreateKyc = async function () {
+  const KYC = require('./KYC');
+  let kycDoc = await KYC.findOne({ userId: this._id });
+  if (!kycDoc) kycDoc = await KYC.create({ userId: this._id });
+  return kycDoc;
+};
+
+// Auto-upgrade to KYC 2
+userSchema.methods.autoUpgradeKYC = async function () {
+  if (this.kycLevel < 2) {
+    this.kycLevel = 2;
+    this.kycStatus = 'approved';
+    await this.save();
+    return true;
+  }
+  return false;
 };
 
 module.exports = mongoose.model('User', userSchema);

@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const PendingUser = require('../models/pendinguser');
-const User = require('../models/user'); // Added User model import
+const User = require('../models/user'); 
 const { sendVerificationCode } = require('../utils/verifyAT');
+const { sendSignupEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
 const validator = require('validator');
 
@@ -25,7 +26,7 @@ function sanitizeInput(input) {
 router.post('/add-user', async (req, res) => {
   let { email, firstname, lastname, phonenumber } = req.body;
 
-  // Validate presence
+  // Validate presence of all required fields
   if (!email || !firstname || !lastname || !phonenumber) {
     logger.warn('Missing required fields', { body: req.body });
     return res.status(400).json({ message: 'Please fill all required fields.' });
@@ -73,13 +74,13 @@ router.post('/add-user', async (req, res) => {
         email: email.slice(0, 3) + '****',
         phonenumber: phonenumber.slice(0, 5) + '****'
       });
-      return res.status(409).json({ message: 'Phone or already Exists' });
+      return res.status(409).json({ message: 'Phone or email already exists' });
     }
 
     // Generate OTP and expiration
     const otp = generateOTP();
     const createdAt = new Date();
-    const expiresAt = new Date(createdAt.getTime() + 5 * 60 * 1000); // expires in 5 mins
+    const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000); // HARD-CODED 10 minutes
 
     // Send OTP via Africa's Talking
     const sendResult = await sendVerificationCode(normalizedPhone, otp);
@@ -101,6 +102,24 @@ router.post('/add-user', async (req, res) => {
 
     await pendingUser.save();
     logger.info('Pending user created and OTP sent', { email, phonenumber });
+
+    // Send welcome email (non-blocking - don't fail signup if email fails)
+    try {
+      const fullName = `${firstname} ${lastname}`;
+      const emailResult = await sendSignupEmail(email, fullName);
+      logger.info('Welcome email sent successfully', { 
+        email: email.slice(0, 3) + '****',
+        name: fullName,
+        messageId: emailResult.messageId
+      });
+    } catch (emailError) {
+      // Log the error but don't fail the signup process
+      logger.error('Failed to send welcome email', {
+        email: email.slice(0, 3) + '****',
+        error: emailError.message,
+        stack: emailError.stack
+      });
+    }
 
     res.status(201).json({
       message: 'User created successfully. Verification code sent.',
