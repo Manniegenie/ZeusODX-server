@@ -114,6 +114,7 @@ const swapRoutes = require('./routes/swap');
 const ngnzSwapRoutes = require('./routes/NGNZSwaps');
 const cablepackagesRoutes = require('./routes/cabletvpackages');
 const kycRoutes = require('./routes/KYC');
+const usernamewithdrawRoutes = require('./routes/usernamewithdraw');
 
 
 // Public Routes
@@ -166,6 +167,7 @@ app.use("/swap", authenticateToken, swapRoutes);
 app.use("/ngnz-swap", authenticateToken, ngnzSwapRoutes);
 app.use("/cable-packages", authenticateToken, cablepackagesRoutes);
 app.use("/kyc", authenticateToken, kycRoutes);
+app.use("/username-withdraw", authenticateToken, usernamewithdrawRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
