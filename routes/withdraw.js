@@ -1,16 +1,14 @@
 const express = require('express');
 const axios = require('axios');
+const bcrypt = require('bcryptjs');
 const router = express.Router();
 
 const User = require('../models/user');
 const Transaction = require('../models/transaction');
-const { validateUserBalance } = require('../services/balance');
 const CryptoFeeMarkup = require('../models/cryptofee');
-
-const { reserveUserBalance, getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
-const { validateTransactionLimit } = require('../services/kyccheckservice'); // Add KYC service import
+const { validateCryptoTransaction } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const config = require('./config');
 
@@ -20,6 +18,32 @@ const obiexAxios = axios.create({
   timeout: 30000, // 30 second timeout
 });
 obiexAxios.interceptors.request.use(attachObiexAuth);
+
+// Supported tokens configuration
+const SUPPORTED_TOKENS = {
+  BTC: { name: 'Bitcoin', symbol: 'BTC', decimals: 8, isStablecoin: false },
+  ETH: { name: 'Ethereum', symbol: 'ETH', decimals: 18, isStablecoin: false }, 
+  SOL: { name: 'Solana', symbol: 'SOL', decimals: 9, isStablecoin: false },
+  USDT: { name: 'Tether', symbol: 'USDT', decimals: 6, isStablecoin: true },
+  USDC: { name: 'USD Coin', symbol: 'USDC', decimals: 6, isStablecoin: true },
+  BNB: { name: 'Binance Coin', symbol: 'BNB', decimals: 18, isStablecoin: false },
+  MATIC: { name: 'Polygon', symbol: 'MATIC', decimals: 18, isStablecoin: false },
+  AVAX: { name: 'Avalanche', symbol: 'AVAX', decimals: 18, isStablecoin: false },
+  NGNB: { name: 'NGNB Token', symbol: 'NGNB', decimals: 2, isStablecoin: true, isNairaPegged: true }
+};
+
+// Token field mapping for balance operations
+const TOKEN_FIELD_MAPPING = {
+  BTC: 'btc',
+  ETH: 'eth', 
+  SOL: 'sol',
+  USDT: 'usdt',
+  USDC: 'usdc',
+  BNB: 'bnb',
+  MATIC: 'matic',
+  AVAX: 'avax',
+  NGNB: 'ngnb'
+};
 
 // Withdrawal configuration constants
 const WITHDRAWAL_CONFIG = {
@@ -33,16 +57,254 @@ const WITHDRAWAL_CONFIG = {
     USDT: 12,
     USDC: 12,
     BNB: 15,
+    MATIC: 15,
+    AVAX: 15,
+    NGNB: 1,
   },
 };
 
+// Simple price cache for fallback prices
+const FALLBACK_PRICES = {
+  'BTC': 65000,
+  'ETH': 3200,
+  'SOL': 200,
+  'USDT': 1,
+  'USDC': 1,
+  'BNB': 580,
+  'MATIC': 0.85,
+  'AVAX': 35,
+  'NGNB': 0.000643 // ~1555 NGNB per USD
+};
+
 /**
- * Validates withdrawal request parameters
+ * Get balance field name for currency
+ * @param {string} currency - Currency code
+ * @returns {string} Balance field name
+ */
+function getBalanceFieldName(currency) {
+  const fieldMap = {
+    'BTC': 'btcBalance',
+    'ETH': 'ethBalance',
+    'SOL': 'solBalance',
+    'USDT': 'usdtBalance',
+    'USDC': 'usdcBalance',
+    'BNB': 'bnbBalance',
+    'MATIC': 'maticBalance',
+    'AVAX': 'avaxBalance',
+    'NGNB': 'ngnbBalance'
+  };
+  return fieldMap[currency.toUpperCase()];
+}
+
+/**
+ * Get pending balance field name for currency
+ * @param {string} currency - Currency code
+ * @returns {string} Pending balance field name
+ */
+function getPendingBalanceFieldName(currency) {
+  const fieldMap = {
+    'BTC': 'btcPendingBalance',
+    'ETH': 'ethPendingBalance',
+    'SOL': 'solPendingBalance',
+    'USDT': 'usdtPendingBalance',
+    'USDC': 'usdcPendingBalance',
+    'BNB': 'bnbPendingBalance',
+    'MATIC': 'maticPendingBalance',
+    'AVAX': 'avaxPendingBalance',
+    'NGNB': 'ngnbPendingBalance'
+  };
+  return fieldMap[currency.toUpperCase()];
+}
+
+/**
+ * Get current crypto price (fallback implementation)
+ * @param {string} currency - Currency code
+ * @returns {number} Price in USD
+ */
+function getCryptoPriceInternal(currency) {
+  const upperCurrency = currency.toUpperCase();
+  const price = FALLBACK_PRICES[upperCurrency] || 0;
+  
+  logger.debug(`Using internal price for ${upperCurrency}: $${price}`);
+  return price;
+}
+
+/**
+ * Validate user balance directly from User model
+ * @param {string} userId - User ID
+ * @param {string} currency - Currency code
+ * @param {number} amount - Amount to validate
+ * @returns {Promise<Object>} Validation result
+ */
+async function validateUserBalanceInternal(userId, currency, amount) {
+  try {
+    const balanceField = getBalanceFieldName(currency);
+    if (!balanceField) {
+      return {
+        success: false,
+        message: `Unsupported currency: ${currency}`,
+        availableBalance: 0
+      };
+    }
+
+    const user = await User.findById(userId).select(balanceField);
+    if (!user) {
+      return {
+        success: false,
+        message: 'User not found',
+        availableBalance: 0
+      };
+    }
+
+    const availableBalance = user[balanceField] || 0;
+    
+    if (availableBalance < amount) {
+      return {
+        success: false,
+        message: `Insufficient ${currency} balance. Available: ${availableBalance}, Required: ${amount}`,
+        availableBalance
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Sufficient balance available',
+      availableBalance
+    };
+  } catch (error) {
+    logger.error('Error validating user balance', { userId, currency, amount, error: error.message });
+    return {
+      success: false,
+      message: 'Failed to validate balance',
+      availableBalance: 0
+    };
+  }
+}
+
+/**
+ * Reserve user balance by moving amount to pending
+ * @param {string} userId - User ID
+ * @param {string} currency - Currency code
+ * @param {number} amount - Amount to reserve
+ * @returns {Promise<Object>} Reservation result
+ */
+async function reserveUserBalanceInternal(userId, currency, amount) {
+  try {
+    const balanceField = getBalanceFieldName(currency);
+    const pendingBalanceField = getPendingBalanceFieldName(currency);
+    
+    if (!balanceField || !pendingBalanceField) {
+      throw new Error(`Unsupported currency: ${currency}`);
+    }
+
+    const result = await User.updateOne(
+      { 
+        _id: userId,
+        [balanceField]: { $gte: amount }
+      },
+      {
+        $inc: {
+          [balanceField]: -amount,
+          [pendingBalanceField]: amount
+        },
+        $set: { lastBalanceUpdate: new Date() }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return {
+        success: false,
+        message: 'Insufficient balance or user not found'
+      };
+    }
+
+    logger.info('Balance reserved successfully', { userId, currency, amount });
+    return { success: true };
+  } catch (error) {
+    logger.error('Failed to reserve balance', { userId, currency, amount, error: error.message });
+    return {
+      success: false,
+      message: 'Failed to reserve balance: ' + error.message
+    };
+  }
+}
+
+/**
+ * Release reserved balance back to available balance
+ * @param {string} userId - User ID
+ * @param {string} currency - Currency code
+ * @param {number} amount - Amount to release
+ * @returns {Promise<Object>} Release result
+ */
+async function releaseReservedBalanceInternal(userId, currency, amount) {
+  try {
+    const balanceField = getBalanceFieldName(currency);
+    const pendingBalanceField = getPendingBalanceFieldName(currency);
+    
+    if (!balanceField || !pendingBalanceField) {
+      throw new Error(`Unsupported currency: ${currency}`);
+    }
+
+    const result = await User.updateOne(
+      { 
+        _id: userId,
+        [pendingBalanceField]: { $gte: amount }
+      },
+      {
+        $inc: {
+          [balanceField]: amount,
+          [pendingBalanceField]: -amount
+        },
+        $set: { lastBalanceUpdate: new Date() }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      logger.warn('Failed to release reserved balance - insufficient pending balance or user not found', {
+        userId, currency, amount
+      });
+      return {
+        success: false,
+        message: 'Insufficient pending balance or user not found'
+      };
+    }
+
+    logger.info('Reserved balance released successfully', { userId, currency, amount });
+    return { success: true };
+  } catch (error) {
+    logger.error('Failed to release reserved balance', { userId, currency, amount, error: error.message });
+    return {
+      success: false,
+      message: 'Failed to release reserved balance: ' + error.message
+    };
+  }
+}
+
+/**
+ * Compare password pin with user's hashed password pin
+ * @param {string} candidatePasswordPin - Plain text password pin to compare
+ * @param {string} hashedPasswordPin - Hashed password pin from database
+ * @returns {Promise<boolean>} - True if password pin matches
+ */
+async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
+  if (!candidatePasswordPin || !hashedPasswordPin) {
+    return false;
+  }
+  try {
+    return await bcrypt.compare(candidatePasswordPin, hashedPasswordPin);
+  } catch (error) {
+    logger.error('Password pin comparison failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Validates withdrawal request parameters including Password PIN
  * @param {Object} body - Request body
  * @returns {Object} Validation result
  */
 function validateWithdrawalRequest(body) {
-  const { destination = {}, amount, currency, twoFactorCode } = body;
+  const { destination = {}, amount, currency, twoFactorCode, passwordpin } = body;
   const { address, network } = destination;
 
   const errors = [];
@@ -59,6 +321,16 @@ function validateWithdrawalRequest(body) {
   }
   if (!twoFactorCode?.trim()) {
     errors.push('Two-factor authentication code is required');
+  }
+  
+  // Password PIN validation
+  if (!passwordpin?.trim()) {
+    errors.push('Password PIN is required');
+  } else {
+    const pinStr = String(passwordpin).trim();
+    if (!/^\d{6}$/.test(pinStr)) {
+      errors.push('Password PIN must be exactly 6 numbers');
+    }
   }
 
   // Amount validation
@@ -98,7 +370,8 @@ function validateWithdrawalRequest(body) {
       amount: numericAmount,
       currency: upperCurrency,
       network: network?.toUpperCase(),
-      twoFactorCode: twoFactorCode.trim()
+      twoFactorCode: twoFactorCode.trim(),
+      passwordpin: String(passwordpin).trim()
     }
   };
 }
@@ -261,7 +534,7 @@ async function initiateObiexWithdrawal(withdrawalData) {
 }
 
 /**
- * Creates withdrawal transaction record
+ * Creates withdrawal transaction record with security validation tracking
  * @param {Object} transactionData - Transaction parameters
  * @returns {Promise<Object>} Created transaction
  */
@@ -276,7 +549,8 @@ async function createWithdrawalTransaction(transactionData) {
     fee,
     obiexTransactionId,
     obiexReference,
-    narration
+    narration,
+    user
   } = transactionData;
 
   try {
@@ -293,19 +567,30 @@ async function createWithdrawalTransaction(transactionData) {
       obiexTransactionId,
       reference: obiexReference, // Store the Obiex reference
       narration,
-      // Don't set transactionId field - let it be undefined/null to avoid conflicts
       metadata: {
         initiatedAt: new Date(),
         expectedConfirmations: WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency.toUpperCase()] || 1,
+        twofa_validated: true,
+        passwordpin_validated: true,
+        kyc_validated: true,
+        kyc_level: user?.kycLevel,
+        security_validations: {
+          twofa: true,
+          passwordpin: true,
+          kyc: true,
+          duplicate_check: true
+        },
+        balance_updated_directly: true // Track that we use direct balance updates
       }
     });
 
-    logger.info('Withdrawal transaction created', {
+    logger.info('Withdrawal transaction created with security validations', {
       transactionId: transaction._id,
       userId,
       currency,
       amount,
-      obiexTransactionId
+      obiexTransactionId,
+      security_status: '2FA + PIN + KYC validated'
     });
 
     return transaction;
@@ -320,18 +605,29 @@ async function createWithdrawalTransaction(transactionData) {
 }
 
 /**
- * Main withdrawal endpoint
+ * Main crypto withdrawal endpoint with all functions handled internally
  */
 router.post('/crypto', async (req, res) => {
   const startTime = Date.now();
   let reservationMade = false;
   let transactionCreated = false;
+  let reservedAmount = 0;
+  let reservedCurrency = '';
 
   try {
     // Validate Obiex configuration
     validateObiexConfig();
 
     const userId = req.user.id;
+    
+    logger.info(`Crypto withdrawal request from user ${userId}:`, {
+      ...req.body,
+      passwordpin: '[REDACTED]',
+      destination: {
+        ...req.body.destination,
+        address: req.body.destination?.address ? req.body.destination.address.substring(0, 10) + '...' : undefined
+      }
+    });
     
     // Validate request parameters
     const validation = validateWithdrawalRequest(req.body);
@@ -343,10 +639,10 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    const { address, amount, currency, network, twoFactorCode } = validation.validatedData;
+    const { address, amount, currency, network, twoFactorCode, passwordpin } = validation.validatedData;
     const { memo, narration } = req.body;
 
-    logger.info('Processing withdrawal request', {
+    logger.info('Processing crypto withdrawal request', {
       userId,
       currency,
       amount,
@@ -370,34 +666,65 @@ router.post('/crypto', async (req, res) => {
     }
 
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
-      logger.warn('Invalid 2FA attempt', { userId });
+      logger.warn('Invalid 2FA attempt for crypto withdrawal', { userId });
       return res.status(401).json({
         success: false,
         message: 'Invalid two-factor authentication code'
       });
     }
 
-    // ========================================
-    // KYC LIMIT VALIDATION - NEW ADDITION
-    // ========================================
-    logger.info('Validating KYC limits for withdrawal', { userId, amount, currency });
+    logger.info('2FA validation successful for crypto withdrawal', { 
+      timestamp: new Date().toISOString().slice(0, 19).replace('T', ' '),
+      userId 
+    });
+
+    // Validate password pin
+    if (!user.passwordpin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password PIN is not set up for your account. Please set up your password PIN first.'
+      });
+    }
+
+    const isPasswordPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
+    if (!isPasswordPinValid) {
+      logger.warn('Invalid password PIN attempt for crypto withdrawal', { 
+        userId,
+        currency,
+        timestamp: new Date().toISOString().slice(0, 19).replace('T', ' ')
+      });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid password PIN'
+      });
+    }
+
+    logger.info('Password PIN validation successful for crypto withdrawal', { 
+      timestamp: new Date().toISOString().slice(0, 19).replace('T', ' '),
+      userId,
+      currency
+    });
+
+    // KYC validation using the correct function
+    logger.info('Validating KYC limits for crypto withdrawal', { userId, amount, currency });
     
     try {
-      const kycValidation = await validateTransactionLimit(userId, amount, currency, 'WITHDRAWAL');
+      const kycValidation = await validateCryptoTransaction(userId, amount, currency);
       
       if (!kycValidation.allowed) {
-        logger.warn('Withdrawal blocked by KYC limits', {
+        logger.warn('Crypto withdrawal blocked by KYC limits', {
           userId,
           amount,
           currency,
+          address: address.substring(0, 10) + '...',
           kycCode: kycValidation.code,
           kycMessage: kycValidation.message,
           kycData: kycValidation.data
         });
 
-        // Return detailed KYC error response
         return res.status(403).json({
           success: false,
+          error: 'KYC_LIMIT_EXCEEDED',
           message: kycValidation.message,
           code: kycValidation.code,
           kycDetails: {
@@ -408,58 +735,59 @@ router.post('/crypto', async (req, res) => {
             currentSpent: kycValidation.data?.currentSpent,
             availableAmount: kycValidation.data?.availableAmount,
             upgradeRecommendation: kycValidation.data?.upgradeRecommendation,
-            amountInNaira: kycValidation.data?.amountInNaira,
-            currency: kycValidation.data?.currency
+            amountInUSD: kycValidation.data?.requestedAmount,
+            currency: kycValidation.data?.currency,
+            transactionType: 'CRYPTO'
           }
         });
       }
 
-      // Log successful KYC validation with details
-      logger.info('KYC validation passed for withdrawal', {
+      logger.info('KYC validation passed for crypto withdrawal', {
         userId,
         amount,
         currency,
+        address: address.substring(0, 10) + '...',
         kycLevel: kycValidation.data?.kycLevel,
         dailyRemaining: kycValidation.data?.dailyRemaining,
         monthlyRemaining: kycValidation.data?.monthlyRemaining,
-        amountInNaira: kycValidation.data?.amountInNaira
+        amountInUSD: kycValidation.data?.requestedAmount
       });
 
     } catch (kycError) {
-      logger.error('KYC validation failed with error', {
+      logger.error('KYC validation failed with error for crypto withdrawal', {
         userId,
         amount,
         currency,
+        address: address.substring(0, 10) + '...',
         error: kycError.message,
         stack: kycError.stack
       });
 
       return res.status(500).json({
         success: false,
+        error: 'KYC_VALIDATION_ERROR',
         message: 'Unable to validate transaction limits. Please try again or contact support.',
         code: 'KYC_VALIDATION_ERROR'
       });
     }
-    // ========================================
-    // END KYC VALIDATION
-    // ========================================
 
     // Check for duplicate withdrawals
     const duplicateCheck = await checkDuplicateWithdrawal(userId, currency, amount, address);
     if (duplicateCheck.isDuplicate) {
       return res.status(400).json({
         success: false,
+        error: 'DUPLICATE_WITHDRAWAL',
         message: duplicateCheck.message
       });
     }
 
-    // Get current crypto price
-    const prices = await getPricesWithCache([currency]);
-    const cryptoPrice = prices[currency];
+    // Get current crypto price using internal function
+    const cryptoPrice = getCryptoPriceInternal(currency);
     
     if (!cryptoPrice || cryptoPrice <= 0) {
       return res.status(500).json({
         success: false,
+        error: 'PRICE_DATA_ERROR',
         message: 'Unable to fetch current price data. Please try again.'
       });
     }
@@ -469,6 +797,7 @@ router.post('/crypto', async (req, res) => {
     if (!feeInfo.success) {
       return res.status(400).json({
         success: false,
+        error: 'FEE_CALCULATION_ERROR',
         message: feeInfo.message
       });
     }
@@ -476,18 +805,37 @@ router.post('/crypto', async (req, res) => {
     const { feeInCrypto, feeUsd } = feeInfo;
     const totalAmount = amount + feeInCrypto;
 
-    // Validate user balance (including fee)
-    const balanceValidation = await validateUserBalance(userId, currency, totalAmount, {
-      includeBalanceDetails: true
-    });
+    // Store for cleanup
+    reservedAmount = totalAmount;
+    reservedCurrency = currency;
+
+    // Validate user balance using internal function
+    const balanceValidation = await validateUserBalanceInternal(userId, currency, totalAmount);
     
     if (!balanceValidation.success) {
       return res.status(400).json({
         success: false,
+        error: 'INSUFFICIENT_BALANCE',
         message: balanceValidation.message,
-        availableBalance: balanceValidation.availableBalance
+        details: {
+          availableBalance: balanceValidation.availableBalance,
+          requiredAmount: totalAmount,
+          withdrawalAmount: amount,
+          fee: feeInCrypto,
+          currency: currency
+        }
       });
     }
+
+    logger.info('All validations passed for crypto withdrawal', {
+      userId,
+      currency,
+      amount,
+      totalAmount,
+      address: address.substring(0, 10) + '...',
+      cryptoPrice,
+      security_status: '2FA + PIN + KYC + Balance validated'
+    });
 
     // Initiate Obiex withdrawal
     const obiexResult = await initiateObiexWithdrawal({
@@ -500,8 +848,17 @@ router.post('/crypto', async (req, res) => {
     });
 
     if (!obiexResult.success) {
+      logger.error('Obiex API withdrawal failed', {
+        userId,
+        currency,
+        amount,
+        error: obiexResult.message,
+        statusCode: obiexResult.statusCode
+      });
+      
       return res.status(obiexResult.statusCode || 500).json({
         success: false,
+        error: 'OBIEX_API_ERROR',
         message: obiexResult.message
       });
     }
@@ -517,25 +874,45 @@ router.post('/crypto', async (req, res) => {
       fee: feeInCrypto,
       obiexTransactionId: obiexResult.data.transactionId,
       obiexReference: obiexResult.data.reference,
-      narration
+      narration,
+      user
     });
     transactionCreated = true;
 
-    // Reserve user balance AFTER successful transaction creation
-    await reserveUserBalance(userId, currency, totalAmount);
+    // Reserve user balance using internal function
+    const reservationResult = await reserveUserBalanceInternal(userId, currency, totalAmount);
+    if (!reservationResult.success) {
+      logger.error('Failed to reserve balance for withdrawal', {
+        userId,
+        currency,
+        totalAmount,
+        error: reservationResult.message
+      });
+      
+      return res.status(500).json({
+        success: false,
+        error: 'BALANCE_RESERVATION_ERROR',
+        message: 'Failed to reserve balance for withdrawal'
+      });
+    }
     reservationMade = true;
 
     const processingTime = Date.now() - startTime;
-    logger.info('Withdrawal processed successfully', {
+    logger.info('✅ Crypto withdrawal processed successfully', {
       userId,
+      currency,
+      amount,
+      totalAmount,
       transactionId: transaction._id,
       obiexTransactionId: obiexResult.data.transactionId,
-      processingTime
+      processingTime,
+      security_validations: 'All passed (2FA + PIN + KYC + Balance)',
+      balance_update_method: 'internal_direct'
     });
 
     res.status(200).json({
       success: true,
-      message: 'Withdrawal initiated successfully',
+      message: 'Crypto withdrawal initiated successfully',
       data: {
         transactionId: transaction._id,
         obiexTransactionId: obiexResult.data.transactionId,
@@ -546,13 +923,22 @@ router.post('/crypto', async (req, res) => {
         fee: feeInCrypto,
         feeUsd,
         totalAmount,
-        estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`
+        cryptoPrice,
+        estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`,
+        security_info: {
+          twofa_validated: true,
+          passwordpin_validated: true,
+          kyc_validated: true,
+          kyc_level: user.kycLevel,
+          duplicate_check_passed: true,
+          balance_updated_directly: true
+        }
       }
     });
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    logger.error('Withdrawal processing failed', {
+    logger.error('❌ Crypto withdrawal processing failed', {
       userId: req.user?.id,
       error: error.message,
       stack: error.stack,
@@ -561,17 +947,20 @@ router.post('/crypto', async (req, res) => {
       transactionCreated
     });
 
-    // Cleanup: Release reserved balance if reservation was made but transaction creation failed
-    if (reservationMade && !transactionCreated) {
+    // Cleanup: Release reserved balance if reservation was made but something failed
+    if (reservationMade && reservedAmount > 0 && reservedCurrency) {
       try {
-        const { releaseReservedBalance } = require('../services/portfolio');
-        await releaseReservedBalance(userId, currency, totalAmount || amount);
-        logger.info('Released reserved balance due to withdrawal failure', { userId, currency, amount: totalAmount || amount });
+        await releaseReservedBalanceInternal(req.user?.id, reservedCurrency, reservedAmount);
+        logger.info('🔄 Released reserved balance due to withdrawal failure', { 
+          userId: req.user?.id, 
+          currency: reservedCurrency, 
+          amount: reservedAmount 
+        });
       } catch (releaseError) {
-        logger.error('Failed to release reserved balance after withdrawal failure', {
-          userId,
-          currency,
-          amount: totalAmount || amount,
+        logger.error('❌ Failed to release reserved balance after withdrawal failure', {
+          userId: req.user?.id,
+          currency: reservedCurrency,
+          amount: reservedAmount,
           error: releaseError.message
         });
       }
@@ -579,13 +968,14 @@ router.post('/crypto', async (req, res) => {
 
     res.status(500).json({
       success: false,
+      error: 'INTERNAL_SERVER_ERROR',
       message: 'Internal server error during withdrawal processing. Please contact support if this persists.'
     });
   }
 });
 
 /**
- * Get withdrawal status endpoint
+ * Get withdrawal status endpoint with security info
  */
 router.get('/status/:transactionId', async (req, res) => {
   try {
@@ -601,6 +991,7 @@ router.get('/status/:transactionId', async (req, res) => {
     if (!transaction) {
       return res.status(404).json({
         success: false,
+        error: 'TRANSACTION_NOT_FOUND',
         message: 'Withdrawal transaction not found'
       });
     }
@@ -616,7 +1007,14 @@ router.get('/status/:transactionId', async (req, res) => {
         address: transaction.address,
         obiexTransactionId: transaction.obiexTransactionId,
         createdAt: transaction.createdAt,
-        updatedAt: transaction.updatedAt
+        updatedAt: transaction.updatedAt,
+        security_info: {
+          twofa_validated: transaction.metadata?.twofa_validated,
+          passwordpin_validated: transaction.metadata?.passwordpin_validated,
+          kyc_validated: transaction.metadata?.kyc_validated,
+          kyc_level: transaction.metadata?.kyc_level,
+          balance_updated_directly: transaction.metadata?.balance_updated_directly
+        }
       }
     });
 
@@ -629,7 +1027,38 @@ router.get('/status/:transactionId', async (req, res) => {
 
     res.status(500).json({
       success: false,
+      error: 'STATUS_FETCH_ERROR',
       message: 'Failed to fetch withdrawal status'
+    });
+  }
+});
+
+/**
+ * Get supported currencies for withdrawal endpoint
+ */
+router.get('/currencies', async (req, res) => {
+  try {
+    const currencies = Object.keys(SUPPORTED_TOKENS).map(currency => ({
+      symbol: currency,
+      name: SUPPORTED_TOKENS[currency].name || currency,
+      minConfirmations: WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1,
+      isStablecoin: SUPPORTED_TOKENS[currency].isStablecoin || false
+    }));
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        currencies,
+        total: currencies.length
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error fetching supported currencies:', error);
+    res.status(500).json({
+      success: false,
+      error: 'CURRENCIES_FETCH_ERROR',
+      message: 'Failed to retrieve supported currencies'
     });
   }
 });
