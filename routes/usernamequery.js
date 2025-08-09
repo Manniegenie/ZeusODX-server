@@ -4,18 +4,17 @@ const User = require('../models/user');
 
 router.post('/search', async (req, res) => {
   try {
-    const { q, limit = 20 } = req.body;
+    const { q } = req.body;
     
     if (!q || q.length < 2) {
       return res.status(400).json({ error: 'Query must be at least 2 characters' });
     }
 
     const users = await User.find({
-      username: { $regex: `^${q}`, $options: 'i' },
+      username: { $regex: `^${q}$`, $options: 'i' }, // Exact match (case-insensitive)
       _id: { $ne: req.user.id }
     })
     .select('username firstname lastname avatarUrl')
-    .limit(Math.min(limit, 50))
     .lean();
 
     res.json(users);
