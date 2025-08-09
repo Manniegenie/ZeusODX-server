@@ -121,7 +121,7 @@ router.get('/dashboard', async (req, res) => {
       }
     }
 
-    // Calculate 1-hour price changes using PriceChange model
+    // Calculate 1-hour price changes using PriceChange model (but keep field names as 12h for frontend compatibility)
     let changes1Hour = {};
     try {
       changes1Hour = await PriceChange.getPriceChanges(prices, 1); // 1 hour instead of 12
@@ -151,13 +151,13 @@ router.get('/dashboard', async (req, res) => {
         balanceUSD: calculatedUSDBalances[usdBalanceField] || 0,
         pendingBalance: user[pendingBalanceField] || 0,
         currentPrice: prices[token] || 0,
-        priceChange1h: changes1Hour[token] ? changes1Hour[token].percentageChange : null, // Changed from priceChange12h to priceChange1h
+        priceChange12h: changes1Hour[token] ? changes1Hour[token].percentageChange : null, // Frontend expects priceChange12h but we calculate 1h
         priceChangeData: changes1Hour[token] || null
       };
       
       // Special handling for NGNZ and stablecoins (no price changes)
       if (['NGNZ', 'USDT', 'USDC'].includes(token)) {
-        portfolioBalances[token].priceChange1h = null;
+        portfolioBalances[token].priceChange12h = null; // Frontend expects priceChange12h field name
         portfolioBalances[token].priceChangeData = null;
       }
     }
@@ -187,7 +187,7 @@ router.get('/dashboard', async (req, res) => {
       },
       market: {
         prices: prices,
-        priceChanges1h: changes1Hour, // Changed from priceChanges12h to priceChanges1h
+        priceChanges12h: changes1Hour, // Frontend expects priceChanges12h but we calculate 1h changes
         ngnzExchangeRate: ngnzRate ? {
           rate: ngnzRate.finalPrice,
           lastUpdated: ngnzRate.lastUpdated,
@@ -208,10 +208,11 @@ router.get('/dashboard', async (req, res) => {
       userId,
       totalTokens: allTokenSymbols.length,
       pricesRetrieved: Object.keys(prices).length,
-      changesRetrieved: Object.keys(changes1Hour).length,
+      changes1hRetrieved: Object.keys(changes1Hour).length, // Updated log message for clarity
       ngnzPrice: prices.NGNZ,
       totalPortfolioUSD: calculatedUSDBalances.totalPortfolioBalance,
-      tokensWithChanges: Object.keys(changes1Hour).filter(k => changes1Hour[k].dataAvailable)
+      tokensWithChanges: Object.keys(changes1Hour).filter(k => changes1Hour[k].dataAvailable),
+      note: 'priceChange12h fields contain 1-hour changes for frontend compatibility'
     });
 
     res.status(200).json({ success: true, data: dashboardData });
