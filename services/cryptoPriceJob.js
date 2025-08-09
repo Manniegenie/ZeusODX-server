@@ -1,6 +1,6 @@
 // jobs/updateCryptoPrices.js
 const axios = require('axios');
-const CryptoPrice = require('../models/CryptoPrice');
+const PriceChange = require('../models/pricechange'); // Changed from CryptoPrice to PriceChange
 const logger = require('../utils/logger');
 
 // Configuration
@@ -135,7 +135,7 @@ async function fetchFCSApiPrices() {
   try {
     logger.info('Starting FCS API price fetch for job');
     
-    const prices = new Map();
+    const prices = {};
     
     // Get tokens supported by FCS API
     const fcsApiTokens = Object.keys(SUPPORTED_TOKENS).filter(token => {
@@ -203,11 +203,11 @@ async function fetchFCSApiPrices() {
         continue;
       }
       
-      prices.set(token, price);
+      prices[token] = price; // Changed from Map to object for PriceChange.storePrices compatibility
       logger.debug(`Set FCS API price: ${token} = $${price.toFixed(8)}`);
     }
     
-    logger.info(`Successfully fetched ${prices.size} prices from FCS API`);
+    logger.info(`Successfully fetched ${Object.keys(prices).length} prices from FCS API`);
     return prices;
     
   } catch (error) {
@@ -217,49 +217,6 @@ async function fetchFCSApiPrices() {
       responseData: error.response?.data
     });
     throw error;
-  }
-}
-
-// Calculate hourly percentage change
-async function calculateHourlyPercentageChange(symbol, currentPrice) {
-  try {
-    logger.debug(`Calculating hourly percentage change for ${symbol}`, { currentPrice });
-    
-    // Get price from exactly 1 hour ago (or closest available)
-    const oneHourAgo = new Date(Date.now() - (60 * 60 * 1000));
-    
-    const historicalPrice = await CryptoPrice.findOne({
-      symbol: symbol,
-      timestamp: { $lte: oneHourAgo }
-    }).sort({ timestamp: -1 });
-    
-    if (!historicalPrice || !historicalPrice.price || historicalPrice.price <= 0) {
-      logger.debug(`No valid historical price found for ${symbol}, returning 0% change`);
-      return 0;
-    }
-    
-    // Calculate percentage change: ((current - old) / old) * 100
-    const oldPrice = historicalPrice.price;
-    const percentageChange = ((currentPrice - oldPrice) / oldPrice) * 100;
-    
-    // Round to 4 decimal places for percentage precision
-    const roundedChange = parseFloat(percentageChange.toFixed(4));
-    
-    logger.debug(`Calculated hourly change for ${symbol}`, {
-      currentPrice: currentPrice.toFixed(8),
-      oldPrice: oldPrice.toFixed(8),
-      percentageChange: `${roundedChange}%`,
-      timeDiff: `${Math.round((Date.now() - historicalPrice.timestamp.getTime()) / (1000 * 60))} minutes ago`
-    });
-    
-    return roundedChange;
-    
-  } catch (error) {
-    logger.error(`Error calculating hourly percentage change for ${symbol}`, { 
-      error: error.message,
-      currentPrice 
-    });
-    return 0;
   }
 }
 
@@ -282,16 +239,16 @@ async function updateCryptoPrices() {
   }
   
   const startTime = new Date();
-  logger.info('Starting crypto price update job with percentage calculations', { 
+  logger.info('Starting crypto price update job', { 
     timestamp: startTime.toISOString(),
     lockId: lockId
   });
   
   try {
     // Fetch current prices from FCS API
-    let priceMap;
+    let prices;
     try {
-      priceMap = await withRetry(() => fetchFCSApiPrices());
+      prices = await withRetry(() => fetchFCSApiPrices());
     } catch (error) {
       logger.error('Failed to fetch prices from FCS API, job aborted', { 
         error: error.message,
@@ -300,94 +257,59 @@ async function updateCryptoPrices() {
       return { success: false, error: error.message };
     }
     
-    if (priceMap.size === 0) {
+    if (Object.keys(prices).length === 0) {
       logger.warn('No prices fetched from FCS API, job aborted', { lockId: lockId });
       return { success: false, error: 'No prices fetched' };
     }
     
-    logger.info(`Processing ${priceMap.size} tokens for price and percentage calculations`, {
-      tokens: Array.from(priceMap.keys()),
+    logger.info(`Processing ${Object.keys(prices).length} tokens for price storage`, {
+      tokens: Object.keys(prices),
       lockId: lockId
     });
     
-    // Process each price and calculate hourly percentage changes
-    const priceUpdates = [];
-    const timestamp = new Date();
-    
-    for (const [symbol, price] of priceMap.entries()) {
-      try {
-        // Calculate hourly percentage change
-        const hourlyPercentageChange = await calculateHourlyPercentageChange(symbol, price);
+    // Store prices using PriceChange model's built-in method
+    let storedCount = 0;
+    try {
+      storedCount = await PriceChange.storePrices(prices, 'coingecko'); // Using 'coingecko' as source since FCS is similar
+      
+      if (storedCount > 0) {
+        const endTime = new Date();
+        const duration = endTime - startTime;
         
-        const priceUpdate = {
-          symbol: symbol,
-          price: price,
-          hourly_change: hourlyPercentageChange, // This is stored as percentage (e.g., 2.5 for 2.5%)
-          timestamp: timestamp
+        logger.info('Crypto price update job completed successfully', {
+          pricesStored: storedCount,
+          duration: `${duration}ms`,
+          timestamp: endTime.toISOString(),
+          symbols: Object.keys(prices),
+          priceData: Object.entries(prices).map(([symbol, price]) => ({
+            symbol,
+            price: `$${price.toFixed(8)}`
+          })),
+          lockId: lockId
+        });
+        
+        return { 
+          success: true, 
+          pricesStored: storedCount,
+          duration: duration,
+          symbols: Object.keys(prices),
+          priceData: Object.entries(prices).map(([symbol, price]) => ({
+            symbol,
+            price
+          }))
         };
-        
-        priceUpdates.push(priceUpdate);
-        
-        logger.debug(`Prepared price update for ${symbol}`, { 
-          price: `$${price.toFixed(8)}`, 
-          hourlyChange: `${hourlyPercentageChange}%`,
-          lockId: lockId
-        });
-        
-      } catch (error) {
-        logger.error(`Error processing ${symbol}`, { 
-          error: error.message,
-          price: price,
-          lockId: lockId
-        });
-        
-        // Still add the price record even if percentage calculation failed
-        priceUpdates.push({
-          symbol: symbol,
-          price: price,
-          hourly_change: 0, // Default to 0% if calculation fails
-          timestamp: timestamp
-        });
+      } else {
+        logger.warn('No prices were stored', { lockId: lockId });
+        return { success: false, error: 'No prices were stored' };
       }
-    }
-    
-    // Bulk insert to MongoDB (only if we have updates)
-    if (priceUpdates.length > 0) {
-      await CryptoPrice.insertMany(priceUpdates);
       
-      const endTime = new Date();
-      const duration = endTime - startTime;
-      
-      // Log summary of changes
-      const changesWithMovement = priceUpdates.filter(p => Math.abs(p.hourly_change) > 0.01);
-      const avgChange = priceUpdates.reduce((sum, p) => sum + Math.abs(p.hourly_change), 0) / priceUpdates.length;
-      
-      logger.info('Crypto price update job completed successfully', {
-        pricesUpdated: priceUpdates.length,
-        tokensWithMovement: changesWithMovement.length,
-        avgAbsoluteChange: `${avgChange.toFixed(2)}%`,
-        duration: `${duration}ms`,
-        timestamp: endTime.toISOString(),
-        symbols: priceUpdates.map(p => `${p.symbol}(${p.hourly_change > 0 ? '+' : ''}${p.hourly_change}%)`),
+    } catch (storageError) {
+      logger.error('Failed to store prices using PriceChange model', {
+        error: storageError.message,
+        pricesCount: Object.keys(prices).length,
         lockId: lockId
       });
-      
-      return { 
-        success: true, 
-        pricesUpdated: priceUpdates.length,
-        tokensWithMovement: changesWithMovement.length,
-        avgAbsoluteChange: avgChange,
-        duration: duration,
-        symbols: priceUpdates.map(p => p.symbol),
-        priceData: priceUpdates.map(p => ({
-          symbol: p.symbol,
-          price: p.price,
-          change: `${p.hourly_change}%`
-        }))
-      };
-    } else {
-      logger.warn('No price updates to save', { lockId: lockId });
-      return { success: false, error: 'No price updates to save' };
+      return { success: false, error: `Storage failed: ${storageError.message}` };
     }
     
   } catch (error) {
@@ -403,44 +325,76 @@ async function updateCryptoPrices() {
   }
 }
 
-// Cleanup old price data (keep last 30 days for better historical data)
+// Cleanup old price data using PriceChange model method
 async function cleanupOldPrices() {
   try {
-    const cutoffDate = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000)); // 30 days
-    
-    const result = await CryptoPrice.deleteMany({
-      timestamp: { $lt: cutoffDate }
-    });
-    
-    logger.info(`Cleaned up ${result.deletedCount} old price entries (older than 30 days)`);
-    return result.deletedCount;
-    
+    const deletedCount = await PriceChange.cleanupOldPrices(30); // Keep 30 days
+    logger.info(`Cleaned up ${deletedCount} old price entries (older than 30 days)`);
+    return deletedCount;
   } catch (error) {
     logger.error('Error cleaning up old prices', { error: error.message });
     throw error;
   }
 }
 
-// Get price statistics for debugging
+// Get price statistics using PriceChange model
 async function getPriceStatistics() {
   try {
-    const stats = await CryptoPrice.aggregate([
-      {
-        $group: {
-          _id: '$symbol',
-          count: { $sum: 1 },
-          latestPrice: { $max: '$price' },
-          latestChange: { $last: '$hourly_change' },
-          latestTimestamp: { $max: '$timestamp' },
-          avgAbsChange: { $avg: { $abs: '$hourly_change' } }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+    const stats = {};
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    
+    for (const token of tokens) {
+      const latestPrice = await PriceChange.findOne({
+        symbol: token.toUpperCase()
+      }).sort({ timestamp: -1 });
+      
+      const count = await PriceChange.countDocuments({
+        symbol: token.toUpperCase()
+      });
+      
+      stats[token] = {
+        count: count,
+        latestPrice: latestPrice ? latestPrice.price : null,
+        latestTimestamp: latestPrice ? latestPrice.timestamp : null,
+        source: latestPrice ? latestPrice.source : null
+      };
+    }
     
     return stats;
   } catch (error) {
     logger.error('Error getting price statistics', { error: error.message });
+    throw error;
+  }
+}
+
+// Test price changes calculation (for debugging)
+async function testPriceChanges() {
+  try {
+    const prices = await fetchFCSApiPrices();
+    if (Object.keys(prices).length === 0) {
+      throw new Error('No prices fetched for testing');
+    }
+    
+    // Test 1-hour price changes
+    const changes1h = await PriceChange.getPriceChanges(prices, 1);
+    
+    logger.info('Price changes test results', {
+      currentPrices: prices,
+      changes1h: changes1h,
+      tokensWithChanges: Object.keys(changes1h).filter(k => changes1h[k].dataAvailable).length
+    });
+    
+    return {
+      prices,
+      changes1h,
+      summary: {
+        totalTokens: Object.keys(prices).length,
+        tokensWithChanges: Object.keys(changes1h).filter(k => changes1h[k].dataAvailable).length
+      }
+    };
+    
+  } catch (error) {
+    logger.error('Error testing price changes', { error: error.message });
     throw error;
   }
 }
@@ -450,8 +404,8 @@ module.exports = {
   updateCryptoPrices,
   cleanupOldPrices,
   fetchFCSApiPrices,
-  calculateHourlyPercentageChange,
   getPriceStatistics,
+  testPriceChanges,
   // Export lock functions for testing/debugging
   isJobLocked,
   acquireLock,
