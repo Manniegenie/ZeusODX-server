@@ -154,6 +154,65 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
   throw lastError;
 }
 
+// Store prices in database (replaces PriceChange.storePrices)
+async function storePrices(prices) {
+  try {
+    if (!prices || typeof prices !== 'object' || Object.keys(prices).length === 0) {
+      logger.warn('No prices provided to store');
+      return 0;
+    }
+
+    logger.info('Storing prices in database', { 
+      priceCount: Object.keys(prices).length,
+      tokens: Object.keys(prices)
+    });
+
+    let storedCount = 0;
+    const timestamp = new Date();
+
+    // Store each price
+    for (const [symbol, price] of Object.entries(prices)) {
+      if (typeof price !== 'number' || price <= 0) {
+        logger.warn(`Invalid price for ${symbol}: ${price}`);
+        continue;
+      }
+
+      try {
+        // Update or create price record
+        await CryptoPrice.findOneAndUpdate(
+          { symbol: symbol.toUpperCase() },
+          {
+            symbol: symbol.toUpperCase(),
+            price: price,
+            timestamp: timestamp,
+            lastUpdated: timestamp
+          },
+          { 
+            upsert: true, 
+            new: true,
+            runValidators: true
+          }
+        );
+
+        storedCount++;
+        logger.debug(`Stored price for ${symbol}: $${price}`);
+      } catch (storeError) {
+        logger.error(`Failed to store price for ${symbol}`, { 
+          error: storeError.message,
+          price 
+        });
+      }
+    }
+
+    logger.info(`Successfully stored ${storedCount} prices in database`);
+    return storedCount;
+
+  } catch (error) {
+    logger.error('Failed to store prices in database', { error: error.message });
+    throw error;
+  }
+}
+
 // Fetch prices from database (populated by job)
 async function fetchDatabasePrices(tokens) {
   try {
@@ -356,6 +415,7 @@ async function getHourlyPriceChanges(tokens) {
         changes[upperToken] = {
           currentPrice: latestPrice.price,
           hourlyChange: latestPrice.hourly_change, // Job-calculated percentage
+          percentageChange: latestPrice.hourly_change, // Add this for compatibility with old code format
           timestamp: latestPrice.timestamp
         };
         
@@ -541,6 +601,9 @@ module.exports = {
   getPricesWithCache,
   getOriginalPricesWithCache,
   updateUserBalance,
+  
+  // Price storage function (replaces PriceChange.storePrices)
+  storePrices,
   
   // Markdown functions
   getGlobalMarkdownPercentage,
