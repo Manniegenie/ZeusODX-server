@@ -18,7 +18,7 @@ const FCS_API_CONFIG = {
   apiKey: process.env.FCS_API_KEY
 };
 
-// Supported tokens from portfolio.js
+// Supported tokens from portfolio.js (excluding NGNZ - handled by portfolio.js via offramp rate)
 const SUPPORTED_TOKENS = {
   BTC: { fcsApiSymbol: 'BTC/USD', isStablecoin: false },
   ETH: { fcsApiSymbol: 'ETH/USD', isStablecoin: false },
@@ -27,8 +27,8 @@ const SUPPORTED_TOKENS = {
   USDC: { fcsApiSymbol: 'USDC/USD', isStablecoin: true },
   BNB: { fcsApiSymbol: 'BNB/USD', isStablecoin: false },
   MATIC: { fcsApiSymbol: 'MATIC/USD', isStablecoin: false },
-  AVAX: { fcsApiSymbol: 'AVAX/USD', isStablecoin: false },
-  NGNZ: { fcsApiSymbol: null, isStablecoin: true, isNairaPegged: true }
+  AVAX: { fcsApiSymbol: 'AVAX/USD', isStablecoin: false }
+  // NGNZ excluded - calculated from offramp rate in portfolio.js
 };
 
 function validateFCSApiKey(apiKey) {
@@ -66,29 +66,12 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
   throw lastError;
 }
 
-// Get NGNZ price (Naira-pegged stablecoin)
-async function getNGNZPrice() {
-  try {
-    // This would need your offramp rate logic from portfolio.js
-    // For now, using a simple calculation
-    const fallbackRate = 1554.42;
-    return 1 / fallbackRate;
-  } catch (error) {
-    logger.error('Failed to get NGNZ price', { error: error.message });
-    return 1 / 1554.42;
-  }
-}
-
 // Fetch prices from FCS API
 async function fetchFCSApiPrices() {
   try {
     logger.info('Starting FCS API price fetch for job');
     
     const prices = new Map();
-    
-    // Handle NGNZ separately (not supported by FCS API)
-    const ngnzPrice = await getNGNZPrice();
-    prices.set('NGNZ', ngnzPrice);
     
     // Get tokens supported by FCS API
     const fcsApiTokens = Object.keys(SUPPORTED_TOKENS).filter(token => {
@@ -141,19 +124,23 @@ async function fetchFCSApiPrices() {
     
     // Process FCS API response
     for (const item of response.data.response) {
-      if (!item.s || typeof item.c !== 'number') {
-        logger.warn('Invalid FCS API response item', { item });
+      if (!item.s || !item.c) {
+        logger.warn('Invalid FCS API response item - missing symbol or price', { item });
         continue;
       }
       
       const symbol = item.s; // e.g., "BTC/USD"
       const token = symbol.split('/')[0]; // e.g., "BTC"
-      const price = item.c; // Current price
+      const priceStr = item.c; // Current price as string
+      const price = parseFloat(priceStr); // Convert to number
       
-      if (price > 0) {
-        prices.set(token, price);
-        logger.debug(`Set FCS API price: ${token} = $${price.toFixed(8)}`);
+      if (isNaN(price) || price <= 0) {
+        logger.warn(`Invalid price from FCS API for ${token}`, { price: priceStr });
+        continue;
       }
+      
+      prices.set(token, price);
+      logger.debug(`Set FCS API price: ${token} = ${price.toFixed(8)}`);
     }
     
     logger.info(`Successfully fetched ${prices.size} prices from FCS API`);
