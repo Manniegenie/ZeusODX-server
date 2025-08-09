@@ -1,88 +1,60 @@
-const axios = require('axios');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
+const CryptoPrice = require('../models/CryptoPrice'); // NEW: Import CryptoPrice model
 const GlobalMarkdown = require('../models/pricemarkdown');
-const NairaMarkdown = require('../models/offramp'); // Import offramp model
+const NairaMarkdown = require('../models/offramp');
 const logger = require('../utils/logger');
 
-// Configuration for price sources
+// Configuration
 const CONFIG = {
-  CACHE_TTL: 2 * 60 * 1000, // 2 minutes (reduced from 5 since FCS updates every 30s-1min)
-  REQUEST_TIMEOUT: 15000, // 15 seconds
-  MAX_RETRIES: 3,
-  RETRY_DELAY: 2000, // 2 seconds
-  RATE_LIMIT_DELAY: 30000, // 30 seconds wait on rate limit
+  CACHE_TTL: 5 * 60 * 1000, // 5 minutes (increased since we're reading from DB)
+  DB_QUERY_TIMEOUT: 5000, // 5 seconds for DB queries
+  MAX_RETRIES: 2, // Reduced retries since DB is more reliable
+  RETRY_DELAY: 1000, // 1 second
 };
 
-// ALIGNED WITH USER SCHEMA: All tokens that exist in user.js balance fields - DOGE REMOVED
+// ALIGNED WITH USER SCHEMA: All tokens that exist in user.js balance fields
 const SUPPORTED_TOKENS = {
   BTC: { 
-    currencyApiSymbol: 'BTC', 
-    fcsApiSymbol: 'BTC/USD',
     isStablecoin: false, 
-    supportedByCurrencyAPI: true,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   ETH: { 
-    currencyApiSymbol: 'ETH', 
-    fcsApiSymbol: 'ETH/USD',
     isStablecoin: false, 
-    supportedByCurrencyAPI: true,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   SOL: { 
-    currencyApiSymbol: 'SOL', 
-    fcsApiSymbol: 'SOL/USD',
     isStablecoin: false, 
-    supportedByCurrencyAPI: true,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   USDT: { 
-    currencyApiSymbol: 'USDT', 
-    fcsApiSymbol: 'USDT/USD',
     isStablecoin: true, 
-    supportedByCurrencyAPI: false,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   USDC: { 
-    currencyApiSymbol: 'USDC', 
-    fcsApiSymbol: 'USDC/USD',
     isStablecoin: true, 
-    supportedByCurrencyAPI: false,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   BNB: { 
-    currencyApiSymbol: 'BNB', 
-    fcsApiSymbol: 'BNB/USD',
     isStablecoin: false, 
-    supportedByCurrencyAPI: true,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   MATIC: { 
-    currencyApiSymbol: 'MATIC', 
-    fcsApiSymbol: 'MATIC/USD',
     isStablecoin: false, 
-    supportedByCurrencyAPI: true,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   AVAX: { 
-    currencyApiSymbol: 'AVAX', 
-    fcsApiSymbol: 'AVAX/USD',
     isStablecoin: false, 
-    supportedByCurrencyAPI: true,
-    supportedByFCSAPI: true
+    supportedByDB: true
   },
   NGNZ: { 
-    currencyApiSymbol: 'NGNZ', 
-    fcsApiSymbol: null, // Not supported by FCS API
     isStablecoin: true, 
     isNairaPegged: true, 
-    supportedByCurrencyAPI: false,
-    supportedByFCSAPI: false
+    supportedByDB: true
   },
 };
 
-// Simplified price cache
+// Simplified price cache for DB queries
 const priceCache = {
   data: new Map(),
   lastUpdated: null,
@@ -90,31 +62,7 @@ const priceCache = {
   updatePromise: null,
 };
 
-// Validates API keys
-function validateCurrencyApiKey(apiKey) {
-  if (!apiKey) return false;
-  return typeof apiKey === 'string' && apiKey.length >= 32;
-}
-
-function validateFCSApiKey(apiKey) {
-  if (!apiKey) return false;
-  return typeof apiKey === 'string' && apiKey.length >= 16;
-}
-
-// API configurations
-const CURRENCY_API_CONFIG = {
-  hasValidApiKey: validateCurrencyApiKey(process.env.CURRENCYAPI_KEY),
-  baseUrl: 'https://api.currencyapi.com/v3',
-  apiKey: process.env.CURRENCYAPI_KEY
-};
-
-const FCS_API_CONFIG = {
-  hasValidApiKey: validateFCSApiKey(process.env.FCS_API_KEY),
-  baseUrl: 'https://fcsapi.com/api-v3',
-  apiKey: process.env.FCS_API_KEY
-};
-
-// NEW FUNCTION: Get global markdown percentage
+// Get global markdown percentage
 async function getGlobalMarkdownPercentage() {
   try {
     const markdownDoc = await GlobalMarkdown.getCurrentMarkdown();
@@ -134,7 +82,7 @@ async function getGlobalMarkdownPercentage() {
   }
 }
 
-// NEW FUNCTION: Apply markdown to prices
+// Apply markdown to prices
 function applyMarkdownToPrices(priceMap, markdownPercentage) {
   if (!markdownPercentage || markdownPercentage <= 0) {
     return priceMap;
@@ -165,7 +113,7 @@ function applyMarkdownToPrices(priceMap, markdownPercentage) {
   return markedDownPrices;
 }
 
-// NEW FUNCTION: Get USD/NGN offramp rate
+// Get USD/NGN offramp rate
 async function getNairaOfframpRate() {
   try {
     const rateDoc = await NairaMarkdown.findOne();
@@ -190,7 +138,7 @@ async function handleNGNZPricing(tokens) {
   return ngnzPrices;
 }
 
-// Checks if cache is valid and contains all required tokens
+// Check if cache is valid and contains all required tokens
 function isCacheValid(tokenSymbols) {
   if (!priceCache.lastUpdated) return false;
   
@@ -204,7 +152,7 @@ function isCacheValid(tokenSymbols) {
   );
 }
 
-// Implements retry logic with exponential backoff
+// Retry logic for database operations
 async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RETRY_DELAY) {
   let lastError;
   
@@ -214,19 +162,10 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
     } catch (error) {
       lastError = error;
       
-      if (error.response && error.response.status === 429) {
-        if (attempt === maxRetries) break;
-        
-        const rateLimitWait = CONFIG.RATE_LIMIT_DELAY;
-        logger.warn(`Rate limited, waiting ${rateLimitWait}ms before retry ${attempt + 1}`);
-        await new Promise(resolve => setTimeout(resolve, rateLimitWait));
-        continue;
-      }
-      
       if (attempt === maxRetries) break;
       
       const waitTime = delay * Math.pow(2, attempt);
-      logger.warn(`Attempt ${attempt + 1} failed, retrying in ${waitTime}ms`, { error: error.message });
+      logger.warn(`DB attempt ${attempt + 1} failed, retrying in ${waitTime}ms`, { error: error.message });
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
@@ -234,262 +173,80 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
   throw lastError;
 }
 
-// NEW: Fetch prices from FCS API (Primary source)
-async function fetchFCSApiPrices(tokens) {
+// NEW: Fetch prices from database
+async function fetchDatabasePrices(tokens) {
   try {
-    logger.info('Starting FCS API price fetch', { requestedTokens: tokens });
-    
-    // Filter to only tokens that FCS API supports
-    const fcsApiTokens = tokens.filter(token => {
-      const upperToken = token.toUpperCase();
-      const tokenInfo = SUPPORTED_TOKENS[upperToken];
-      return tokenInfo && tokenInfo.supportedByFCSAPI;
-    });
-    
-    logger.info('Tokens supported by FCS API', { fcsApiTokens });
+    logger.info('Starting database price fetch', { requestedTokens: tokens });
     
     const prices = new Map();
     
-    // Handle NGNZ separately (not supported by FCS API)
+    // Handle NGNZ separately (calculated from offramp rate)
     const ngnzPrices = await handleNGNZPricing(tokens);
     for (const [token, price] of Object.entries(ngnzPrices)) {
       prices.set(token, price);
       logger.debug(`Set NGNZ price: ${token} = $${price}`);
     }
     
-    // Exit early if no tokens to request from FCS API
-    if (fcsApiTokens.length === 0) {
-      logger.info('No tokens to request from FCS API, returning early');
+    // Filter to tokens that should be in the database
+    const dbTokens = tokens.filter(token => {
+      const upperToken = token.toUpperCase();
+      const tokenInfo = SUPPORTED_TOKENS[upperToken];
+      return tokenInfo && tokenInfo.supportedByDB && upperToken !== 'NGNZ'; // NGNZ handled separately
+    });
+    
+    if (dbTokens.length === 0) {
+      logger.info('No tokens to request from database, returning early');
       return prices;
     }
     
-    // Build symbol list for FCS API (e.g., "BTC/USD,ETH/USD")
-    const fcsSymbols = fcsApiTokens
-      .map(token => SUPPORTED_TOKENS[token.toUpperCase()].fcsApiSymbol)
-      .filter(symbol => symbol !== null)
-      .join(',');
+    logger.info('Requesting from database', { dbTokens });
     
-    logger.info('Requesting from FCS API', { fcsSymbols });
+    // Get latest prices for requested tokens
+    const dbPrices = await CryptoPrice.getLatestPrices();
     
-    const config = {
-      params: {
-        symbol: fcsSymbols,
-        access_key: FCS_API_CONFIG.apiKey
-      },
-      timeout: CONFIG.REQUEST_TIMEOUT,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Portfolio-Service/1.0'
-      }
-    };
-    
-    if (!FCS_API_CONFIG.hasValidApiKey) {
-      throw new Error('No valid FCS API key found');
+    if (!dbPrices || dbPrices.length === 0) {
+      throw new Error('No prices found in database');
     }
     
-    const response = await axios.get(`${FCS_API_CONFIG.baseUrl}/crypto/latest`, config);
-    
-    if (!response.data || !response.data.response || !Array.isArray(response.data.response)) {
-      throw new Error('Invalid response format from FCS API');
-    }
-    
-    if (!response.data.status) {
-      throw new Error(`FCS API returned error: ${response.data.msg || 'Unknown error'}`);
-    }
-    
-    logger.info('FCS API response received', { 
-      responseCount: response.data.response.length,
-      responseStatus: response.status,
-      creditCount: response.data.info?.credit_count
+    logger.info('Database prices retrieved', { 
+      pricesFound: dbPrices.length,
+      tokens: dbPrices.map(p => p.symbol)
     });
     
-    // Process FCS API response
-    for (const item of response.data.response) {
-      if (!item.s || typeof item.c !== 'number') {
-        logger.warn('Invalid FCS API response item', { item });
-        continue;
-      }
+    // Process database results
+    for (const priceDoc of dbPrices) {
+      const token = priceDoc.symbol;
+      const price = priceDoc.price;
       
-      // Extract token from symbol (e.g., "BTC/USD" -> "BTC")
-      const symbol = item.s; // e.g., "BTC/USD"
-      const token = symbol.split('/')[0]; // e.g., "BTC"
-      const price = item.c; // Current price
-      
-      if (price > 0) {
+      // Only include tokens that were requested
+      if (dbTokens.some(t => t.toUpperCase() === token) && price > 0) {
         prices.set(token, price);
-        logger.debug(`Set FCS API price: ${token} = $${price.toFixed(8)}`);
-      } else {
-        logger.warn(`Invalid price from FCS API for ${token}`, { price });
+        logger.debug(`Set DB price: ${token} = $${price.toFixed(8)}`);
       }
     }
     
-    logger.info(`Successfully fetched ${prices.size} prices from FCS API`, {
-      totalPrices: prices.size,
-      fcsApiPrices: response.data.response.length
-    });
+    // Check if we got all requested tokens
+    const missingTokens = dbTokens.filter(token => 
+      !prices.has(token.toUpperCase())
+    );
     
+    if (missingTokens.length > 0) {
+      logger.warn('Some tokens missing from database', { missingTokens });
+    }
+    
+    logger.info(`Successfully fetched ${prices.size} prices from database`);
     return prices;
+    
   } catch (error) {
-    logger.error('FCS API price fetch failed', { 
+    logger.error('Database price fetch failed', { 
       error: error.message,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      responseData: error.response?.data
+      stack: error.stack
     });
     throw error;
   }
 }
 
-// UPDATED: Fetch prices from CurrencyAPI.com (Backup source)
-async function fetchCurrencyApiPrices(tokens) {
-  try {
-    logger.info('Starting CurrencyAPI price fetch (BACKUP)', { requestedTokens: tokens });
-    
-    // Filter to only tokens that CurrencyAPI actually supports
-    const currencyApiTokens = tokens.filter(token => {
-      const upperToken = token.toUpperCase();
-      const tokenInfo = SUPPORTED_TOKENS[upperToken];
-      return tokenInfo && tokenInfo.supportedByCurrencyAPI;
-    });
-    
-    logger.info('Tokens supported by CurrencyAPI', { currencyApiTokens });
-    
-    const prices = new Map();
-    
-    // Handle stablecoins (always $1.00) - only for tokens not already handled
-    const stablecoins = ['USDT', 'USDC'];
-    for (const token of tokens) {
-      const upperToken = token.toUpperCase();
-      if (stablecoins.includes(upperToken)) {
-        prices.set(upperToken, 1.0);
-        logger.debug(`Set stablecoin price: ${upperToken} = $1.00`);
-      }
-    }
-    
-    // Handle NGNZ separately (Naira-pegged)
-    const ngnzPrices = await handleNGNZPricing(tokens);
-    for (const [token, price] of Object.entries(ngnzPrices)) {
-      prices.set(token, price);
-      logger.debug(`Set NGNZ price: ${token} = $${price}`);
-    }
-    
-    // Exit early if no tokens to request from CurrencyAPI
-    if (currencyApiTokens.length === 0) {
-      logger.info('No tokens to request from CurrencyAPI, returning early');
-      return prices;
-    }
-    
-    // Request only supported tokens from CurrencyAPI
-    const cryptoTokens = currencyApiTokens.join(',');
-    logger.info('Requesting from CurrencyAPI', { cryptoTokens });
-    
-    const config = {
-      params: {
-        base_currency: 'USD',
-        currencies: cryptoTokens
-      },
-      timeout: CONFIG.REQUEST_TIMEOUT,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Portfolio-Service/1.0'
-      }
-    };
-    
-    if (CURRENCY_API_CONFIG.hasValidApiKey) {
-      config.headers['apikey'] = CURRENCY_API_CONFIG.apiKey;
-    } else {
-      logger.warn('No valid CurrencyAPI key found, request may fail');
-    }
-    
-    const response = await axios.get(`${CURRENCY_API_CONFIG.baseUrl}/latest`, config);
-    
-    if (!response.data || !response.data.data || typeof response.data.data !== 'object') {
-      throw new Error('Invalid response format from CurrencyAPI');
-    }
-    
-    logger.info('CurrencyAPI response received', { 
-      responseDataKeys: Object.keys(response.data.data),
-      responseStatus: response.status 
-    });
-    
-    // Process response - CurrencyAPI returns rates like EUR: 0.85 (USD to EUR)
-    // We need to invert to get crypto prices in USD
-    for (const token of currencyApiTokens) {
-      const upperToken = token.toUpperCase();
-      const rateData = response.data.data[upperToken];
-      
-      if (rateData && typeof rateData.value === 'number' && rateData.value > 0) {
-        const price = 1 / rateData.value; // Invert to get USD price per crypto unit
-        prices.set(upperToken, price);
-        logger.debug(`Set CurrencyAPI price: ${upperToken} = $${price.toFixed(2)}`);
-      } else {
-        logger.warn(`Invalid or missing price data for ${upperToken}`, { rateData });
-      }
-    }
-    
-    logger.info(`Successfully fetched ${prices.size} prices from CurrencyAPI`, {
-      totalPrices: prices.size,
-      currencyApiPrices: currencyApiTokens.length
-    });
-    
-    return prices;
-  } catch (error) {
-    logger.error('CurrencyAPI price fetch failed', { 
-      error: error.message,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      responseData: error.response?.data
-    });
-    throw error;
-  }
-}
-
-// NEW: Main price fetching function with FCS API primary + CurrencyAPI backup
-async function fetchCryptoPrices(tokens) {
-  logger.info('Starting crypto price fetch with FCS + CurrencyAPI backup', { tokens });
-  
-  // Try FCS API first (primary source)
-  if (FCS_API_CONFIG.hasValidApiKey) {
-    try {
-      logger.info('Attempting FCS API (primary source)');
-      const fcsApiPrices = await fetchFCSApiPrices(tokens);
-      
-      // Check if we got prices for most requested tokens
-      const requestedTokens = tokens.map(t => t.toUpperCase());
-      const pricesReceived = Array.from(fcsApiPrices.keys());
-      const coveragePercentage = (pricesReceived.length / requestedTokens.length) * 100;
-      
-      if (coveragePercentage >= 70) { // If we got at least 70% coverage
-        logger.info(`FCS API successful with ${coveragePercentage.toFixed(1)}% coverage`, {
-          requestedCount: requestedTokens.length,
-          receivedCount: pricesReceived.length
-        });
-        return fcsApiPrices;
-      } else {
-        logger.warn(`FCS API coverage too low (${coveragePercentage.toFixed(1)}%), trying backup`);
-      }
-    } catch (fcsError) {
-      logger.warn('FCS API failed, trying CurrencyAPI backup', { error: fcsError.message });
-    }
-  } else {
-    logger.warn('No valid FCS API key, skipping to CurrencyAPI backup');
-  }
-  
-  // Fallback to CurrencyAPI
-  if (CURRENCY_API_CONFIG.hasValidApiKey) {
-    try {
-      logger.info('Attempting CurrencyAPI (backup source)');
-      return await fetchCurrencyApiPrices(tokens);
-    } catch (currencyApiError) {
-      logger.error('Both FCS API and CurrencyAPI failed', { error: currencyApiError.message });
-      throw currencyApiError;
-    }
-  } else {
-    throw new Error('No valid API keys available for price fetching');
-  }
-}
-
-// Fallback prices for supported tokens only - DOGE REMOVED
+// Fallback prices for supported tokens (used when DB is unavailable)
 async function getFallbackPrices(tokens) {
   const fallbackPrices = new Map();
   const fallbacks = {
@@ -515,7 +272,21 @@ async function getFallbackPrices(tokens) {
   return fallbackPrices;
 }
 
-// Gets cryptocurrency prices with caching and automatic markdown application
+// Main price fetching function (now database-first)
+async function fetchCryptoPrices(tokens) {
+  logger.info('Starting crypto price fetch from database', { tokens });
+  
+  try {
+    // Try database first
+    return await withRetry(() => fetchDatabasePrices(tokens));
+  } catch (dbError) {
+    logger.error('Database price fetch failed, using fallback prices', { error: dbError.message });
+    // Fallback to hardcoded prices if DB fails
+    return await getFallbackPrices(tokens);
+  }
+}
+
+// Get cryptocurrency prices with caching and automatic markdown application
 async function getPricesWithCache(tokenSymbols) {
   if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
     logger.warn('Invalid token symbols provided to getPricesWithCache');
@@ -557,11 +328,11 @@ async function getPricesWithCache(tokenSymbols) {
     try {
       let priceMap;
       
-      // Fetch original prices from API or fallback
+      // Fetch prices from database or fallback
       try {
-        priceMap = await withRetry(() => fetchCryptoPrices(normalizedTokens));
-      } catch (apiError) {
-        logger.warn('All APIs failed, using fallback prices', { error: apiError.message });
+        priceMap = await fetchCryptoPrices(normalizedTokens);
+      } catch (error) {
+        logger.warn('Price fetch failed, using fallback prices', { error: error.message });
         priceMap = await getFallbackPrices(normalizedTokens);
       }
       
@@ -618,9 +389,7 @@ async function getPricesWithCache(tokenSymbols) {
   );
 }
 
-// ====================================================
-// UPDATED: Updates user balance directly for internal transfers - DOGE REMOVED
-// ====================================================
+// Update user balance directly for internal transfers
 async function updateUserBalance(userId, currency, amount, session = null) {
   if (!userId || !currency || typeof amount !== 'number') {
     throw new Error('Invalid parameters for balance update');
@@ -668,7 +437,7 @@ async function updateUserBalance(userId, currency, amount, session = null) {
       throw new Error(`User not found: ${userId}`);
     }
     
-    // Recalculate total portfolio balance - DOGE REMOVED
+    // Recalculate total portfolio balance
     const totalPortfolioBalance = 
       (user.btcBalanceUSD || 0) +
       (user.ethBalanceUSD || 0) +
@@ -705,10 +474,7 @@ async function updateUserBalance(userId, currency, amount, session = null) {
   }
 }
 
-// ... (rest of the functions remain the same as in the original code)
-// I'll include the essential ones for brevity
-
-// NEW FUNCTION: Get prices without markdown (original prices)
+// Get prices without markdown (original prices from database)
 async function getOriginalPricesWithCache(tokenSymbols) {
   if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
     logger.warn('Invalid token symbols provided to getOriginalPricesWithCache');
@@ -729,9 +495,9 @@ async function getOriginalPricesWithCache(tokenSymbols) {
     let priceMap;
     
     try {
-      priceMap = await withRetry(() => fetchCryptoPrices(normalizedTokens));
-    } catch (apiError) {
-      logger.warn('APIs failed, using fallback prices for original prices', { error: apiError.message });
+      priceMap = await fetchCryptoPrices(normalizedTokens);
+    } catch (error) {
+      logger.warn('Database failed, using fallback prices for original prices', { error: error.message });
       priceMap = await getFallbackPrices(normalizedTokens);
     }
     
@@ -745,7 +511,7 @@ async function getOriginalPricesWithCache(tokenSymbols) {
   }
 }
 
-// Gets cache statistics
+// Get cache statistics
 function getCacheStats() {
   return {
     cacheSize: priceCache.data.size,
@@ -753,13 +519,12 @@ function getCacheStats() {
     isUpdating: priceCache.isUpdating,
     cacheAge: priceCache.lastUpdated ? Date.now() - priceCache.lastUpdated : null,
     ttl: CONFIG.CACHE_TTL,
-    usingFCSAPI: FCS_API_CONFIG.hasValidApiKey,
-    usingCurrencyAPI: CURRENCY_API_CONFIG.hasValidApiKey,
+    usingDatabase: true,
     supportedTokens: Object.keys(SUPPORTED_TOKENS)
   };
 }
 
-// Clears the price cache
+// Clear the price cache
 function clearPriceCache() {
   priceCache.data.clear();
   priceCache.lastUpdated = null;
@@ -770,7 +535,7 @@ function clearPriceCache() {
 
 // Force refresh prices for specific tokens
 async function forceRefreshPrices(tokens = []) {
-  logger.info('Force refreshing prices', { tokens });
+  logger.info('Force refreshing prices from database', { tokens });
   
   clearPriceCache();
   
@@ -779,9 +544,40 @@ async function forceRefreshPrices(tokens = []) {
   return await getPricesWithCache(tokensToRefresh);
 }
 
-// Validates if a token is supported
+// Validate if a token is supported
 function isTokenSupported(token) {
   return SUPPORTED_TOKENS.hasOwnProperty(token.toUpperCase());
+}
+
+// Get hourly price changes from database
+async function getHourlyPriceChanges(tokens) {
+  try {
+    const changes = {};
+    
+    for (const token of tokens) {
+      const upperToken = token.toUpperCase();
+      
+      if (!SUPPORTED_TOKENS[upperToken]) {
+        continue;
+      }
+      
+      // Get latest price
+      const latestPrice = await CryptoPrice.getLatestPrice(upperToken);
+      
+      if (latestPrice && latestPrice.hourly_change !== undefined) {
+        changes[upperToken] = {
+          currentPrice: latestPrice.price,
+          hourlyChange: latestPrice.hourly_change,
+          timestamp: latestPrice.timestamp
+        };
+      }
+    }
+    
+    return changes;
+  } catch (error) {
+    logger.error('Failed to get hourly price changes', { error: error.message });
+    return {};
+  }
 }
 
 module.exports = {
@@ -790,7 +586,7 @@ module.exports = {
   getOriginalPricesWithCache,
   updateUserBalance,
   
-  // NEW: Markdown functions
+  // Markdown functions
   getGlobalMarkdownPercentage,
   applyMarkdownToPrices,
   
@@ -800,6 +596,10 @@ module.exports = {
   forceRefreshPrices,
   isCacheValid,
   
+  // NEW: Database-specific functions
+  fetchDatabasePrices,
+  getHourlyPriceChanges,
+  
   // Utilities
   isTokenSupported,
   withRetry,
@@ -808,8 +608,6 @@ module.exports = {
   
   // Configuration
   CONFIG,
-  FCS_API_CONFIG,
-  CURRENCY_API_CONFIG,
   
   // Cache object
   priceCache

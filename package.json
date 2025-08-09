@@ -30,7 +30,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.15.0",
     "morgan": "^1.10.0",
-    "node-cron": "^4.1.0",
+    "node-cron": "^4.2.1",
     "node-fetch": "^3.3.2",
     "p-limit": "^6.2.0",
     "passport": "^0.7.0",

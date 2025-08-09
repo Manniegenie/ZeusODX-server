@@ -7,6 +7,10 @@ const passport = require("passport");
 const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
+const cron = require('node-cron');
+
+// Import crypto price job
+const { updateCryptoPrices } = require('./services/cryptoPriceJob');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -180,6 +184,17 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: "Internal Server Error" });
 });
 
+// Crypto Price Update Job - Run every 15 minutes
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    console.log('🔄 Starting scheduled crypto price update...');
+    await updateCryptoPrices();
+    console.log('✅ Scheduled crypto price update completed');
+  } catch (error) {
+    console.error('❌ Scheduled crypto price job failed:', error.message);
+  }
+});
+
 // Start Server
 const startServer = async () => {
   try {
@@ -188,6 +203,18 @@ const startServer = async () => {
     
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
+      console.log('⏰ Crypto price update job scheduled every 15 minutes');
+      
+      // Run price update immediately on startup
+      setTimeout(async () => {
+        try {
+          console.log('🚀 Running initial crypto price update...');
+          await updateCryptoPrices();
+          console.log('✅ Initial crypto price update completed');
+        } catch (error) {
+          console.error('❌ Initial crypto price update failed:', error.message);
+        }
+      }, 5000); // Wait 5 seconds after server start
     });
   } catch (error) {
     console.error("Error during startup:", error);
