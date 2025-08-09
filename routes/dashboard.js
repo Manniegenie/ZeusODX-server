@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
 const { getPricesWithCache, getHourlyPriceChanges, SUPPORTED_TOKENS, getCacheStats } = require('../services/portfolio');
+const { getCurrentRate } = require('../services/offramppriceservice');
 const logger = require('../utils/logger');
 
 /**
@@ -82,23 +83,30 @@ router.get('/dashboard', async (req, res) => {
     const kycPercentageMap = { 0: 0, 1: 33, 2: 67, 3: 100 };
     const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
 
-    // Get all supported token symbols (including NGNZ)
-    const tokenSymbols = Object.keys(SUPPORTED_TOKENS);
+    // Get supported token symbols (excluding NGNZ - we'll fetch it separately)
+    const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
 
     logger.info('Fetching dashboard data', { 
       userId, 
       requestedTokens: tokenSymbols 
     });
 
-    // Fetch prices and changes from portfolio service
-    const [tokenPricesResult, hourlyChangesResult] = await Promise.allSettled([
-      getPricesWithCache(tokenSymbols), // ✅ Fixed: uses portfolio service properly
-      getHourlyPriceChanges(tokenSymbols) // ✅ Gets job-calculated percentages
+    // Fetch prices, changes, and NGNZ rate separately like the old route
+    const [tokenPricesResult, hourlyChangesResult, ngnzRateInfo] = await Promise.allSettled([
+      getPricesWithCache(tokenSymbols),
+      getHourlyPriceChanges(tokenSymbols),
+      getCurrentRate()
     ]);
 
     // Handle pricing data
     const prices = tokenPricesResult.status === 'fulfilled' ? tokenPricesResult.value : {};
     const changes1Hour = hourlyChangesResult.status === 'fulfilled' ? hourlyChangesResult.value : {};
+    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
+
+    // Add NGNZ price like the old route
+    if (ngnzRate && ngnzRate.finalPrice) {
+      prices.NGNZ = ngnzRate.finalPrice;
+    }
 
     logger.info('Pricing data fetched', {
       pricesCount: Object.keys(prices).length,
@@ -111,10 +119,11 @@ router.get('/dashboard', async (req, res) => {
     // Calculate USD balances using portfolio service prices
     const calculatedUSDBalances = await calculateUSDBalances(user);
 
-    // Build portfolio balances data
+    // Build portfolio balances data for all supported tokens
     const portfolioBalances = {};
+    const allTokenSymbols = Object.keys(SUPPORTED_TOKENS);
     
-    for (const token of tokenSymbols) {
+    for (const token of allTokenSymbols) {
       const tokenLower = token.toLowerCase();
       const balanceField = `${tokenLower}Balance`;
       const pendingBalanceField = `${tokenLower}PendingBalance`;
@@ -160,16 +169,14 @@ router.get('/dashboard', async (req, res) => {
         balances: portfolioBalances
       },
       market: {
-        prices: prices, // ✅ Includes NGNZ from portfolio service
-        priceChanges1h: changes1Hour, // ✅ Job-calculated percentages (excludes NGNZ)
-        ngnzExchangeRate: {
-          rate: prices.NGNZ || 0,
-          lastUpdated: new Date().toISOString(),
-          source: 'offramp_rate',
-          isDynamic: true
-        },
-        pricesLastUpdated: tokenPricesResult.status === 'fulfilled' ? new Date().toISOString() : null,
-        priceSource: 'portfolio_service'
+        prices: prices,
+        priceChanges1h: changes1Hour,
+        ngnzExchangeRate: ngnzRate ? {
+          rate: ngnzRate.finalPrice,
+          lastUpdated: ngnzRate.lastUpdated,
+          source: ngnzRate.source
+        } : null,
+        pricesLastUpdated: tokenPricesResult.status === 'fulfilled' ? new Date().toISOString() : null
       },
       wallets: user.wallets,
       security: {
@@ -182,7 +189,7 @@ router.get('/dashboard', async (req, res) => {
     // Log dashboard performance
     logger.info('Dashboard data prepared successfully', {
       userId,
-      totalTokens: tokenSymbols.length,
+      totalTokens: allTokenSymbols.length,
       pricesRetrieved: Object.keys(prices).length,
       changesRetrieved: Object.keys(changes1Hour).length,
       ngnzPrice: prices.NGNZ,
