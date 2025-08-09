@@ -14,7 +14,7 @@ const cryptoPriceSchema = new mongoose.Schema({
   },
   hourly_change: {
     type: Number,
-    default: 0
+    default: 0  // Stored as percentage (e.g., 2.5 for 2.5%, -1.2 for -1.2%)
   },
   timestamp: {
     type: Date,

@@ -1,65 +1,57 @@
+// services/portfolio.js - Simplified without caching
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
-const CryptoPrice = require('../models/CryptoPrice'); // NEW: Import CryptoPrice model
+const CryptoPrice = require('../models/CryptoPrice');
 const GlobalMarkdown = require('../models/pricemarkdown');
 const NairaMarkdown = require('../models/offramp');
 const logger = require('../utils/logger');
 
 // Configuration
 const CONFIG = {
-  CACHE_TTL: 5 * 60 * 1000, // 5 minutes (increased since we're reading from DB)
   DB_QUERY_TIMEOUT: 5000, // 5 seconds for DB queries
-  MAX_RETRIES: 2, // Reduced retries since DB is more reliable
-  RETRY_DELAY: 1000, // 1 second
+  MAX_RETRIES: 2,
+  RETRY_DELAY: 1000,
 };
 
 // ALIGNED WITH USER SCHEMA: All tokens that exist in user.js balance fields
 const SUPPORTED_TOKENS = {
   BTC: { 
     isStablecoin: false, 
-    supportedByDB: true
+    supportedByJob: true // Populated by updateCryptoPrices job
   },
   ETH: { 
     isStablecoin: false, 
-    supportedByDB: true
+    supportedByJob: true
   },
   SOL: { 
     isStablecoin: false, 
-    supportedByDB: true
+    supportedByJob: true
   },
   USDT: { 
     isStablecoin: true, 
-    supportedByDB: true
+    supportedByJob: true
   },
   USDC: { 
     isStablecoin: true, 
-    supportedByDB: true
+    supportedByJob: true
   },
   BNB: { 
     isStablecoin: false, 
-    supportedByDB: true
+    supportedByJob: true
   },
   MATIC: { 
     isStablecoin: false, 
-    supportedByDB: true
+    supportedByJob: true
   },
   AVAX: { 
     isStablecoin: false, 
-    supportedByDB: true
+    supportedByJob: true
   },
   NGNZ: { 
     isStablecoin: true, 
     isNairaPegged: true, 
-    supportedByDB: true
+    supportedByJob: false // Calculated from offramp rate
   },
-};
-
-// Simplified price cache for DB queries
-const priceCache = {
-  data: new Map(),
-  lastUpdated: null,
-  isUpdating: false,
-  updatePromise: null,
 };
 
 // Get global markdown percentage
@@ -82,7 +74,7 @@ async function getGlobalMarkdownPercentage() {
   }
 }
 
-// Apply markdown to prices
+// Apply markdown to prices (exempt stablecoins and NGNZ)
 function applyMarkdownToPrices(priceMap, markdownPercentage) {
   if (!markdownPercentage || markdownPercentage <= 0) {
     return priceMap;
@@ -92,11 +84,12 @@ function applyMarkdownToPrices(priceMap, markdownPercentage) {
   const discountMultiplier = (100 - markdownPercentage) / 100;
   
   for (const [token, price] of priceMap.entries()) {
-    // Don't apply markdown to stablecoins or NGNZ
     const tokenInfo = SUPPORTED_TOKENS[token];
     if (tokenInfo && (tokenInfo.isStablecoin || tokenInfo.isNairaPegged)) {
+      // Don't apply markdown to stablecoins or NGNZ
       markedDownPrices.set(token, price);
     } else {
+      // Apply markdown to price only
       const markedDownPrice = price * discountMultiplier;
       markedDownPrices.set(token, markedDownPrice);
     }
@@ -134,22 +127,10 @@ async function handleNGNZPricing(tokens) {
   if (tokens.some(token => token.toUpperCase() === 'NGNZ')) {
     const ngnToUsdRate = 1 / await getNairaOfframpRate();
     ngnzPrices['NGNZ'] = ngnToUsdRate;
+    
+    logger.debug(`Set NGNZ price from offramp rate: $${ngnToUsdRate}`);
   }
   return ngnzPrices;
-}
-
-// Check if cache is valid and contains all required tokens
-function isCacheValid(tokenSymbols) {
-  if (!priceCache.lastUpdated) return false;
-  
-  const now = Date.now();
-  const cacheExpired = now - priceCache.lastUpdated > CONFIG.CACHE_TTL;
-  
-  if (cacheExpired) return false;
-  
-  return tokenSymbols.every(symbol => 
-    priceCache.data.has(symbol.toUpperCase())
-  );
 }
 
 // Retry logic for database operations
@@ -173,10 +154,10 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
   throw lastError;
 }
 
-// NEW: Fetch prices from database
+// Fetch prices from database (populated by job)
 async function fetchDatabasePrices(tokens) {
   try {
-    logger.info('Starting database price fetch', { requestedTokens: tokens });
+    logger.info('Fetching prices from job-populated database', { requestedTokens: tokens });
     
     const prices = new Map();
     
@@ -187,28 +168,28 @@ async function fetchDatabasePrices(tokens) {
       logger.debug(`Set NGNZ price: ${token} = $${price}`);
     }
     
-    // Filter to tokens that should be in the database
+    // Filter to tokens that should be in the database (populated by job)
     const dbTokens = tokens.filter(token => {
       const upperToken = token.toUpperCase();
       const tokenInfo = SUPPORTED_TOKENS[upperToken];
-      return tokenInfo && tokenInfo.supportedByDB && upperToken !== 'NGNZ'; // NGNZ handled separately
+      return tokenInfo && tokenInfo.supportedByJob && upperToken !== 'NGNZ'; // NGNZ handled separately
     });
     
     if (dbTokens.length === 0) {
-      logger.info('No tokens to request from database, returning early');
+      logger.info('No job-supported tokens to request from database');
       return prices;
     }
     
-    logger.info('Requesting from database', { dbTokens });
+    logger.info('Requesting job-populated prices from database', { dbTokens });
     
-    // Get latest prices for requested tokens
+    // Get latest prices for requested tokens (populated by job)
     const dbPrices = await CryptoPrice.getLatestPrices();
     
     if (!dbPrices || dbPrices.length === 0) {
-      throw new Error('No prices found in database');
+      throw new Error('No prices found in database - job may not be running');
     }
     
-    logger.info('Database prices retrieved', { 
+    logger.info('Job-populated prices retrieved from database', { 
       pricesFound: dbPrices.length,
       tokens: dbPrices.map(p => p.symbol)
     });
@@ -221,7 +202,7 @@ async function fetchDatabasePrices(tokens) {
       // Only include tokens that were requested
       if (dbTokens.some(t => t.toUpperCase() === token) && price > 0) {
         prices.set(token, price);
-        logger.debug(`Set DB price: ${token} = $${price.toFixed(8)}`);
+        logger.debug(`Set job-populated price: ${token} = $${price.toFixed(8)}`);
       }
     }
     
@@ -231,14 +212,14 @@ async function fetchDatabasePrices(tokens) {
     );
     
     if (missingTokens.length > 0) {
-      logger.warn('Some tokens missing from database', { missingTokens });
+      logger.warn('Some tokens missing from job-populated database', { missingTokens });
     }
     
-    logger.info(`Successfully fetched ${prices.size} prices from database`);
+    logger.info(`Successfully fetched ${prices.size} prices from job-populated database`);
     return prices;
     
   } catch (error) {
-    logger.error('Database price fetch failed', { 
+    logger.error('Job-populated database price fetch failed', { 
       error: error.message,
       stack: error.stack
     });
@@ -246,7 +227,7 @@ async function fetchDatabasePrices(tokens) {
   }
 }
 
-// Fallback prices for supported tokens (used when DB is unavailable)
+// Fallback prices (used when job-populated database is unavailable)
 async function getFallbackPrices(tokens) {
   const fallbackPrices = new Map();
   const fallbacks = {
@@ -272,21 +253,21 @@ async function getFallbackPrices(tokens) {
   return fallbackPrices;
 }
 
-// Main price fetching function (now database-first)
+// Main price fetching function (reads from job-populated database)
 async function fetchCryptoPrices(tokens) {
-  logger.info('Starting crypto price fetch from database', { tokens });
+  logger.info('Starting crypto price fetch from job-populated database', { tokens });
   
   try {
-    // Try database first
+    // Try job-populated database first
     return await withRetry(() => fetchDatabasePrices(tokens));
   } catch (dbError) {
-    logger.error('Database price fetch failed, using fallback prices', { error: dbError.message });
-    // Fallback to hardcoded prices if DB fails
+    logger.error('Job-populated database price fetch failed, using fallback prices', { error: dbError.message });
+    // Fallback to hardcoded prices if job-populated DB fails
     return await getFallbackPrices(tokens);
   }
 }
 
-// Get cryptocurrency prices with caching and automatic markdown application
+// Get cryptocurrency prices with automatic markdown application (no caching)
 async function getPricesWithCache(tokenSymbols) {
   if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
     logger.warn('Invalid token symbols provided to getPricesWithCache');
@@ -305,88 +286,98 @@ async function getPricesWithCache(tokenSymbols) {
     return {};
   }
   
-  // Check cache validity
-  if (isCacheValid(normalizedTokens)) {
-    logger.debug('Using cached prices with markdown applied', { tokens: normalizedTokens });
-    return Object.fromEntries(
-      normalizedTokens.map(token => [token, priceCache.data.get(token)])
-    );
-  }
-  
-  // Handle concurrent requests
-  if (priceCache.isUpdating && priceCache.updatePromise) {
-    logger.info('Price update in progress, waiting for completion');
-    await priceCache.updatePromise;
-    return Object.fromEntries(
-      normalizedTokens.map(token => [token, priceCache.data.get(token) || 0])
-    );
-  }
-  
-  // Start price update with markdown integration
-  priceCache.isUpdating = true;
-  priceCache.updatePromise = (async () => {
+  try {
+    // Fetch fresh prices from job-populated database or fallback
+    let priceMap;
     try {
-      let priceMap;
-      
-      // Fetch prices from database or fallback
-      try {
-        priceMap = await fetchCryptoPrices(normalizedTokens);
-      } catch (error) {
-        logger.warn('Price fetch failed, using fallback prices', { error: error.message });
-        priceMap = await getFallbackPrices(normalizedTokens);
-      }
-      
-      // Apply global markdown percentage automatically
-      const markdownInfo = await getGlobalMarkdownPercentage();
-      
-      if (markdownInfo.hasMarkdown) {
-        logger.info('Applying global markdown to all crypto prices', {
-          markdownPercentage: markdownInfo.percentage,
-          affectedTokens: Array.from(priceMap.keys()).filter(token => {
-            const tokenInfo = SUPPORTED_TOKENS[token];
-            return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
-          })
-        });
-        priceMap = applyMarkdownToPrices(priceMap, markdownInfo.percentage);
-      }
-      
-      // Update cache with marked-down prices
-      priceCache.data = priceMap;
-      priceCache.lastUpdated = Date.now();
-      
-      logger.info('Price cache updated successfully', { 
-        tokenCount: priceMap.size,
-        tokens: Array.from(priceMap.keys()),
-        markdownApplied: markdownInfo.hasMarkdown,
-        markdownPercentage: markdownInfo.hasMarkdown ? `${markdownInfo.percentage}%` : 'None'
-      });
-      
-      return priceMap;
+      priceMap = await fetchCryptoPrices(normalizedTokens);
     } catch (error) {
-      logger.error('Failed to fetch and process prices', { error: error.message });
+      logger.warn('Price fetch failed, using fallback prices', { error: error.message });
+      priceMap = await getFallbackPrices(normalizedTokens);
+    }
+    
+    // Apply global markdown percentage automatically
+    const markdownInfo = await getGlobalMarkdownPercentage();
+    
+    if (markdownInfo.hasMarkdown) {
+      logger.info('Applying global markdown to all crypto prices', {
+        markdownPercentage: markdownInfo.percentage,
+        affectedTokens: Array.from(priceMap.keys()).filter(token => {
+          const tokenInfo = SUPPORTED_TOKENS[token];
+          return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
+        })
+      });
+      priceMap = applyMarkdownToPrices(priceMap, markdownInfo.percentage);
+    }
+    
+    logger.info('Prices fetched successfully from job-populated database', { 
+      tokenCount: priceMap.size,
+      tokens: Array.from(priceMap.keys()),
+      markdownApplied: markdownInfo.hasMarkdown,
+      markdownPercentage: markdownInfo.hasMarkdown ? `${markdownInfo.percentage}%` : 'None'
+    });
+    
+    // Return prices as object
+    return Object.fromEntries(
+      normalizedTokens.map(token => [token, priceMap.get(token) || 0])
+    );
+    
+  } catch (error) {
+    logger.error('Failed to fetch and process prices', { error: error.message });
+    
+    // Final fallback - return zero prices
+    return Object.fromEntries(
+      normalizedTokens.map(token => [token, 0])
+    );
+  }
+}
+
+// Get hourly price changes (reads job-calculated percentages)
+async function getHourlyPriceChanges(tokens) {
+  try {
+    const changes = {};
+    
+    for (const token of tokens) {
+      const upperToken = token.toUpperCase();
       
-      // Return stale cache if available
-      if (priceCache.data.size > 0) {
-        logger.warn('Returning stale cache data due to fetch failure');
-        return priceCache.data;
+      if (!SUPPORTED_TOKENS[upperToken]) {
+        continue;
       }
       
-      // Final fallback without markdown
-      const fallbackPrices = await getFallbackPrices(normalizedTokens);
-      priceCache.data = fallbackPrices;
-      priceCache.lastUpdated = Date.now();
-      return fallbackPrices;
-    } finally {
-      priceCache.isUpdating = false;
-      priceCache.updatePromise = null;
+      // Skip NGNZ as it doesn't have price changes (stable/pegged)
+      if (upperToken === 'NGNZ') {
+        continue;
+      }
+      
+      // Get latest price with job-calculated hourly change
+      const latestPrice = await CryptoPrice.getLatestPrice(upperToken);
+      
+      if (latestPrice && latestPrice.hourly_change !== undefined) {
+        changes[upperToken] = {
+          currentPrice: latestPrice.price,
+          hourlyChange: latestPrice.hourly_change, // Job-calculated percentage
+          timestamp: latestPrice.timestamp
+        };
+        
+        logger.debug(`Got hourly change for ${upperToken}`, {
+          price: latestPrice.price,
+          change: `${latestPrice.hourly_change}%`
+        });
+      }
     }
-  })();
-  
-  const priceMap = await priceCache.updatePromise;
-  
-  return Object.fromEntries(
-    normalizedTokens.map(token => [token, priceMap.get(token) || 0])
-  );
+    
+    logger.info(`Retrieved hourly changes for ${Object.keys(changes).length} tokens`, {
+      tokens: Object.keys(changes),
+      changes: Object.fromEntries(
+        Object.entries(changes).map(([token, data]) => [token, `${data.hourlyChange}%`])
+      )
+    });
+    
+    return changes;
+  } catch (error) {
+    logger.error('Failed to get hourly price changes from job-populated database', { error: error.message });
+    return {};
+  }
 }
 
 // Update user balance directly for internal transfers
@@ -474,7 +465,7 @@ async function updateUserBalance(userId, currency, amount, session = null) {
   }
 }
 
-// Get prices without markdown (original prices from database)
+// Get prices without markdown (original prices from job-populated database)
 async function getOriginalPricesWithCache(tokenSymbols) {
   if (!Array.isArray(tokenSymbols) || tokenSymbols.length === 0) {
     logger.warn('Invalid token symbols provided to getOriginalPricesWithCache');
@@ -497,7 +488,7 @@ async function getOriginalPricesWithCache(tokenSymbols) {
     try {
       priceMap = await fetchCryptoPrices(normalizedTokens);
     } catch (error) {
-      logger.warn('Database failed, using fallback prices for original prices', { error: error.message });
+      logger.warn('Job-populated database failed, using fallback prices for original prices', { error: error.message });
       priceMap = await getFallbackPrices(normalizedTokens);
     }
     
@@ -511,73 +502,38 @@ async function getOriginalPricesWithCache(tokenSymbols) {
   }
 }
 
-// Get cache statistics
-function getCacheStats() {
-  return {
-    cacheSize: priceCache.data.size,
-    lastUpdated: priceCache.lastUpdated,
-    isUpdating: priceCache.isUpdating,
-    cacheAge: priceCache.lastUpdated ? Date.now() - priceCache.lastUpdated : null,
-    ttl: CONFIG.CACHE_TTL,
-    usingDatabase: true,
-    supportedTokens: Object.keys(SUPPORTED_TOKENS)
-  };
-}
-
-// Clear the price cache
-function clearPriceCache() {
-  priceCache.data.clear();
-  priceCache.lastUpdated = null;
-  priceCache.isUpdating = false;
-  priceCache.updatePromise = null;
-  logger.info('Price cache cleared');
-}
-
-// Force refresh prices for specific tokens
-async function forceRefreshPrices(tokens = []) {
-  logger.info('Force refreshing prices from database', { tokens });
-  
-  clearPriceCache();
-  
-  const tokensToRefresh = tokens.length > 0 ? tokens : Object.keys(SUPPORTED_TOKENS);
-  
-  return await getPricesWithCache(tokensToRefresh);
-}
-
 // Validate if a token is supported
 function isTokenSupported(token) {
   return SUPPORTED_TOKENS.hasOwnProperty(token.toUpperCase());
 }
 
-// Get hourly price changes from database
-async function getHourlyPriceChanges(tokens) {
-  try {
-    const changes = {};
-    
-    for (const token of tokens) {
-      const upperToken = token.toUpperCase();
-      
-      if (!SUPPORTED_TOKENS[upperToken]) {
-        continue;
-      }
-      
-      // Get latest price
-      const latestPrice = await CryptoPrice.getLatestPrice(upperToken);
-      
-      if (latestPrice && latestPrice.hourly_change !== undefined) {
-        changes[upperToken] = {
-          currentPrice: latestPrice.price,
-          hourlyChange: latestPrice.hourly_change,
-          timestamp: latestPrice.timestamp
-        };
-      }
-    }
-    
-    return changes;
-  } catch (error) {
-    logger.error('Failed to get hourly price changes', { error: error.message });
-    return {};
-  }
+// Legacy cache functions (kept for compatibility, but do nothing)
+function clearPriceCache() {
+  logger.info('clearPriceCache called (no-op without caching)');
+}
+
+function getCacheStats() {
+  return {
+    cacheSize: 0,
+    lastUpdated: null,
+    isUpdating: false,
+    cacheAge: null,
+    ttl: 0,
+    usingJobPopulatedDatabase: true,
+    supportedTokens: Object.keys(SUPPORTED_TOKENS),
+    cachingDisabled: true
+  };
+}
+
+function forceRefreshPrices(tokens = []) {
+  logger.info('forceRefreshPrices called (no-op without caching)', { tokens });
+  const tokensToRefresh = tokens.length > 0 ? tokens : Object.keys(SUPPORTED_TOKENS);
+  return getPricesWithCache(tokensToRefresh);
+}
+
+function isCacheValid(tokenSymbols) {
+  // Always return false since we don't cache
+  return false;
 }
 
 module.exports = {
@@ -590,13 +546,13 @@ module.exports = {
   getGlobalMarkdownPercentage,
   applyMarkdownToPrices,
   
-  // Cache management
+  // Cache management (legacy - kept for compatibility)
   clearPriceCache,
   getCacheStats,
   forceRefreshPrices,
   isCacheValid,
   
-  // NEW: Database-specific functions
+  // Job-populated database functions
   fetchDatabasePrices,
   getHourlyPriceChanges,
   
@@ -607,8 +563,5 @@ module.exports = {
   handleNGNZPricing,
   
   // Configuration
-  CONFIG,
-  
-  // Cache object
-  priceCache
+  CONFIG
 };
