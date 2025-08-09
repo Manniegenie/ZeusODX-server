@@ -9,7 +9,71 @@ const CONFIG = {
   MAX_RETRIES: 3,
   RETRY_DELAY: 2000,
   RATE_LIMIT_DELAY: 30000,
+  JOB_LOCK_TTL: 10 * 60 * 1000, // 10 minutes lock
 };
+
+// Simple in-memory job lock (for single instance)
+let jobLock = {
+  isLocked: false,
+  lockTime: null,
+  lockId: null
+};
+
+// Check if job is already running
+function isJobLocked() {
+  if (!jobLock.isLocked) return false;
+  
+  // Check if lock has expired (safety mechanism)
+  const now = Date.now();
+  if (jobLock.lockTime && (now - jobLock.lockTime) > CONFIG.JOB_LOCK_TTL) {
+    logger.warn('Job lock expired, releasing', { 
+      lockAge: now - jobLock.lockTime,
+      lockId: jobLock.lockId 
+    });
+    releaseLock();
+    return false;
+  }
+  
+  return true;
+}
+
+// Acquire job lock
+function acquireLock() {
+  if (isJobLocked()) {
+    return false;
+  }
+  
+  const lockId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  jobLock = {
+    isLocked: true,
+    lockTime: Date.now(),
+    lockId: lockId
+  };
+  
+  logger.info('Job lock acquired', { lockId });
+  return lockId;
+}
+
+// Release job lock
+function releaseLock(lockId = null) {
+  if (lockId && jobLock.lockId !== lockId) {
+    logger.warn('Attempted to release lock with wrong ID', { 
+      providedId: lockId, 
+      currentId: jobLock.lockId 
+    });
+    return false;
+  }
+  
+  const releasedId = jobLock.lockId;
+  jobLock = {
+    isLocked: false,
+    lockTime: null,
+    lockId: null
+  };
+  
+  logger.info('Job lock released', { lockId: releasedId });
+  return true;
+}
 
 // FCS API Configuration
 const FCS_API_CONFIG = {
@@ -180,10 +244,29 @@ async function calculateHourlyChange(symbol, currentPrice) {
   }
 }
 
-// Main job function
+// Main job function with locking
 async function updateCryptoPrices() {
+  // Check if job is already running
+  if (isJobLocked()) {
+    logger.warn('Crypto price update job already running, skipping execution', {
+      currentLockId: jobLock.lockId,
+      lockAge: Date.now() - jobLock.lockTime
+    });
+    return { skipped: true, reason: 'Job already running' };
+  }
+  
+  // Acquire lock
+  const lockId = acquireLock();
+  if (!lockId) {
+    logger.error('Failed to acquire job lock');
+    return { skipped: true, reason: 'Failed to acquire lock' };
+  }
+  
   const startTime = new Date();
-  logger.info('Starting crypto price update job', { timestamp: startTime.toISOString() });
+  logger.info('Starting crypto price update job', { 
+    timestamp: startTime.toISOString(),
+    lockId: lockId
+  });
   
   try {
     // Fetch current prices
@@ -191,13 +274,16 @@ async function updateCryptoPrices() {
     try {
       priceMap = await withRetry(() => fetchFCSApiPrices());
     } catch (error) {
-      logger.error('Failed to fetch prices, job aborted', { error: error.message });
-      return;
+      logger.error('Failed to fetch prices, job aborted', { 
+        error: error.message,
+        lockId: lockId
+      });
+      return { success: false, error: error.message };
     }
     
     if (priceMap.size === 0) {
-      logger.warn('No prices fetched, job aborted');
-      return;
+      logger.warn('No prices fetched, job aborted', { lockId: lockId });
+      return { success: false, error: 'No prices fetched' };
     }
     
     // Process each price and calculate hourly changes
@@ -217,15 +303,19 @@ async function updateCryptoPrices() {
         
         logger.debug(`Prepared update for ${symbol}`, { 
           price: price.toFixed(8), 
-          hourlyChange: `${hourlyChange}%` 
+          hourlyChange: `${hourlyChange}%`,
+          lockId: lockId
         });
         
       } catch (error) {
-        logger.error(`Error processing ${symbol}`, { error: error.message });
+        logger.error(`Error processing ${symbol}`, { 
+          error: error.message,
+          lockId: lockId
+        });
       }
     }
     
-    // Bulk insert to MongoDB
+    // Bulk insert to MongoDB (only if we have updates)
     if (priceUpdates.length > 0) {
       await CryptoPrice.insertMany(priceUpdates);
       
@@ -236,18 +326,31 @@ async function updateCryptoPrices() {
         pricesUpdated: priceUpdates.length,
         duration: `${duration}ms`,
         timestamp: endTime.toISOString(),
-        symbols: priceUpdates.map(p => p.symbol)
+        symbols: priceUpdates.map(p => p.symbol),
+        lockId: lockId
       });
+      
+      return { 
+        success: true, 
+        pricesUpdated: priceUpdates.length,
+        duration: duration,
+        symbols: priceUpdates.map(p => p.symbol)
+      };
     } else {
-      logger.warn('No price updates to save');
+      logger.warn('No price updates to save', { lockId: lockId });
+      return { success: false, error: 'No price updates to save' };
     }
     
   } catch (error) {
     logger.error('Crypto price update job failed', { 
       error: error.message,
-      stack: error.stack 
+      stack: error.stack,
+      lockId: lockId
     });
-    throw error;
+    return { success: false, error: error.message };
+  } finally {
+    // Always release the lock
+    releaseLock(lockId);
   }
 }
 
@@ -274,18 +377,30 @@ module.exports = {
   updateCryptoPrices,
   cleanupOldPrices,
   fetchFCSApiPrices,
-  calculateHourlyChange
+  calculateHourlyChange,
+  // Export lock functions for testing/debugging
+  isJobLocked,
+  acquireLock,
+  releaseLock
 };
 
 // Run immediately if called directly
 if (require.main === module) {
   updateCryptoPrices()
-    .then(() => {
-      logger.info('Job completed successfully');
-      process.exit(0);
+    .then((result) => {
+      if (result.success) {
+        logger.info('Job completed successfully', result);
+        process.exit(0);
+      } else if (result.skipped) {
+        logger.info('Job skipped', result);
+        process.exit(0);
+      } else {
+        logger.error('Job failed', result);
+        process.exit(1);
+      }
     })
     .catch((error) => {
-      logger.error('Job failed', { error: error.message });
+      logger.error('Job crashed', { error: error.message });
       process.exit(1);
     });
 }
