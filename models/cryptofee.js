@@ -11,6 +11,11 @@ const CryptoFeeMarkupSchema = new mongoose.Schema({
     required: true,
     uppercase: true,
   },
+  networkName: {
+    type: String,
+    required: false,
+    trim: true,
+  },
   feeUsd: {
     type: Number,
     required: true,
