@@ -2,22 +2,25 @@ const express = require('express');
 const router = express.Router();
 const CryptoFeeMarkup = require('../models/cryptofee'); // Adjust path as needed
 
-// PUT /crypto-fee - Update feeUsd for a currency
+// PUT /crypto-fee - Update feeUsd for a currency and network combination
 router.put('/crypto-fee', async (req, res) => {
   try {
-    const { currency, feeUsd } = req.body;
+    const { currency, network, feeUsd } = req.body;
 
-    if (!currency || feeUsd === undefined) {
-      return res.status(400).json({ message: 'currency and feeUsd are required.' });
+    if (!currency || !network || feeUsd === undefined) {
+      return res.status(400).json({ message: 'currency, network, and feeUsd are required.' });
     }
 
     if (typeof feeUsd !== 'number' || feeUsd < 0) {
       return res.status(400).json({ message: 'feeUsd must be a non-negative number.' });
     }
 
-    // Find by currency and update feeUsd, or create new if not found
+    // Find by currency and network combination, update feeUsd, or create new if not found
     const updatedFee = await CryptoFeeMarkup.findOneAndUpdate(
-      { currency: currency.toUpperCase() },
+      { 
+        currency: currency.toUpperCase(),
+        network: network.toUpperCase()
+      },
       { feeUsd },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );

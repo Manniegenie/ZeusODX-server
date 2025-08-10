@@ -5,7 +5,11 @@ const CryptoFeeMarkupSchema = new mongoose.Schema({
     type: String,
     required: true,
     uppercase: true,
-    unique: true, // Unique per currency only
+  },
+  network: {
+    type: String,
+    required: true,
+    uppercase: true,
   },
   feeUsd: {
     type: Number,
@@ -15,5 +19,8 @@ const CryptoFeeMarkupSchema = new mongoose.Schema({
 }, {
   timestamps: true,
 });
+
+// Compound unique index on currency + network combination
+CryptoFeeMarkupSchema.index({ currency: 1, network: 1 }, { unique: true });
 
 module.exports = mongoose.model('CryptoFeeMarkup', CryptoFeeMarkupSchema);
