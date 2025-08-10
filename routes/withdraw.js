@@ -9,6 +9,7 @@ const CryptoFeeMarkup = require('../models/cryptofee');
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateCryptoTransaction } = require('../services/kyccheckservice');
+const { getPricesWithCache } = require('../services/portfolio'); // Import portfolio service
 const logger = require('../utils/logger');
 const config = require('./config');
 
@@ -63,19 +64,6 @@ const WITHDRAWAL_CONFIG = {
   },
 };
 
-// Simple price cache for fallback prices
-const FALLBACK_PRICES = {
-  'BTC': 65000,
-  'ETH': 3200,
-  'SOL': 200,
-  'USDT': 1,
-  'USDC': 1,
-  'BNB': 580,
-  'MATIC': 0.85,
-  'AVAX': 35,
-  'NGNZ': 0.000643 // ~1555 NGNZ per USD
-};
-
 /**
  * Get balance field name for currency
  * @param {string} currency - Currency code
@@ -114,19 +102,6 @@ function getPendingBalanceFieldName(currency) {
     'NGNZ': 'ngnzPendingBalance'
   };
   return fieldMap[currency.toUpperCase()];
-}
-
-/**
- * Get current crypto price (fallback implementation)
- * @param {string} currency - Currency code
- * @returns {number} Price in USD
- */
-function getCryptoPriceInternal(currency) {
-  const upperCurrency = currency.toUpperCase();
-  const price = FALLBACK_PRICES[upperCurrency] || 0;
-  
-  logger.debug(`Using internal price for ${upperCurrency}: $${price}`);
-  return price;
 }
 
 /**
@@ -313,6 +288,9 @@ function validateWithdrawalRequest(body) {
   if (!address?.trim()) {
     errors.push('Withdrawal address is required');
   }
+  if (!network?.trim()) {
+    errors.push('Network is required');
+  }
   if (!amount) {
     errors.push('Withdrawal amount is required');
   }
@@ -348,11 +326,6 @@ function validateWithdrawalRequest(body) {
   // Address format validation (basic)
   if (address && address.length < 10) {
     errors.push('Invalid withdrawal address format');
-  }
-
-  // Network validation for multi-network tokens
-  if (upperCurrency === 'USDT' && network && !['ERC20', 'TRC20', 'BEP20'].includes(network.toUpperCase())) {
-    errors.push('Invalid network for USDT. Supported networks: ERC20, TRC20, BEP20');
   }
 
   if (errors.length > 0) {
@@ -431,21 +404,25 @@ async function checkDuplicateWithdrawal(userId, currency, amount, address) {
 /**
  * Gets withdrawal fee configuration and calculates fee in crypto
  * @param {string} currency - Currency symbol
+ * @param {string} network - Network name
  * @param {number} cryptoPrice - Current crypto price in USD
  * @returns {Promise<Object>} Fee information
  */
-async function getWithdrawalFee(currency, cryptoPrice) {
+async function getWithdrawalFee(currency, network, cryptoPrice) {
   try {
-    const feeDoc = await CryptoFeeMarkup.findOne({ currency: currency.toUpperCase() });
+    const feeDoc = await CryptoFeeMarkup.findOne({ 
+      currency: currency.toUpperCase(),
+      network: network.toUpperCase()
+    });
     
     if (!feeDoc) {
-      throw new Error(`Fee configuration missing for ${currency.toUpperCase()}`);
+      throw new Error(`Fee configuration missing for ${currency.toUpperCase()} on ${network.toUpperCase()} network`);
     }
 
     const feeUsd = feeDoc.feeUsd;
     
     if (!feeUsd || feeUsd <= 0) {
-      throw new Error(`Invalid fee configuration for ${currency.toUpperCase()}`);
+      throw new Error(`Invalid fee configuration for ${currency.toUpperCase()} on ${network.toUpperCase()}`);
     }
 
     // Calculate fee in crypto
@@ -455,10 +432,11 @@ async function getWithdrawalFee(currency, cryptoPrice) {
       success: true,
       feeUsd,
       feeInCrypto: parseFloat(feeInCrypto.toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)),
-      cryptoPrice
+      cryptoPrice,
+      network: network.toUpperCase()
     };
   } catch (error) {
-    logger.error('Error getting withdrawal fee', { currency, error: error.message });
+    logger.error('Error getting withdrawal fee', { currency, network, error: error.message });
     return {
       success: false,
       message: error.message
@@ -646,6 +624,7 @@ router.post('/crypto', async (req, res) => {
       userId,
       currency,
       amount,
+      network,
       address: address.substring(0, 10) + '...'
     });
 
@@ -781,8 +760,9 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    // Get current crypto price using internal function
-    const cryptoPrice = getCryptoPriceInternal(currency);
+    // Get current crypto price using portfolio service
+    const prices = await getPricesWithCache([currency]);
+    const cryptoPrice = prices[currency];
     
     if (!cryptoPrice || cryptoPrice <= 0) {
       return res.status(500).json({
@@ -792,8 +772,8 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    // Get withdrawal fee
-    const feeInfo = await getWithdrawalFee(currency, cryptoPrice);
+    // Get withdrawal fee using currency + network
+    const feeInfo = await getWithdrawalFee(currency, network, cryptoPrice);
     if (!feeInfo.success) {
       return res.status(400).json({
         success: false,
@@ -832,6 +812,7 @@ router.post('/crypto', async (req, res) => {
       currency,
       amount,
       totalAmount,
+      network,
       address: address.substring(0, 10) + '...',
       cryptoPrice,
       security_status: '2FA + PIN + KYC + Balance validated'
@@ -903,6 +884,7 @@ router.post('/crypto', async (req, res) => {
       currency,
       amount,
       totalAmount,
+      network,
       transactionId: transaction._id,
       obiexTransactionId: obiexResult.data.transactionId,
       processingTime,
@@ -920,6 +902,7 @@ router.post('/crypto', async (req, res) => {
         obiexStatus: obiexResult.data.status,
         currency,
         amount,
+        network,
         fee: feeInCrypto,
         feeUsd,
         totalAmount,
@@ -1005,6 +988,7 @@ router.get('/status/:transactionId', async (req, res) => {
         amount: transaction.amount,
         fee: transaction.fee,
         address: transaction.address,
+        network: transaction.network,
         obiexTransactionId: transaction.obiexTransactionId,
         createdAt: transaction.createdAt,
         updatedAt: transaction.updatedAt,
@@ -1033,8 +1017,11 @@ router.get('/status/:transactionId', async (req, res) => {
   }
 });
 
+/**
+ * Fee calculation initiation endpoint - calculates fee based on currency and network
+ */
 router.post('/initiate', async (req, res) => {
-  const { amount, currency } = req.body;
+  const { amount, currency, network } = req.body;
 
   if (!amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({
@@ -1043,25 +1030,37 @@ router.post('/initiate', async (req, res) => {
     });
   }
 
-  if (!SUPPORTED_TOKENS[currency]) {
+  if (!currency || !SUPPORTED_TOKENS[currency.toUpperCase()]) {
     return res.status(400).json({
       success: false,
       message: `Unsupported currency: ${currency}`,
     });
   }
 
+  if (!network || !network.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Network is required.',
+    });
+  }
+
   try {
-    // Get the current price of the crypto in USD
-    const cryptoPrice = getCryptoPriceInternal(currency);
-    if (cryptoPrice <= 0) {
+    const upperCurrency = currency.toUpperCase();
+    const upperNetwork = network.toUpperCase();
+
+    // Get current crypto price using portfolio service
+    const prices = await getPricesWithCache([upperCurrency]);
+    const cryptoPrice = prices[upperCurrency];
+
+    if (!cryptoPrice || cryptoPrice <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid price data.',
+        message: 'Unable to fetch current price data for the selected currency.',
       });
     }
 
-    // Get withdrawal fee (in USD) for the selected currency
-    const feeInfo = await getWithdrawalFee(currency, cryptoPrice);
+    // Get withdrawal fee using currency + network
+    const feeInfo = await getWithdrawalFee(upperCurrency, upperNetwork, cryptoPrice);
     if (!feeInfo.success) {
       return res.status(400).json({
         success: false,
@@ -1071,25 +1070,39 @@ router.post('/initiate', async (req, res) => {
 
     const { feeInCrypto, feeUsd } = feeInfo;
     const totalAmount = amount + feeInCrypto;
-    const receiverAmount = amount - feeInCrypto;
+    const receiverAmount = amount; // User gets the full amount, fee is deducted from their balance
 
-    // Calculate the receiver's amount after fee
+    logger.info('Fee calculation completed', {
+      currency: upperCurrency,
+      network: upperNetwork,
+      amount,
+      feeInCrypto,
+      feeUsd,
+      totalAmount,
+      cryptoPrice
+    });
+
     const response = {
       success: true,
       data: {
-        amount,            // User's requested amount
-        currency,          // Currency of the transaction
-        fee: feeInCrypto,  // Fee in token
-        feeUsd,            // Fee in USD
-        receiverAmount,    // Amount after deducting the fee
-        totalAmount,       // Total amount with fee included
-        cryptoPrice        // Current price of the crypto in USD
+        amount,              // User's requested amount
+        currency: upperCurrency,
+        network: upperNetwork,
+        fee: feeInCrypto,    // Fee in crypto currency
+        feeUsd,              // Fee in USD
+        receiverAmount,      // Amount the receiver will get
+        totalAmount,         // Total amount that will be deducted (amount + fee)
+        cryptoPrice,         // Current price of the crypto in USD
+        feeUsdFormatted: `$${feeUsd.toFixed(2)}` // Formatted fee for display
       }
     };
 
     res.status(200).json(response);
   } catch (error) {
     logger.error('Error in initiating fee calculation', {
+      currency,
+      network,
+      amount,
       error: error.message,
     });
 
