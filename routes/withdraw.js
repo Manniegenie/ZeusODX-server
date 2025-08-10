@@ -29,7 +29,7 @@ const SUPPORTED_TOKENS = {
   BNB: { name: 'Binance Coin', symbol: 'BNB', decimals: 18, isStablecoin: false },
   MATIC: { name: 'Polygon', symbol: 'MATIC', decimals: 18, isStablecoin: false },
   AVAX: { name: 'Avalanche', symbol: 'AVAX', decimals: 18, isStablecoin: false },
-  NGNB: { name: 'NGNB Token', symbol: 'NGNB', decimals: 2, isStablecoin: true, isNairaPegged: true }
+  NGNZ: { name: 'NGNZ Token', symbol: 'NGNZ', decimals: 2, isStablecoin: true, isNairaPegged: true }
 };
 
 // Token field mapping for balance operations
@@ -42,7 +42,7 @@ const TOKEN_FIELD_MAPPING = {
   BNB: 'bnb',
   MATIC: 'matic',
   AVAX: 'avax',
-  NGNB: 'ngnb'
+  NGNZ: 'ngnz'
 };
 
 // Withdrawal configuration constants
@@ -59,7 +59,7 @@ const WITHDRAWAL_CONFIG = {
     BNB: 15,
     MATIC: 15,
     AVAX: 15,
-    NGNB: 1,
+    NGNZ: 1,
   },
 };
 
@@ -73,7 +73,7 @@ const FALLBACK_PRICES = {
   'BNB': 580,
   'MATIC': 0.85,
   'AVAX': 35,
-  'NGNB': 0.000643 // ~1555 NGNB per USD
+  'NGNZ': 0.000643 // ~1555 NGNZ per USD
 };
 
 /**
@@ -91,7 +91,7 @@ function getBalanceFieldName(currency) {
     'BNB': 'bnbBalance',
     'MATIC': 'maticBalance',
     'AVAX': 'avaxBalance',
-    'NGNB': 'ngnbBalance'
+    'NGNZ': 'ngnzBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }
@@ -111,7 +111,7 @@ function getPendingBalanceFieldName(currency) {
     'BNB': 'bnbPendingBalance',
     'MATIC': 'maticPendingBalance',
     'AVAX': 'avaxPendingBalance',
-    'NGNB': 'ngnbPendingBalance'
+    'NGNZ': 'ngnzPendingBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }
@@ -1029,6 +1029,73 @@ router.get('/status/:transactionId', async (req, res) => {
       success: false,
       error: 'STATUS_FETCH_ERROR',
       message: 'Failed to fetch withdrawal status'
+    });
+  }
+});
+
+router.post('/initiate', async (req, res) => {
+  const { amount, currency } = req.body;
+
+  if (!amount || isNaN(amount) || amount <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid amount provided.',
+    });
+  }
+
+  if (!SUPPORTED_TOKENS[currency]) {
+    return res.status(400).json({
+      success: false,
+      message: `Unsupported currency: ${currency}`,
+    });
+  }
+
+  try {
+    // Get the current price of the crypto in USD
+    const cryptoPrice = getCryptoPriceInternal(currency);
+    if (cryptoPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid price data.',
+      });
+    }
+
+    // Get withdrawal fee (in USD) for the selected currency
+    const feeInfo = await getWithdrawalFee(currency, cryptoPrice);
+    if (!feeInfo.success) {
+      return res.status(400).json({
+        success: false,
+        message: feeInfo.message,
+      });
+    }
+
+    const { feeInCrypto, feeUsd } = feeInfo;
+    const totalAmount = amount + feeInCrypto;
+    const receiverAmount = amount - feeInCrypto;
+
+    // Calculate the receiver's amount after fee
+    const response = {
+      success: true,
+      data: {
+        amount,            // User's requested amount
+        currency,          // Currency of the transaction
+        fee: feeInCrypto,  // Fee in token
+        feeUsd,            // Fee in USD
+        receiverAmount,    // Amount after deducting the fee
+        totalAmount,       // Total amount with fee included
+        cryptoPrice        // Current price of the crypto in USD
+      }
+    };
+
+    res.status(200).json(response);
+  } catch (error) {
+    logger.error('Error in initiating fee calculation', {
+      error: error.message,
+    });
+
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during fee calculation.',
     });
   }
 });
