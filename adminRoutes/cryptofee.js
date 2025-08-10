@@ -41,6 +41,39 @@ router.put('/crypto-fee', async (req, res) => {
   }
 });
 
+// PATCH /crypto-fee-name - Update networkName for a currency and network combination
+router.patch('/crypto-fee-name', async (req, res) => {
+  try {
+    const { currency, network, networkName } = req.body;
+
+    if (!currency || !network || !networkName) {
+      return res.status(400).json({ message: 'currency, network, and networkName are required.' });
+    }
+
+    // Prepare update object
+    const updateData = { networkName: networkName.trim() };
+
+    // Find by currency and network combination, update networkName, or create new if not found
+    const updatedFee = await CryptoFeeMarkup.findOneAndUpdate(
+      { 
+        currency: currency.toUpperCase(),
+        network: network.toUpperCase()
+      },
+      updateData,
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+
+    res.status(200).json({
+      message: 'Network name updated successfully.',
+      data: updatedFee,
+    });
+  } catch (error) {
+    console.error('Error updating network name:', error);
+    res.status(500).json({ message: 'Server error updating network name.' });
+  }
+});
+
+
 // GET /crypto-fees - Fetch all available crypto fees
 router.get('/crypto-fees', async (req, res) => {
   try {
