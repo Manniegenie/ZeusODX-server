@@ -1143,4 +1143,84 @@ router.get('/currencies', async (req, res) => {
   }
 });
 
+/**
+ * Fetch available networks for a specific currency
+ */
+router.get('/fetch-network', async (req, res) => {
+  try {
+    const { currency } = req.query;
+
+    // Validate currency parameter
+    if (!currency || !currency.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_CURRENCY',
+        message: 'Currency parameter is required'
+      });
+    }
+
+    const upperCurrency = currency.toUpperCase();
+
+    // Check if currency is supported
+    if (!SUPPORTED_TOKENS[upperCurrency]) {
+      return res.status(400).json({
+        success: false,
+        error: 'UNSUPPORTED_CURRENCY',
+        message: `Currency ${upperCurrency} is not supported. Supported currencies: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`
+      });
+    }
+
+    logger.info('Fetching networks for currency', { currency: upperCurrency });
+
+    // Query CryptoFeeMarkup collection to get all networks for the specified currency
+    const networkDocs = await CryptoFeeMarkup.find(
+      { currency: upperCurrency },
+      { network: 1, networkName: 1, feeUsd: 1, _id: 0 }
+    ).sort({ network: 1 });
+
+    if (!networkDocs || networkDocs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'NO_NETWORKS_FOUND',
+        message: `No networks found for currency ${upperCurrency}`
+      });
+    }
+
+    // Format the network data
+    const networks = networkDocs.map(doc => ({
+      network: doc.network,
+      networkName: doc.networkName || doc.network, // Use networkName if available, fallback to network
+      feeUsd: doc.feeUsd
+    }));
+
+    logger.info('Successfully fetched networks for currency', {
+      currency: upperCurrency,
+      networkCount: networks.length,
+      networks: networks.map(n => n.network)
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        currency: upperCurrency,
+        networks,
+        total: networks.length
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error fetching networks for currency', {
+      currency: req.query.currency,
+      error: error.message,
+      stack: error.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'NETWORK_FETCH_ERROR',
+      message: 'Failed to fetch networks for the specified currency'
+    });
+  }
+});
+
 module.exports = router;
