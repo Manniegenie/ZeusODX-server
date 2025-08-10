@@ -76,6 +76,56 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Database Index Fix Function
+const fixCryptoFeeIndexes = async () => {
+  try {
+    const db = mongoose.connection.db;
+    const collection = db.collection('cryptofeemarkups');
+    
+    // Check if collection exists
+    const collections = await db.listCollections({ name: 'cryptofeemarkups' }).toArray();
+    if (collections.length === 0) {
+      console.log("CryptoFeeMarkup collection doesn't exist yet, skipping index fix");
+      return;
+    }
+    
+    // Get existing indexes
+    const indexes = await collection.indexes();
+    console.log("Current indexes for cryptofeemarkups:", indexes.map(idx => idx.name));
+    
+    // Drop old currency-only index if it exists
+    try {
+      await collection.dropIndex("currency_1");
+      console.log("✅ Old currency index dropped successfully");
+    } catch (error) {
+      if (error.code === 27) {
+        console.log("ℹ️  Old currency index doesn't exist, skipping drop");
+      } else {
+        console.log("⚠️  Error dropping old index:", error.message);
+      }
+    }
+    
+    // Create new compound index if it doesn't exist
+    try {
+      await collection.createIndex({ currency: 1, network: 1 }, { unique: true });
+      console.log("✅ New compound index (currency + network) created successfully");
+    } catch (error) {
+      if (error.code === 85) {
+        console.log("ℹ️  Compound index already exists, skipping creation");
+      } else {
+        console.log("⚠️  Error creating compound index:", error.message);
+      }
+    }
+    
+    // Verify final indexes
+    const finalIndexes = await collection.indexes();
+    console.log("Final indexes for cryptofeemarkups:", finalIndexes.map(idx => idx.name));
+    
+  } catch (error) {
+    console.error("❌ Error fixing CryptoFeeMarkup indexes:", error.message);
+  }
+};
+
 // Route Imports
 const logoutRoutes = require("./routes/logout");
 const refreshtokenRoutes = require("./routes/refreshtoken");
@@ -202,6 +252,10 @@ const startServer = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
+    
+    // Fix CryptoFeeMarkup indexes after database connection
+    console.log("🔧 Fixing CryptoFeeMarkup database indexes...");
+    await fixCryptoFeeIndexes();
     
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
