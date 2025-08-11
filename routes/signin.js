@@ -6,11 +6,11 @@ const router = express.Router();
 const User = require("../models/user");
 const config = require("./config");
 const logger = require("../utils/logger");
-const { sendLoginEmail } = require("../services/EmailService"); // UNCOMMENTED
+// const { sendLoginEmail } = require("../services/EmailService"); // COMMENTED OUT
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
-const LOGIN_EMAIL_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
+// const LOGIN_EMAIL_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds // COMMENTED OUT
 
 // JWT secrets validation function
 const validateJWTSecrets = () => {
@@ -120,7 +120,8 @@ router.post(
       user.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
       if (user.refreshTokens.length > 5) user.refreshTokens = user.refreshTokens.slice(-5);
 
-      // **Send login email with cooldown logic**
+      // **Send login email with cooldown logic** - COMMENTED OUT
+      /*
       const now = new Date();
       const shouldSendEmail = !user.lastLoginEmailSent || 
                              (now.getTime() - user.lastLoginEmailSent.getTime()) >= LOGIN_EMAIL_COOLDOWN;
@@ -147,6 +148,7 @@ router.post(
           cooldownMinutes: LOGIN_EMAIL_COOLDOWN / (60 * 1000)
         });
       }
+      */
 
       await user.save();
 
