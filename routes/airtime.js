@@ -471,8 +471,9 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ Password PIN validation successful for airtime purchase', { userId });
 
-    // Step 4: KYC validation - UPDATED: NGNB to NGNZ
-    const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'AIRTIME');
+    
+   // Step 4: KYC validation - UPDATED: Pass 'AIRTIME' as transaction type for utilities limits
+const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'AIRTIME');
     if (!kycValidation.allowed) {
       return res.status(403).json({
         success: false,

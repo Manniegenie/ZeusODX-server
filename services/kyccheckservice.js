@@ -15,14 +15,112 @@ class KYCLimitService {
   }
 
   /**
+   * Get KYC limits for a user with fallback logic
+   * @param {Object} user - User document
+   * @param {string} transactionType - Type of transaction ('AIRTIME', 'WITHDRAWAL', 'BILL_PAYMENT', etc.)
+   */
+  getUserKycLimits(user, transactionType = 'WITHDRAWAL') {
+    try {
+      // First try to use the user's getKycLimits method if it exists
+      if (user && typeof user.getKycLimits === 'function') {
+        const limits = user.getKycLimits();
+        
+        // Handle the new categorized structure from user model
+        if (limits && typeof limits === 'object') {
+          // For airtime and bill payments, use utilities limits
+          if (['AIRTIME', 'BILL_PAYMENT', 'UTILITY'].includes(transactionType) && limits.utilities) {
+            if (typeof limits.utilities.daily === 'number' && typeof limits.utilities.monthly === 'number') {
+              logger.info(`Using utilities limits for ${transactionType}: Daily ₦${limits.utilities.daily.toLocaleString()}, Monthly ₦${limits.utilities.monthly.toLocaleString()}`);
+              return limits.utilities;
+            }
+          }
+          
+          // For withdrawals and other crypto transactions, use crypto limits
+          if (['WITHDRAWAL', 'SWAP', 'CRYPTO'].includes(transactionType) && limits.crypto) {
+            if (typeof limits.crypto.daily === 'number' && typeof limits.crypto.monthly === 'number') {
+              logger.info(`Using crypto limits for ${transactionType}: Daily $${limits.crypto.daily.toLocaleString()}, Monthly $${limits.crypto.monthly.toLocaleString()}`);
+              return limits.crypto;
+            }
+          }
+          
+          // For NGNZ transactions, use ngnz limits
+          if (['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType) && limits.ngnz) {
+            if (typeof limits.ngnz.daily === 'number' && typeof limits.ngnz.monthly === 'number') {
+              logger.info(`Using NGNZ limits for ${transactionType}: Daily ₦${limits.ngnz.daily.toLocaleString()}, Monthly ₦${limits.ngnz.monthly.toLocaleString()}`);
+              return limits.ngnz;
+            }
+          }
+          
+          // Fallback: if structure exists but doesn't match expected format
+          logger.warn(`Unexpected limits structure for user ${user._id}, transaction type ${transactionType}:`, limits);
+        }
+      }
+
+      // Fallback to default limits based on KYC level and transaction type
+      const kycLevel = user?.kycLevel || 0;
+      const defaultLimits = this.getDefaultLimitsForTransaction(kycLevel, transactionType);
+      
+      logger.warn(`Using default KYC limits for user ${user?._id}: Level ${kycLevel}, Type ${transactionType}`, defaultLimits);
+      return defaultLimits;
+      
+    } catch (error) {
+      logger.error('Error getting KYC limits, using defaults:', error);
+      return this.getDefaultLimitsForTransaction(0, transactionType); // Most restrictive limits
+    }
+  }
+
+  /**
+   * Get default limits for specific transaction type
+   */
+  getDefaultLimitsForTransaction(kycLevel, transactionType) {
+    // Define limits per KYC level and transaction type (matching user model structure)
+    const defaultLimitsByType = {
+      0: {
+        utilities: { daily: 0, monthly: 0 },
+        crypto: { daily: 0, monthly: 0 },
+        ngnz: { daily: 0, monthly: 0 }
+      },
+      1: {
+        utilities: { daily: 50000, monthly: 200000 },
+        crypto: { daily: 0, monthly: 0 },
+        ngnz: { daily: 0, monthly: 0 }
+      },
+      2: {
+        utilities: { daily: 500000, monthly: 2000000 },
+        crypto: { daily: 2000000, monthly: 2000000 },
+        ngnz: { daily: 25000000, monthly: 200000000 }
+      },
+      3: {
+        utilities: { daily: 500000, monthly: 2000000 },
+        crypto: { daily: 5000000, monthly: 5000000 },
+        ngnz: { daily: 50000000, monthly: 500000000 }
+      }
+    };
+
+    const limitsForLevel = defaultLimitsByType[kycLevel] || defaultLimitsByType[0];
+    
+    // Return appropriate limits based on transaction type
+    if (['AIRTIME', 'BILL_PAYMENT', 'UTILITY'].includes(transactionType)) {
+      return limitsForLevel.utilities;
+    } else if (['WITHDRAWAL', 'SWAP', 'CRYPTO'].includes(transactionType)) {
+      return limitsForLevel.crypto;
+    } else if (['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType)) {
+      return limitsForLevel.ngnz;
+    }
+    
+    // Default to utilities for unknown transaction types
+    return limitsForLevel.utilities;
+  }
+
+  /**
    * Main method to check if a user can process a transaction
    * @param {string} userId - User ID
    * @param {number} amount - Transaction amount
-   * @param {string} currency - Currency code (NGNB, BTC, ETH, SOL, USDT, USDC, USD)
+   * @param {string} currency - Currency code (NGNZ, BTC, ETH, SOL, USDT, USDC, USD)
    * @param {string} transactionType - Type of transaction (WITHDRAWAL, BILL_PAYMENT, SWAP, etc.)
    * @returns {Object} Validation result with allowance status and details
    */
-  async validateTransactionLimit(userId, amount, currency = 'NGNB', transactionType = 'WITHDRAWAL') {
+  async validateTransactionLimit(userId, amount, currency = 'NGNZ', transactionType = 'WITHDRAWAL') {
     try {
       logger.info(`🔍 KYC validation started for user ${userId}: ${amount} ${currency} (${transactionType})`);
 
@@ -32,16 +130,24 @@ class KYCLimitService {
         return this.createErrorResponse('USER_NOT_FOUND', 'User not found');
       }
 
-      // 2. Get KYC limits for user
-      const kycLimits = user.getKycLimits();
-      logger.info(`📋 User KYC Level ${user.kycLevel}: Daily ₦${kycLimits.daily.toLocaleString()}, Monthly ₦${kycLimits.monthly.toLocaleString()}`);
+      // 2. Get KYC limits for user with error handling
+      const kycLimits = this.getUserKycLimits(user, transactionType);
+      const userKycLevel = user.kycLevel || 0;
+      
+      logger.info(`📋 User KYC Level ${userKycLevel}: Daily ₦${kycLimits.daily?.toLocaleString() || 'N/A'}, Monthly ₦${kycLimits.monthly?.toLocaleString() || 'N/A'}`);
 
-      // 3. Convert amount to NGNB/Naira if needed
-      const amountInNaira = await this.convertToNaira(amount, currency);
-      logger.info(`💰 Amount conversion: ${amount} ${currency} = ₦${amountInNaira.toLocaleString()}`);
+      // 3. Convert amount to NGNZ/Naira if needed
+      let amountInNaira;
+      try {
+        amountInNaira = await this.convertToNaira(amount, currency);
+        logger.info(`💰 Amount conversion: ${amount} ${currency} = ₦${amountInNaira.toLocaleString()}`);
+      } catch (conversionError) {
+        logger.error('Currency conversion failed:', conversionError);
+        return this.createErrorResponse('CONVERSION_ERROR', `Failed to convert ${currency} to Naira: ${conversionError.message}`);
+      }
 
       // 4. Check if user has any transaction limits (KYC level 0 = no transactions)
-      if (user.kycLevel === 0) {
+      if (userKycLevel === 0) {
         return this.createErrorResponse('KYC_REQUIRED', 'KYC verification required to process transactions', {
           kycLevel: 0,
           requiredAction: 'Complete KYC Level 1 verification',
@@ -51,7 +157,13 @@ class KYCLimitService {
       }
 
       // 5. Get current spending for the user
-      const currentSpending = await this.getCurrentSpending(userId);
+      let currentSpending;
+      try {
+        currentSpending = await this.getCurrentSpending(userId);
+      } catch (spendingError) {
+        logger.error('Failed to get current spending, using zero values:', spendingError);
+        currentSpending = { daily: 0, monthly: 0 };
+      }
       
       // 6. Calculate new totals after this transaction
       const newDailyTotal = currentSpending.daily + amountInNaira;
@@ -68,7 +180,7 @@ class KYCLimitService {
         const availableAmount = Math.max(0, currentLimit - currentSpent);
 
         return this.createErrorResponse('LIMIT_EXCEEDED', `${limitType.charAt(0).toUpperCase() + limitType.slice(1)} transaction limit exceeded`, {
-          kycLevel: user.kycLevel,
+          kycLevel: userKycLevel,
           limitType,
           requestedAmount: amountInNaira,
           currentLimit,
@@ -77,13 +189,13 @@ class KYCLimitService {
           newTotal: limitType === 'daily' ? newDailyTotal : newMonthlyTotal,
           amountInNaira,
           currency,
-          upgradeRecommendation: this.getUpgradeRecommendation(user.kycLevel)
+          upgradeRecommendation: this.getUpgradeRecommendation(userKycLevel)
         });
       }
 
       // 8. Transaction is allowed
       return this.createSuccessResponse('TRANSACTION_ALLOWED', 'Transaction within limits', {
-        kycLevel: user.kycLevel,
+        kycLevel: userKycLevel,
         kycLimits,
         currentSpending,
         requestedAmount: amountInNaira,
@@ -93,13 +205,17 @@ class KYCLimitService {
         monthlyRemaining: kycLimits.monthly - newMonthlyTotal,
         amountInNaira,
         currency,
-        conversionRate: currency === 'NGNB' || currency === 'NGN' ? 1 : await this.getConversionRate(currency)
+        conversionRate: currency === 'NGNZ' || currency === 'NGN' ? 1 : await this.getConversionRate(currency)
       });
 
     } catch (error) {
       logger.error('❌ KYC validation error:', error);
       return this.createErrorResponse('VALIDATION_ERROR', 'Failed to validate transaction limits', {
-        error: error.message
+        error: error.message,
+        userId,
+        amount,
+        currency,
+        transactionType
       });
     }
   }
@@ -118,11 +234,11 @@ class KYCLimitService {
   }
 
   /**
-   * Convert any currency amount to Naira/NGNB using CurrencyAPI
+   * Convert any currency amount to Naira/NGNZ using CurrencyAPI
    */
   async convertToNaira(amount, currency) {
-    // NGNB and NGN are 1:1 with Naira
-    if (currency === 'NGNB' || currency === 'NGN' || currency === 'NAIRA') {
+    // NGNZ and NGN are 1:1 with Naira
+    if (currency === 'NGNZ' || currency === 'NGN' || currency === 'NAIRA') {
       return amount;
     }
 
@@ -154,7 +270,7 @@ class KYCLimitService {
       }
 
       // Unsupported currency
-      throw new Error(`Unsupported currency: ${currency}. Supported: NGNB, NGN, USD, USDT, USDC, BTC, ETH, SOL`);
+      throw new Error(`Unsupported currency: ${currency}. Supported: NGNZ, NGN, USD, USDT, USDC, BTC, ETH, SOL`);
 
     } catch (error) {
       logger.error(`Currency conversion failed for ${amount} ${currency}:`, error);
@@ -187,7 +303,7 @@ class KYCLimitService {
    * Get conversion rate for a currency to Naira
    */
   async getConversionRate(currency) {
-    if (currency === 'NGNB' || currency === 'NGN') return 1;
+    if (currency === 'NGNZ' || currency === 'NGN') return 1;
     
     try {
       if (currency === 'USD' || currency === 'USDT' || currency === 'USDC') {
@@ -293,7 +409,7 @@ class KYCLimitService {
       userId,
       status: 'completed-api',
       createdAt: { $gte: sinceDate }
-    }).select('amountNaira amountNGNB createdAt').lean();
+    }).select('amountNaira amountNGNB amount createdAt').lean();
   }
 
   /**
@@ -318,8 +434,8 @@ class KYCLimitService {
           sum += amountInNaira;
         } catch (error) {
           logger.warn(`Failed to convert transaction ${tx._id} (${tx.amount} ${tx.currency}):`, error.message);
-          // For failed conversions, assume NGNB if currency is not specified
-          if (!tx.currency || tx.currency === 'NGNB' || tx.currency === 'NGN') {
+          // For failed conversions, assume NGNZ if currency is not specified
+          if (!tx.currency || tx.currency === 'NGNZ' || tx.currency === 'NGN') {
             sum += tx.amount;
           }
           // Skip transactions with unconvertible currencies rather than failing
@@ -331,12 +447,13 @@ class KYCLimitService {
   }
 
   /**
-   * Sum bill transactions by date (already in Naira/NGNB)
+   * Sum bill transactions by date (already in Naira/NGNZ)
    */
   sumBillTransactionsByDate(transactions, sinceDate) {
     return transactions.reduce((sum, tx) => {
       if (tx.createdAt >= sinceDate) {
-        const amount = tx.amountNaira || tx.amountNGNB || 0;
+        // Use amountNaira first, then amountNGNB, then amount as fallback
+        const amount = tx.amountNaira || tx.amountNGNB || tx.amount || 0;
         return sum + amount;
       }
       return sum;
@@ -384,16 +501,16 @@ class KYCLimitService {
   /**
    * Check specific limits without processing
    */
-  async checkLimitsOnly(userId) {
+  async checkLimitsOnly(userId, transactionType = 'WITHDRAWAL') {
     try {
       const user = await this.getUser(userId);
       if (!user) return null;
 
-      const kycLimits = user.getKycLimits();
+      const kycLimits = this.getUserKycLimits(user, transactionType);
       const currentSpending = await this.getCurrentSpending(userId);
 
       return {
-        kycLevel: user.kycLevel,
+        kycLevel: user.kycLevel || 0,
         limits: kycLimits,
         currentSpending,
         remaining: {
@@ -439,10 +556,10 @@ class KYCLimitService {
   /**
    * Test price conversion for debugging
    */
-  async testConversion(amount, fromCurrency, toCurrency = 'NGNB') {
+  async testConversion(amount, fromCurrency, toCurrency = 'NGNZ') {
     try {
-      if (toCurrency !== 'NGNB') {
-        throw new Error('Only conversion to NGNB is supported');
+      if (toCurrency !== 'NGNZ') {
+        throw new Error('Only conversion to NGNZ is supported');
       }
       
       const result = await this.convertToNaira(amount, fromCurrency);
@@ -451,7 +568,7 @@ class KYCLimitService {
         originalAmount: amount,
         originalCurrency: fromCurrency,
         convertedAmount: result,
-        convertedCurrency: 'NGNB',
+        convertedCurrency: 'NGNZ',
         conversionRate: result / amount
       };
     } catch (error) {
@@ -477,7 +594,7 @@ module.exports = {
     kycLimitService.validateTransactionLimit(userId, amount, currency, transactionType),
   
   // Utility methods
-  checkLimitsOnly: (userId) => kycLimitService.checkLimitsOnly(userId),
+  checkLimitsOnly: (userId, transactionType) => kycLimitService.checkLimitsOnly(userId, transactionType),
   clearUserCache: (userId) => kycLimitService.clearUserCache(userId),
   clearAllCache: () => kycLimitService.clearAllCache(),
   
