@@ -171,6 +171,7 @@ const kycRoutes = require('./routes/KYC');
 const usernamewithdrawRoutes = require('./routes/usernamewithdraw');
 const userqueryRoutes = require('./routes/usernamequery');
 const fetchnetworkRoutes = require('./routes/fetchnetwork');
+const TwoFARoutes = require('./adminRoutes/2FA');
 
 
 // Public Routes
@@ -180,6 +181,7 @@ app.use("/refresh-token", refreshtokenRoutes);
 app.use("/verify-otp", verifyotpRoutes);
 app.use("/passwordpin", passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
+
 
 // Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);
@@ -196,6 +198,7 @@ app.use("/pending", clearpendingRoutes);
 app.use("/fetching", fetchrefreshtoken);
 app.use("/fund", FunduserRoutes);
 app.use("/marker", pricemarkdownRoutes);
+app.use("/2FA-Disable", TwoFARoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
