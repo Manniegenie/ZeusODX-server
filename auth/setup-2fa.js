@@ -38,13 +38,29 @@ router.get('/setup-2fa', async (req, res) => {
 router.post('/verify-2fa', async (req, res) => {
   try {
     const { token } = req.body;
+    console.log('2FA Verification attempt:', { userId: req.user.id, token: token?.slice(0, 2) + '****' });
+    
     if (!token || typeof token !== 'string' || token.length !== 6) {
       return res.status(400).json({ error: 'Valid 6-digit token is required' });
     }
 
     const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.twoFASecret) return res.status(400).json({ error: '2FA not set up' });
+    if (!user) {
+      console.log('User not found:', req.user.id);
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    if (!user.twoFASecret) {
+      console.log('2FA secret not found for user:', user._id);
+      return res.status(400).json({ error: '2FA not set up' });
+    }
+
+    console.log('Before verification - 2FA status:', { 
+      userId: user._id, 
+      is2FAEnabled: user.is2FAEnabled,
+      is2FAVerified: user.is2FAVerified,
+      hasSecret: !!user.twoFASecret 
+    });
 
     const verified = speakeasy.totp.verify({
       secret: user.twoFASecret,
@@ -53,35 +69,42 @@ router.post('/verify-2fa', async (req, res) => {
       window: 1,
     });
 
+    console.log('Token verification result:', verified);
+
     if (!verified) {
+      console.log('Token verification failed for user:', user._id);
       return res.status(401).json({ error: 'Invalid 2FA token' });
     }
 
-    user.is2FAEnabled = true;
-    await user.save();
+    // Use findByIdAndUpdate instead of save()
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      { 
+        is2FAEnabled: true,
+        is2FAVerified: true 
+      },
+      { 
+        new: true,  // Return the updated document
+        runValidators: true  // Run schema validators
+      }
+    );
 
-    res.json({ verified: true, message: '2FA enabled successfully' });
+    console.log('User updated successfully:', { 
+      userId: updatedUser._id, 
+      is2FAEnabled: updatedUser.is2FAEnabled,
+      is2FAVerified: updatedUser.is2FAVerified 
+    });
+
+    res.json({ 
+      verified: true, 
+      message: '2FA enabled successfully',
+      is2FAEnabled: updatedUser.is2FAEnabled,
+      is2FAVerified: updatedUser.is2FAVerified
+    });
+
   } catch (err) {
     console.error('Error verifying 2FA token:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
-
-// Disable 2FA
-router.post('/disable-2fa', async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    user.is2FAEnabled = false;
-    user.twoFASecret = null;
-    await user.save();
-
-    res.json({ message: '2FA disabled' });
-  } catch (err) {
-    console.error('Error disabling 2FA:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 module.exports = router;
