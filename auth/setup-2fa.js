@@ -8,11 +8,12 @@ const router = express.Router();
 // Step 1: Generate 2FA secret and QR code
 router.get('/setup-2fa', async (req, res) => {
   try {
-    const user = await User.findById(req.user.id); // req.user is from your global JWT middleware
+    const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     const secret = speakeasy.generateSecret({
-      name: `Bramp (${user.email})`,
+      name: user.email,           // Account name (user's email)
+      issuer: 'ZeusODX'          // Service name that appears in authenticator apps
     });
 
     user.twoFASecret = secret.base32;
