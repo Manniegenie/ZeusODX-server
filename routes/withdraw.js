@@ -29,8 +29,7 @@ const SUPPORTED_TOKENS = {
   USDC: { name: 'USD Coin', symbol: 'USDC', decimals: 6, isStablecoin: true },
   BNB: { name: 'Binance Coin', symbol: 'BNB', decimals: 18, isStablecoin: false },
   MATIC: { name: 'Polygon', symbol: 'MATIC', decimals: 18, isStablecoin: false },
-  AVAX: { name: 'Avalanche', symbol: 'AVAX', decimals: 18, isStablecoin: false },
-  NGNZ: { name: 'NGNZ Token', symbol: 'NGNZ', decimals: 2, isStablecoin: true, isNairaPegged: true }
+  AVAX: { name: 'Avalanche', symbol: 'AVAX', decimals: 18, isStablecoin: false }
 };
 
 // Token field mapping for balance operations
@@ -42,8 +41,7 @@ const TOKEN_FIELD_MAPPING = {
   USDC: 'usdc',
   BNB: 'bnb',
   MATIC: 'matic',
-  AVAX: 'avax',
-  NGNZ: 'ngnz'
+  AVAX: 'avax'
 };
 
 // Withdrawal configuration constants
@@ -59,8 +57,7 @@ const WITHDRAWAL_CONFIG = {
     USDC: 12,
     BNB: 15,
     MATIC: 15,
-    AVAX: 15,
-    NGNZ: 1,
+    AVAX: 15
   },
 };
 
@@ -78,8 +75,7 @@ function getBalanceFieldName(currency) {
     'USDC': 'usdcBalance',
     'BNB': 'bnbBalance',
     'MATIC': 'maticBalance',
-    'AVAX': 'avaxBalance',
-    'NGNZ': 'ngnzBalance'
+    'AVAX': 'avaxBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }
@@ -98,8 +94,7 @@ function getPendingBalanceFieldName(currency) {
     'USDC': 'usdcPendingBalance',
     'BNB': 'bnbPendingBalance',
     'MATIC': 'maticPendingBalance',
-    'AVAX': 'avaxPendingBalance',
-    'NGNZ': 'ngnzPendingBalance'
+    'AVAX': 'avaxPendingBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }
@@ -1109,116 +1104,6 @@ router.post('/initiate', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error during fee calculation.',
-    });
-  }
-});
-
-/**
- * Get supported currencies for withdrawal endpoint
- */
-router.get('/currencies', async (req, res) => {
-  try {
-    const currencies = Object.keys(SUPPORTED_TOKENS).map(currency => ({
-      symbol: currency,
-      name: SUPPORTED_TOKENS[currency].name || currency,
-      minConfirmations: WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1,
-      isStablecoin: SUPPORTED_TOKENS[currency].isStablecoin || false
-    }));
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        currencies,
-        total: currencies.length
-      }
-    });
-    
-  } catch (error) {
-    logger.error('Error fetching supported currencies:', error);
-    res.status(500).json({
-      success: false,
-      error: 'CURRENCIES_FETCH_ERROR',
-      message: 'Failed to retrieve supported currencies'
-    });
-  }
-});
-
-/**
- * Fetch available networks for a specific currency
- */
-router.get('/fetch-network', async (req, res) => {
-  try {
-    const { currency } = req.query;
-
-    // Validate currency parameter
-    if (!currency || !currency.trim()) {
-      return res.status(400).json({
-        success: false,
-        error: 'MISSING_CURRENCY',
-        message: 'Currency parameter is required'
-      });
-    }
-
-    const upperCurrency = currency.toUpperCase();
-
-    // Check if currency is supported
-    if (!SUPPORTED_TOKENS[upperCurrency]) {
-      return res.status(400).json({
-        success: false,
-        error: 'UNSUPPORTED_CURRENCY',
-        message: `Currency ${upperCurrency} is not supported. Supported currencies: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`
-      });
-    }
-
-    logger.info('Fetching networks for currency', { currency: upperCurrency });
-
-    // Query CryptoFeeMarkup collection to get all networks for the specified currency
-    const networkDocs = await CryptoFeeMarkup.find(
-      { currency: upperCurrency },
-      { network: 1, networkName: 1, feeUsd: 1, _id: 0 }
-    ).sort({ network: 1 });
-
-    if (!networkDocs || networkDocs.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'NO_NETWORKS_FOUND',
-        message: `No networks found for currency ${upperCurrency}`
-      });
-    }
-
-    // Format the network data
-    const networks = networkDocs.map(doc => ({
-      network: doc.network,
-      networkName: doc.networkName || doc.network, // Use networkName if available, fallback to network
-      feeUsd: doc.feeUsd
-    }));
-
-    logger.info('Successfully fetched networks for currency', {
-      currency: upperCurrency,
-      networkCount: networks.length,
-      networks: networks.map(n => n.network)
-    });
-
-    res.status(200).json({
-      success: true,
-      data: {
-        currency: upperCurrency,
-        networks,
-        total: networks.length
-      }
-    });
-
-  } catch (error) {
-    logger.error('Error fetching networks for currency', {
-      currency: req.query.currency,
-      error: error.message,
-      stack: error.stack
-    });
-
-    res.status(500).json({
-      success: false,
-      error: 'NETWORK_FETCH_ERROR',
-      message: 'Failed to fetch networks for the specified currency'
     });
   }
 });
