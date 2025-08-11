@@ -34,12 +34,12 @@ const billTransactionSchema = new mongoose.Schema({
     min: 1
   },
   
-  // Amount information (NGNB only - with backward compatibility)
+  // Amount information (NGNZ only)
   amount: {
     type: Number,
     required: true,
     min: 0,
-    description: 'Amount in Naira (same as NGNB due to 1:1 peg)'
+    description: 'Amount in Naira (same as NGNZ due to 1:1 peg)'
   },
   amountNaira: {
     type: Number,
@@ -48,24 +48,24 @@ const billTransactionSchema = new mongoose.Schema({
     description: 'Amount in Nigerian Naira'
   },
   
-  // NGNB amount (new field - will be auto-populated from old fields)
-  amountNGNB: {
+  // NGNZ amount
+  amountNGNZ: {
     type: Number,
     min: 0,
-    description: 'Amount in NGNB (always equals amountNaira due to 1:1 peg)'
+    description: 'Amount in NGNZ (always equals amountNaira due to 1:1 peg)'
   },
   
   // Legacy crypto fields for backward compatibility
   amountCrypto: {
     type: Number,
     min: 0,
-    description: 'Legacy field - same as amountNGNB for NGNB transactions'
+    description: 'Legacy field - same as amountNGNZ for NGNZ transactions'
   },
   cryptoPrice: {
     type: Number,
     min: 0,
     default: 1,
-    description: 'Legacy field - always 1 for NGNB (1:1 peg with Naira)'
+    description: 'Legacy field - always 1 for NGNZ (1:1 peg with Naira)'
   },
   
   // Legacy USD support (for backward compatibility)
@@ -75,12 +75,12 @@ const billTransactionSchema = new mongoose.Schema({
     description: 'Legacy field - calculated from amountCrypto * cryptoPrice'
   },
   
-  // Payment currency (NGNB only but supporting legacy values)
+  // Payment currency (NGNZ only but supporting legacy values)
   paymentCurrency: {
     type: String,
     required: true,
-    enum: ['NGNB', 'BTC', 'ETH', 'SOL', 'USDT', 'USDC'], // Keep legacy values but force to NGNB
-    default: 'NGNB'
+    enum: ['NGNZ', 'BTC', 'ETH', 'SOL', 'USDT', 'USDC'],
+    default: 'NGNZ'
   },
   
   // User reference
@@ -122,7 +122,7 @@ const billTransactionSchema = new mongoose.Schema({
     default: null
   },
   
-  // Enhanced metadata for NGNB transactions
+  // Enhanced metadata for NGNZ transactions
   metaData: {
     type: mongoose.Schema.Types.Mixed,
     default: {}
@@ -138,16 +138,31 @@ const billTransactionSchema = new mongoose.Schema({
     default: false
   },
   
-  // New fields with backward compatibility
+  // New fields
   balanceReserved: {
     type: Boolean,
     default: false,
-    description: 'Whether NGNB balance was reserved for this transaction'
+    description: 'Whether NGNZ balance was reserved for this transaction'
   },
   twoFactorValidated: {
     type: Boolean,
     default: false,
     description: 'Whether 2FA was validated for this transaction'
+  },
+  passwordPinValidated: {
+    type: Boolean,
+    default: false,
+    description: 'Whether password PIN was validated for this transaction'
+  },
+  kycValidated: {
+    type: Boolean,
+    default: false,
+    description: 'Whether KYC validation passed for this transaction'
+  },
+  balanceCompleted: {
+    type: Boolean,
+    default: false,
+    description: 'Whether balance update was completed for this transaction'
   },
   
   // Error tracking
@@ -159,15 +174,16 @@ const billTransactionSchema = new mongoose.Schema({
     },
     phase: {
       type: String,
-      enum: ['validation', 'balance_check', 'balance_reservation', 'api_call', 'webhook_processing', 'refund', 'unexpected_error']
-    }
+      enum: ['validation', 'balance_check', 'balance_reservation', 'balance_update', 'api_call', 'webhook_processing', 'refund', 'unexpected_error']
+    },
+    ebills_order_id: String
   }]
 }, {
   timestamps: true, // Adds createdAt and updatedAt automatically
   collection: 'billtransactions'
 });
 
-// OPTIMIZED INDEXES for NGNB-only bill payments
+// OPTIMIZED INDEXES for NGNZ-only bill payments
 billTransactionSchema.index({ requestId: 1 });
 billTransactionSchema.index({ userId: 1, status: 1 });
 billTransactionSchema.index({ userId: 1, billType: 1 });
@@ -179,16 +195,16 @@ billTransactionSchema.index({ timestamp: -1 });
 billTransactionSchema.index({ status: 1, createdAt: -1 });
 billTransactionSchema.index({ balanceReserved: 1, status: 1 }); // For cleanup operations
 
-// Virtual for formatted amount display (NGNB-specific)
+// Virtual for formatted amount display (NGNZ-specific)
 billTransactionSchema.virtual('formattedAmount').get(function() {
-  return `₦${this.amountNaira.toLocaleString()} (${this.amountNGNB} NGNB)`;
+  return `₦${this.amountNaira.toLocaleString()} (${this.amountNGNZ} NGNZ)`;
 });
 
 // Virtual for payment summary
 billTransactionSchema.virtual('paymentSummary').get(function() {
   return {
-    currency: 'NGNB',
-    amount: this.amountNGNB,
+    currency: 'NGNZ',
+    amount: this.amountNGNZ,
     nairaEquivalent: this.amountNaira,
     exchangeRate: 1, // Always 1:1
     balanceReserved: this.balanceReserved,
@@ -216,11 +232,11 @@ billTransactionSchema.methods.isRefunded = function() {
   return this.status === 'refunded';
 };
 
-// Instance method to get payment details (NGNB-specific)
+// Instance method to get payment details (NGNZ-specific)
 billTransactionSchema.methods.getPaymentDetails = function() {
   return {
-    currency: 'NGNB',
-    amount: this.amountNGNB,
+    currency: 'NGNZ',
+    amount: this.amountNGNZ,
     nairaAmount: this.amountNaira,
     exchangeRate: 1,
     balanceReserved: this.balanceReserved,
@@ -247,9 +263,9 @@ billTransactionSchema.methods.markBalanceReleased = function() {
   return this.save();
 };
 
-// Static method to get user's bill transactions (NGNB-specific)
+// Static method to get user's bill transactions (NGNZ-specific)
 billTransactionSchema.statics.getUserTransactions = function(userId, options = {}) {
-  const query = { userId, paymentCurrency: 'NGNB' };
+  const query = { userId, paymentCurrency: 'NGNZ' };
   
   if (options.billType) {
     query.billType = options.billType;
@@ -269,7 +285,7 @@ billTransactionSchema.statics.getUserTransactions = function(userId, options = {
 billTransactionSchema.statics.getUserPendingTransactions = function(userId, billType = null, timeLimit = 5) {
   const query = {
     userId,
-    paymentCurrency: 'NGNB',
+    paymentCurrency: 'NGNZ',
     status: { $in: ['initiated-api', 'processing-api'] },
     createdAt: { $gte: new Date(Date.now() - timeLimit * 60 * 1000) }
   };
@@ -281,12 +297,12 @@ billTransactionSchema.statics.getUserPendingTransactions = function(userId, bill
   return this.find(query).sort({ createdAt: -1 });
 };
 
-// Static method to get transaction summary by bill type (NGNB-specific)
+// Static method to get transaction summary by bill type (NGNZ-specific)
 billTransactionSchema.statics.getBillTypeSummary = function(userId, dateRange = {}) {
   const matchQuery = { 
     userId, 
     status: 'completed-api',
-    paymentCurrency: 'NGNB'
+    paymentCurrency: 'NGNZ'
   };
   
   if (dateRange.start || dateRange.end) {
@@ -301,7 +317,7 @@ billTransactionSchema.statics.getBillTypeSummary = function(userId, dateRange = 
       $group: {
         _id: '$billType',
         totalAmount: { $sum: '$amountNaira' },
-        totalAmountNGNB: { $sum: '$amountNGNB' },
+        totalAmountNGNZ: { $sum: '$amountNGNZ' },
         count: { $sum: 1 },
         avgAmount: { $avg: '$amountNaira' },
         maxAmount: { $max: '$amountNaira' },
@@ -312,12 +328,12 @@ billTransactionSchema.statics.getBillTypeSummary = function(userId, dateRange = 
   ]);
 };
 
-// Static method to get NGNB spending summary
-billTransactionSchema.statics.getNGNBSummary = function(userId, dateRange = {}) {
+// Static method to get NGNZ spending summary
+billTransactionSchema.statics.getNGNZSummary = function(userId, dateRange = {}) {
   const matchQuery = { 
     userId, 
     status: 'completed-api',
-    paymentCurrency: 'NGNB'
+    paymentCurrency: 'NGNZ'
   };
   
   if (dateRange.start || dateRange.end) {
@@ -331,15 +347,15 @@ billTransactionSchema.statics.getNGNBSummary = function(userId, dateRange = {}) 
     {
       $group: {
         _id: null,
-        totalNGNB: { $sum: '$amountNGNB' },
+        totalNGNZ: { $sum: '$amountNGNZ' },
         totalNaira: { $sum: '$amountNaira' },
         totalTransactions: { $sum: 1 },
-        avgAmount: { $avg: '$amountNGNB' },
+        avgAmount: { $avg: '$amountNGNZ' },
         billTypes: { $addToSet: '$billType' },
         totalByBillType: {
           $push: {
             billType: '$billType',
-            amount: '$amountNGNB'
+            amount: '$amountNGNZ'
           }
         }
       }
@@ -347,11 +363,11 @@ billTransactionSchema.statics.getNGNBSummary = function(userId, dateRange = {}) 
   ]);
 };
 
-// Static method to find transactions by amount range (NGNB)
-billTransactionSchema.statics.findByNGNBRange = function(minAmount, maxAmount, options = {}) {
+// Static method to find transactions by amount range (NGNZ)
+billTransactionSchema.statics.findByNGNZRange = function(minAmount, maxAmount, options = {}) {
   const query = {
-    paymentCurrency: 'NGNB',
-    amountNGNB: { $gte: minAmount, $lte: maxAmount }
+    paymentCurrency: 'NGNZ',
+    amountNGNZ: { $gte: minAmount, $lte: maxAmount }
   };
   
   if (options.status) {
@@ -374,7 +390,7 @@ billTransactionSchema.statics.cleanupStalePendingTransactions = function(olderTh
   return this.updateMany(
     {
       status: { $in: ['initiated-api', 'processing-api'] },
-      paymentCurrency: 'NGNB',
+      paymentCurrency: 'NGNZ',
       createdAt: { $lt: new Date(Date.now() - olderThanMinutes * 60 * 1000) }
     },
     {
@@ -395,35 +411,33 @@ billTransactionSchema.statics.cleanupStalePendingTransactions = function(olderTh
 // Static method to get transactions needing balance release
 billTransactionSchema.statics.getTransactionsNeedingBalanceRelease = function() {
   return this.find({
-    paymentCurrency: 'NGNB',
+    paymentCurrency: 'NGNZ',
     balanceReserved: true,
     status: { $in: ['failed', 'refunded'] },
     portfolioUpdated: false
   });
 };
 
-// Pre-save middleware to ensure backward compatibility and NGNB consistency
+// Pre-save middleware to ensure NGNZ consistency
 billTransactionSchema.pre('save', function(next) {
-  // Handle backward compatibility: populate new fields from old fields
-  
-  // If we have amountCrypto but no amountNGNB, use amountCrypto
-  if (this.amountCrypto && !this.amountNGNB) {
-    this.amountNGNB = this.amountCrypto;
+  // If we have amountCrypto but no amountNGNZ, use amountCrypto
+  if (this.amountCrypto && !this.amountNGNZ) {
+    this.amountNGNZ = this.amountCrypto;
   }
   
-  // If we have amountNGNB but no amountCrypto, populate amountCrypto
-  if (this.amountNGNB && !this.amountCrypto) {
-    this.amountCrypto = this.amountNGNB;
+  // If we have amountNGNZ but no amountCrypto, populate amountCrypto
+  if (this.amountNGNZ && !this.amountCrypto) {
+    this.amountCrypto = this.amountNGNZ;
   }
   
-  // If we have amountNaira but no amountNGNB, use 1:1 ratio
-  if (this.amountNaira && !this.amountNGNB) {
-    this.amountNGNB = this.amountNaira;
+  // If we have amountNaira but no amountNGNZ, use 1:1 ratio
+  if (this.amountNaira && !this.amountNGNZ) {
+    this.amountNGNZ = this.amountNaira;
   }
   
-  // If we have amountNGNB but no amountNaira, use 1:1 ratio
-  if (this.amountNGNB && !this.amountNaira) {
-    this.amountNaira = this.amountNGNB;
+  // If we have amountNGNZ but no amountNaira, use 1:1 ratio
+  if (this.amountNGNZ && !this.amountNaira) {
+    this.amountNaira = this.amountNGNZ;
   }
   
   // Ensure amount field consistency
@@ -431,8 +445,8 @@ billTransactionSchema.pre('save', function(next) {
     this.amount = this.amountNaira;
   }
   
-  // Set cryptoPrice to 1 for NGNB (1:1 peg)
-  if (!this.cryptoPrice || this.paymentCurrency === 'NGNB') {
+  // Set cryptoPrice to 1 for NGNZ (1:1 peg)
+  if (!this.cryptoPrice || this.paymentCurrency === 'NGNZ') {
     this.cryptoPrice = 1;
   }
   
@@ -441,9 +455,9 @@ billTransactionSchema.pre('save', function(next) {
     this.amountUsd = this.amountCrypto * this.cryptoPrice;
   }
   
-  // Force payment currency to NGNB for new transactions
-  if (!this.paymentCurrency || this.paymentCurrency !== 'NGNB') {
-    this.paymentCurrency = 'NGNB';
+  // Force payment currency to NGNZ for new transactions
+  if (!this.paymentCurrency || this.paymentCurrency !== 'NGNZ') {
+    this.paymentCurrency = 'NGNZ';
   }
   
   // Sync balance reservation status with metadata
@@ -459,34 +473,32 @@ billTransactionSchema.pre('save', function(next) {
   next();
 });
 
-// Pre-save validation for backward compatibility
+// Pre-save validation
 billTransactionSchema.pre('save', function(next) {
-  // More lenient validation - allow either old or new field combinations
-  
   // Ensure we have at least one amount field
-  if (!this.amount && !this.amountNaira && !this.amountNGNB && !this.amountCrypto) {
+  if (!this.amount && !this.amountNaira && !this.amountNGNZ && !this.amountCrypto) {
     return next(new Error('At least one amount field is required'));
   }
   
-  // If we have both amountNGNB and amountNaira, ensure they match (1:1 peg)
-  if (this.amountNGNB && this.amountNaira && Math.abs(this.amountNGNB - this.amountNaira) > 0.01) {
-    return next(new Error('NGNB amount must equal Naira amount (1:1 peg)'));
+  // If we have both amountNGNZ and amountNaira, ensure they match (1:1 peg)
+  if (this.amountNGNZ && this.amountNaira && Math.abs(this.amountNGNZ - this.amountNaira) > 0.01) {
+    return next(new Error('NGNZ amount must equal Naira amount (1:1 peg)'));
   }
   
-  // If we have both amountCrypto and amountNGNB, ensure they match
-  if (this.amountCrypto && this.amountNGNB && Math.abs(this.amountCrypto - this.amountNGNB) > 0.01) {
-    return next(new Error('amountCrypto and amountNGNB must match for NGNB transactions'));
+  // If we have both amountCrypto and amountNGNZ, ensure they match
+  if (this.amountCrypto && this.amountNGNZ && Math.abs(this.amountCrypto - this.amountNGNZ) > 0.01) {
+    return next(new Error('amountCrypto and amountNGNZ must match for NGNZ transactions'));
   }
   
   next();
 });
 
-// Enhanced post-save middleware for NGNB logging
+// Enhanced post-save middleware for NGNZ logging
 billTransactionSchema.post('save', function(doc) {
   const balanceStatus = doc.balanceReserved ? '✅ Reserved' : '⚠️ Not Reserved';
   const twoFAStatus = doc.twoFactorValidated ? '✅ 2FA' : '❌ No 2FA';
   
-  console.log(`📋 Bill transaction ${doc.orderId}: ${doc.status} | ${doc.billType} | ${doc.amountNGNB} NGNB | ${twoFAStatus} | ${balanceStatus}`);
+  console.log(`📋 Bill transaction ${doc.orderId}: ${doc.status} | ${doc.billType} | ${doc.amountNGNZ} NGNZ | ${twoFAStatus} | ${balanceStatus}`);
 });
 
 // Error handling middleware
