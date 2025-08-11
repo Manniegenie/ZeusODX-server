@@ -94,10 +94,29 @@ const billTransactionSchema = new mongoose.Schema({
   customerPhone: {
     type: String
   },
+  
+  // FIXED: Updated network enum to include all electricity service providers
   network: {
     type: String,
-    enum: ['MTN', 'GLO', 'AIRTEL', '9MOBILE', 'EKEDC', 'IKEDC', 'DSTV', 'GOTV', 'STARTIMES', null]
+    enum: [
+      // Telecom networks
+      'MTN', 'GLO', 'AIRTEL', '9MOBILE',
+      
+      // Electricity distribution companies
+      'IKEJA-ELECTRIC', 'EKO-ELECTRIC', 'KANO-ELECTRIC', 'PORTHARCOURT-ELECTRIC',
+      'JOS-ELECTRIC', 'IBADAN-ELECTRIC', 'KADUNA-ELECTRIC', 'ABUJA-ELECTRIC',
+      'ENUGU-ELECTRIC', 'BENIN-ELECTRIC', 'ABA-ELECTRIC', 'YOLA-ELECTRIC',
+      
+      // Legacy electricity enum values (for backward compatibility)
+      'EKEDC', 'IKEDC',
+      
+      // Cable TV providers
+      'DSTV', 'GOTV', 'STARTIMES',
+      
+      null
+    ]
   },
+  
   customerInfo: {
     phone: String,
     customerId: String,
@@ -182,6 +201,8 @@ const billTransactionSchema = new mongoose.Schema({
   timestamps: true, // Adds createdAt and updatedAt automatically
   collection: 'billtransactions'
 });
+
+// ... rest of the schema methods remain the same ...
 
 // OPTIMIZED INDEXES for NGNZ-only bill payments
 billTransactionSchema.index({ requestId: 1 });
