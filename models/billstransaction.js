@@ -95,7 +95,7 @@ const billTransactionSchema = new mongoose.Schema({
     type: String
   },
   
-  // FIXED: Updated network enum to include all electricity service providers
+  // UPDATED: Added betting providers to network enum
   network: {
     type: String,
     enum: [
@@ -112,6 +112,11 @@ const billTransactionSchema = new mongoose.Schema({
       
       // Cable TV providers
       'DSTV', 'GOTV', 'STARTIMES',
+      
+      // Betting providers
+      '1xBet', 'BangBet', 'Bet9ja', 'BetKing', 'BetLand', 'BetLion',
+      'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet',
+      'NairaBet', 'SupaBet',
       
       null
     ]
@@ -201,8 +206,6 @@ const billTransactionSchema = new mongoose.Schema({
   timestamps: true, // Adds createdAt and updatedAt automatically
   collection: 'billtransactions'
 });
-
-// ... rest of the schema methods remain the same ...
 
 // OPTIMIZED INDEXES for NGNZ-only bill payments
 billTransactionSchema.index({ requestId: 1 });
