@@ -19,7 +19,7 @@ const SUPPORTED_TOKENS = {
   'DOGE': { name: 'Dogecoin', symbol: 'DOGE', decimals: 8 },
   'MATIC': { name: 'Polygon', symbol: 'MATIC', decimals: 18 },
   'AVAX': { name: 'Avalanche', symbol: 'AVAX', decimals: 18 },
-  'NGNB': { name: 'Nigerian Naira Bridge', symbol: 'NGNB', decimals: 2 }
+  'NGNZ': { name: 'Nigerian Naira Bridge', symbol: 'NGNZ', decimals: 2 }
 };
 
 // Internal transfer configuration constants
@@ -33,7 +33,7 @@ const INTERNAL_TRANSFER_CONFIG = {
     USDT: 1,
     USDC: 1,
     BNB: 0.001,
-    NGNB: 100,
+    NGNZ: 100,
   },
 };
 
@@ -66,7 +66,7 @@ function getBalanceFieldName(currency) {
     'DOGE': 'dogeBalance',
     'MATIC': 'maticBalance',
     'AVAX': 'avaxBalance',
-    'NGNB': 'ngnbBalance'
+    'NGNZ': 'ngnzBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }
