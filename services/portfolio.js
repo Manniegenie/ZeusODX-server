@@ -1,7 +1,7 @@
 // services/portfolio.js - Simplified without caching
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
-const CryptoPrice = require('../models/CryptoPrice');
+const PriceChange = require('../models/pricechange'); // FIXED: Use PriceChange instead of CryptoPrice
 const GlobalMarkdown = require('../models/pricemarkdown');
 const NairaMarkdown = require('../models/offramp');
 const logger = require('../utils/logger');
@@ -154,7 +154,7 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
   throw lastError;
 }
 
-// Fetch prices from database (populated by job)
+// FIXED: Fetch prices from database using PriceChange model (populated by job)
 async function fetchDatabasePrices(tokens) {
   try {
     logger.info('Fetching prices from job-populated database', { requestedTokens: tokens });
@@ -182,29 +182,29 @@ async function fetchDatabasePrices(tokens) {
     
     logger.info('Requesting job-populated prices from database', { dbTokens });
     
-    // Get latest prices for requested tokens (populated by job)
-    const dbPrices = await CryptoPrice.getLatestPrices();
+    // FIXED: Get latest prices for requested tokens using PriceChange model
+    const latestPrices = {};
+    for (const token of dbTokens) {
+      const upperToken = token.toUpperCase();
+      const latestPrice = await PriceChange.findOne({
+        symbol: upperToken
+      }).sort({ timestamp: -1 });
+      
+      if (latestPrice && latestPrice.price > 0) {
+        latestPrices[upperToken] = latestPrice.price;
+        prices.set(upperToken, latestPrice.price);
+        logger.debug(`Set job-populated price: ${upperToken} = $${latestPrice.price.toFixed(8)}`);
+      }
+    }
     
-    if (!dbPrices || dbPrices.length === 0) {
+    if (Object.keys(latestPrices).length === 0) {
       throw new Error('No prices found in database - job may not be running');
     }
     
     logger.info('Job-populated prices retrieved from database', { 
-      pricesFound: dbPrices.length,
-      tokens: dbPrices.map(p => p.symbol)
+      pricesFound: Object.keys(latestPrices).length,
+      tokens: Object.keys(latestPrices)
     });
-    
-    // Process database results
-    for (const priceDoc of dbPrices) {
-      const token = priceDoc.symbol;
-      const price = priceDoc.price;
-      
-      // Only include tokens that were requested
-      if (dbTokens.some(t => t.toUpperCase() === token) && price > 0) {
-        prices.set(token, price);
-        logger.debug(`Set job-populated price: ${token} = $${price.toFixed(8)}`);
-      }
-    }
     
     // Check if we got all requested tokens
     const missingTokens = dbTokens.filter(token => 
@@ -332,11 +332,13 @@ async function getPricesWithCache(tokenSymbols) {
   }
 }
 
-// Get hourly price changes (reads job-calculated percentages)
+// FIXED: Get hourly price changes using PriceChange model
 async function getHourlyPriceChanges(tokens) {
   try {
     const changes = {};
     
+    // Get current prices first
+    const currentPrices = {};
     for (const token of tokens) {
       const upperToken = token.toUpperCase();
       
@@ -349,19 +351,31 @@ async function getHourlyPriceChanges(tokens) {
         continue;
       }
       
-      // Get latest price with job-calculated hourly change
-      const latestPrice = await CryptoPrice.getLatestPrice(upperToken);
+      // Get latest price from PriceChange model
+      const latestPrice = await PriceChange.findOne({
+        symbol: upperToken
+      }).sort({ timestamp: -1 });
       
-      if (latestPrice && latestPrice.hourly_change !== undefined) {
-        changes[upperToken] = {
-          currentPrice: latestPrice.price,
-          hourlyChange: latestPrice.hourly_change, // Job-calculated percentage
-          timestamp: latestPrice.timestamp
+      if (latestPrice) {
+        currentPrices[upperToken] = latestPrice.price;
+      }
+    }
+    
+    // Use PriceChange model's getPriceChanges method for 1-hour changes
+    const priceChanges = await PriceChange.getPriceChanges(currentPrices, 1); // 1 hour
+    
+    // Format the response
+    for (const [token, changeData] of Object.entries(priceChanges)) {
+      if (changeData.dataAvailable) {
+        changes[token] = {
+          currentPrice: changeData.newPrice,
+          hourlyChange: changeData.percentageChange,
+          timestamp: new Date()
         };
         
-        logger.debug(`Got hourly change for ${upperToken}`, {
-          price: latestPrice.price,
-          change: `${latestPrice.hourly_change}%`
+        logger.debug(`Got hourly change for ${token}`, {
+          price: changeData.newPrice,
+          change: `${changeData.percentageChange}%`
         });
       }
     }
