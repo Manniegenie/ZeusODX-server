@@ -523,7 +523,8 @@ async function createWithdrawalTransaction(transactionData) {
     obiexTransactionId,
     obiexReference,
     narration,
-    user
+    user,
+    receiverAmount
   } = transactionData;
 
   try {
@@ -531,7 +532,7 @@ async function createWithdrawalTransaction(transactionData) {
       userId,
       type: 'WITHDRAWAL',
       currency: currency.toUpperCase(),
-      amount,
+      amount, // This is the total amount deducted from user's balance
       address,
       network,
       memo,
@@ -553,7 +554,9 @@ async function createWithdrawalTransaction(transactionData) {
           kyc: true,
           duplicate_check: true
         },
-        balance_updated_directly: true // Track that we use direct balance updates
+        balance_updated_directly: true, // Track that we use direct balance updates
+        receiverAmount: receiverAmount, // Amount the receiver actually gets (amount - fee)
+        totalDeducted: amount // Total amount deducted from user's balance
       }
     });
 
@@ -561,7 +564,9 @@ async function createWithdrawalTransaction(transactionData) {
       transactionId: transaction._id,
       userId,
       currency,
-      amount,
+      totalDeducted: amount,
+      receiverAmount,
+      fee,
       obiexTransactionId,
       security_status: '2FA + PIN + KYC validated'
     });
@@ -679,16 +684,63 @@ router.post('/crypto', async (req, res) => {
       currency
     });
 
-    // KYC validation using the correct function
-    logger.info('Validating KYC limits for crypto withdrawal', { userId, amount, currency });
+    // Get current crypto price using portfolio service
+    const prices = await getPricesWithCache([currency]);
+    const cryptoPrice = prices[currency];
+    
+    if (!cryptoPrice || cryptoPrice <= 0) {
+      return res.status(500).json({
+        success: false,
+        error: 'PRICE_DATA_ERROR',
+        message: 'Unable to fetch current price data. Please try again.'
+      });
+    }
+
+    // Get withdrawal fee using currency + network
+    const feeInfo = await getWithdrawalFee(currency, network, cryptoPrice);
+    if (!feeInfo.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'FEE_CALCULATION_ERROR',
+        message: feeInfo.message
+      });
+    }
+
+    const { feeInCrypto, feeUsd } = feeInfo;
+    
+    // NEW LOGIC: Subtract fee from the entered amount
+    const totalAmount = amount; // This is what gets deducted from user's balance
+    const receiverAmount = amount - feeInCrypto; // This is what the receiver actually gets
+    
+    // Check if the amount is enough to cover the fee
+    if (receiverAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'AMOUNT_TOO_LOW',
+        message: `Amount too low. Minimum amount required to cover fees: ${(feeInCrypto + 0.000001).toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)} ${currency}`,
+        details: {
+          enteredAmount: amount,
+          fee: feeInCrypto,
+          minimumRequired: feeInCrypto + 0.000001,
+          currency: currency
+        }
+      });
+    }
+
+    // Store for cleanup
+    reservedAmount = totalAmount;
+    reservedCurrency = currency;
+
+    // KYC validation using the correct function (validate against receiverAmount since that's what gets sent out)
+    logger.info('Validating KYC limits for crypto withdrawal', { userId, amount: receiverAmount, currency });
     
     try {
-      const kycValidation = await validateCryptoTransaction(userId, amount, currency);
+      const kycValidation = await validateCryptoTransaction(userId, receiverAmount, currency);
       
       if (!kycValidation.allowed) {
         logger.warn('Crypto withdrawal blocked by KYC limits', {
           userId,
-          amount,
+          receiverAmount,
           currency,
           address: address.substring(0, 10) + '...',
           kycCode: kycValidation.code,
@@ -718,7 +770,7 @@ router.post('/crypto', async (req, res) => {
 
       logger.info('KYC validation passed for crypto withdrawal', {
         userId,
-        amount,
+        receiverAmount,
         currency,
         address: address.substring(0, 10) + '...',
         kycLevel: kycValidation.data?.kycLevel,
@@ -730,7 +782,7 @@ router.post('/crypto', async (req, res) => {
     } catch (kycError) {
       logger.error('KYC validation failed with error for crypto withdrawal', {
         userId,
-        amount,
+        receiverAmount,
         currency,
         address: address.substring(0, 10) + '...',
         error: kycError.message,
@@ -745,8 +797,8 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    // Check for duplicate withdrawals
-    const duplicateCheck = await checkDuplicateWithdrawal(userId, currency, amount, address);
+    // Check for duplicate withdrawals (check against total amount)
+    const duplicateCheck = await checkDuplicateWithdrawal(userId, currency, totalAmount, address);
     if (duplicateCheck.isDuplicate) {
       return res.status(400).json({
         success: false,
@@ -755,36 +807,7 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    // Get current crypto price using portfolio service
-    const prices = await getPricesWithCache([currency]);
-    const cryptoPrice = prices[currency];
-    
-    if (!cryptoPrice || cryptoPrice <= 0) {
-      return res.status(500).json({
-        success: false,
-        error: 'PRICE_DATA_ERROR',
-        message: 'Unable to fetch current price data. Please try again.'
-      });
-    }
-
-    // Get withdrawal fee using currency + network
-    const feeInfo = await getWithdrawalFee(currency, network, cryptoPrice);
-    if (!feeInfo.success) {
-      return res.status(400).json({
-        success: false,
-        error: 'FEE_CALCULATION_ERROR',
-        message: feeInfo.message
-      });
-    }
-
-    const { feeInCrypto, feeUsd } = feeInfo;
-    const totalAmount = amount + feeInCrypto;
-
-    // Store for cleanup
-    reservedAmount = totalAmount;
-    reservedCurrency = currency;
-
-    // Validate user balance using internal function
+    // Validate user balance using internal function (validate against total amount)
     const balanceValidation = await validateUserBalanceInternal(userId, currency, totalAmount);
     
     if (!balanceValidation.success) {
@@ -795,7 +818,7 @@ router.post('/crypto', async (req, res) => {
         details: {
           availableBalance: balanceValidation.availableBalance,
           requiredAmount: totalAmount,
-          withdrawalAmount: amount,
+          receiverAmount: receiverAmount,
           fee: feeInCrypto,
           currency: currency
         }
@@ -805,17 +828,18 @@ router.post('/crypto', async (req, res) => {
     logger.info('All validations passed for crypto withdrawal', {
       userId,
       currency,
-      amount,
       totalAmount,
+      receiverAmount,
+      fee: feeInCrypto,
       network,
       address: address.substring(0, 10) + '...',
       cryptoPrice,
       security_status: '2FA + PIN + KYC + Balance validated'
     });
 
-    // Initiate Obiex withdrawal
+    // Initiate Obiex withdrawal with receiverAmount (the amount after fee is subtracted)
     const obiexResult = await initiateObiexWithdrawal({
-      amount,
+      amount: receiverAmount, // Send the amount minus fees to Obiex
       address,
       currency,
       network,
@@ -827,7 +851,7 @@ router.post('/crypto', async (req, res) => {
       logger.error('Obiex API withdrawal failed', {
         userId,
         currency,
-        amount,
+        receiverAmount,
         error: obiexResult.message,
         statusCode: obiexResult.statusCode
       });
@@ -843,7 +867,7 @@ router.post('/crypto', async (req, res) => {
     const transaction = await createWithdrawalTransaction({
       userId,
       currency,
-      amount,
+      amount: totalAmount, // Store the total amount deducted from balance
       address,
       network,
       memo,
@@ -851,11 +875,12 @@ router.post('/crypto', async (req, res) => {
       obiexTransactionId: obiexResult.data.transactionId,
       obiexReference: obiexResult.data.reference,
       narration,
-      user
+      user,
+      receiverAmount // Store the amount the receiver gets
     });
     transactionCreated = true;
 
-    // Reserve user balance using internal function
+    // Reserve user balance using internal function (reserve the total amount)
     const reservationResult = await reserveUserBalanceInternal(userId, currency, totalAmount);
     if (!reservationResult.success) {
       logger.error('Failed to reserve balance for withdrawal', {
@@ -877,8 +902,9 @@ router.post('/crypto', async (req, res) => {
     logger.info('✅ Crypto withdrawal processed successfully', {
       userId,
       currency,
-      amount,
       totalAmount,
+      receiverAmount,
+      fee: feeInCrypto,
       network,
       transactionId: transaction._id,
       obiexTransactionId: obiexResult.data.transactionId,
@@ -896,11 +922,11 @@ router.post('/crypto', async (req, res) => {
         obiexReference: obiexResult.data.reference,
         obiexStatus: obiexResult.data.status,
         currency,
-        amount,
-        network,
+        totalAmount, // Amount deducted from user's balance
+        receiverAmount, // Amount the receiver will get
         fee: feeInCrypto,
         feeUsd,
-        totalAmount,
+        network,
         cryptoPrice,
         estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`,
         security_info: {
@@ -980,7 +1006,8 @@ router.get('/status/:transactionId', async (req, res) => {
         transactionId: transaction._id,
         status: transaction.status,
         currency: transaction.currency,
-        amount: transaction.amount,
+        amount: transaction.amount, // Total amount deducted from balance
+        receiverAmount: transaction.metadata?.receiverAmount, // Amount receiver gets
         fee: transaction.fee,
         address: transaction.address,
         network: transaction.network,
@@ -1064,30 +1091,48 @@ router.post('/initiate', async (req, res) => {
     }
 
     const { feeInCrypto, feeUsd } = feeInfo;
-    const totalAmount = amount + feeInCrypto;
-    const receiverAmount = amount; // User gets the full amount, fee is deducted from their balance
+    
+    // NEW LOGIC: Subtract fee from the entered amount
+    const totalAmount = amount; // Total amount deducted from user's balance
+    const receiverAmount = amount - feeInCrypto; // Amount the receiver will get
+    
+    // Check if amount is sufficient to cover fee
+    if (receiverAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Amount too low to cover fees. Minimum required: ${(feeInCrypto + 0.000001).toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)} ${upperCurrency}`,
+        error: 'AMOUNT_TOO_LOW',
+        details: {
+          enteredAmount: amount,
+          fee: feeInCrypto,
+          minimumRequired: feeInCrypto + 0.000001,
+          currency: upperCurrency
+        }
+      });
+    }
 
     logger.info('Fee calculation completed', {
       currency: upperCurrency,
       network: upperNetwork,
-      amount,
+      enteredAmount: amount,
+      totalAmount,
+      receiverAmount,
       feeInCrypto,
       feeUsd,
-      totalAmount,
       cryptoPrice
     });
 
     const response = {
       success: true,
       data: {
-        amount,              // User's requested amount
+        amount: totalAmount,       // Total amount that will be deducted from user's balance
         currency: upperCurrency,
         network: upperNetwork,
-        fee: feeInCrypto,    // Fee in crypto currency
-        feeUsd,              // Fee in USD
-        receiverAmount,      // Amount the receiver will get
-        totalAmount,         // Total amount that will be deducted (amount + fee)
-        cryptoPrice,         // Current price of the crypto in USD
+        fee: feeInCrypto,         // Fee in crypto currency
+        feeUsd,                   // Fee in USD
+        receiverAmount,           // Amount the receiver will actually get (amount - fee)
+        totalAmount,              // Same as amount - total deducted from user balance
+        cryptoPrice,              // Current price of the crypto in USD
         feeUsdFormatted: `$${feeUsd.toFixed(2)}` // Formatted fee for display
       }
     };
