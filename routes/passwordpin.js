@@ -5,7 +5,6 @@ const User = require('../models/user');
 const PendingUser = require("../models/pendinguser");
 const config = require("./config");
 const logger = require('../utils/logger');
-const generateWallets = require("../utils/generatewallets");
 
 // Function to generate unique username from first name
 const generateUniqueUsername = async (firstName) => {
@@ -63,98 +62,6 @@ const generateUniqueUsername = async (firstName) => {
     logger.error('Error generating username', { firstName, error: error.message });
     // Ultimate fallback
     return `user${Date.now().toString().slice(-6)}`;
-  }
-};
-
-// Background wallet generation function
-const generateWalletsInBackground = async (userId, email) => {
-  try {
-    logger.info('Starting background wallet generation', { userId, email });
-    
-    // Update user status to in_progress
-    await User.findByIdAndUpdate(userId, {
-      walletGenerationStatus: 'in_progress',
-      walletGenerationStartedAt: new Date()
-    });
-
-    // Generate wallets
-    const generated = await generateWallets(email, userId);
-    const rawWallets = generated.wallets || {};
-
-    // Normalize wallet keys to match schema - DOGE REMOVED
-    const normalizedWallets = {};
-    for (const [key, walletData] of Object.entries(rawWallets)) {
-      const parts = key.split('_');
-      let normalizedKey;
-
-      if (parts.length === 1) {
-        normalizedKey = key;
-      } else if (parts.length === 2) {
-        if (parts[0] === 'USDT' && parts[1] === 'BSC') {
-          normalizedKey = 'USDT_BSC';
-        } else if (parts[0] === 'USDT' && parts[1] === 'TRX') {
-          normalizedKey = 'USDT_TRX';
-        } else if (parts[0] === 'USDT' && parts[1] === 'ETH') {
-          normalizedKey = 'USDT_ETH';
-        } else if (parts[0] === 'USDC' && parts[1] === 'BSC') {
-          normalizedKey = 'USDC_BSC';
-        } else if (parts[0] === 'USDC' && parts[1] === 'ETH') {
-          normalizedKey = 'USDC_ETH';
-        } else if (parts[0] === 'BNB' && parts[1] === 'ETH') {
-          normalizedKey = 'BNB_ETH';
-        } else if (parts[0] === 'BNB' && parts[1] === 'BSC') {
-          normalizedKey = 'BNB_BSC';
-        } else if (parts[0] === 'MATIC' && parts[1] === 'ETH') {
-          normalizedKey = 'MATIC_ETH';
-        } else if (parts[0] === 'AVAX' && parts[1] === 'BSC') {
-          normalizedKey = 'AVAX_BSC';
-        } else {
-          normalizedKey = key; // e.g., BTC_BTC, ETH_ETH, SOL_SOL
-        }
-        // DOGE_DOGE case REMOVED
-      } else {
-        normalizedKey = key;
-      }
-
-      if (walletData && walletData.address) {
-        normalizedWallets[`wallets.${normalizedKey}`] = {
-          address: walletData.address,
-          network: walletData.network,
-          walletReferenceId: walletData.referenceId || null,
-        };
-      }
-    }
-
-    // Update user with wallet addresses
-    const updateData = {
-      ...normalizedWallets,
-      walletGenerationStatus: 'completed',
-      walletGenerationCompletedAt: new Date()
-    };
-
-    await User.findByIdAndUpdate(userId, updateData);
-
-    logger.info('Background wallet generation completed successfully', {
-      userId,
-      email,
-      successfulWallets: Object.keys(normalizedWallets).length,
-      totalRequested: generated.totalRequested,
-      successfullyCreated: generated.successfullyCreated
-    });
-
-  } catch (error) {
-    logger.error('Background wallet generation failed', {
-      userId,
-      email,
-      error: error.message,
-      stack: error.stack
-    });
-
-    // Update user status to failed
-    await User.findByIdAndUpdate(userId, {
-      walletGenerationStatus: 'failed',
-      walletGenerationCompletedAt: new Date()
-    });
   }
 };
 
@@ -220,7 +127,7 @@ router.post('/password-pin', async (req, res) => {
       passwordpin: newPin, // Set the PIN - let the model handle hashing
       transactionpin: null,
       wallets: {
-        // Initialize empty wallet structure - DOGE_DOGE REMOVED
+        // Initialize empty wallet structure - wallets will be generated on-demand
         BTC_BTC: { address: null, network: null, walletReferenceId: null },
         ETH_ETH: { address: null, network: null, walletReferenceId: null },
         SOL_SOL: { address: null, network: null, walletReferenceId: null },
@@ -231,7 +138,6 @@ router.post('/password-pin', async (req, res) => {
         USDC_BSC: { address: null, network: null, walletReferenceId: null },
         BNB_ETH: { address: null, network: null, walletReferenceId: null },
         BNB_BSC: { address: null, network: null, walletReferenceId: null },
-        // DOGE_DOGE: REMOVED COMPLETELY
         MATIC_ETH: { address: null, network: null, walletReferenceId: null },
         AVAX_BSC: { address: null, network: null, walletReferenceId: null },
         NGNZ: {
@@ -270,10 +176,7 @@ router.post('/password-pin', async (req, res) => {
           sourceOfFunds: null
         }
       },
-      // Set wallet generation status
-      walletGenerationStatus: 'pending',
-      walletGenerationStartedAt: null,
-      walletGenerationCompletedAt: null
+      // Remove wallet generation status fields since wallets are generated on-demand
     };
 
     const newUser = new User(userFields);
@@ -368,14 +271,7 @@ router.post('/password-pin', async (req, res) => {
     // Remove pending user after successful account creation
     await PendingUser.deleteOne({ _id: pendingUser._id });
 
-    // Start wallet generation in background (don't await - this is the key change!)
-    generateWalletsInBackground(newUser._id, newUser.email).catch(error => {
-      logger.error('Background wallet generation process failed to start', {
-        userId: newUser._id,
-        email: newUser.email,
-        error: error.message
-      });
-    });
+    // NO BACKGROUND WALLET GENERATION - Wallets will be generated on-demand when requested
 
     // DEBUG: Log tokens being sent in response
     logger.info('Sending response with tokens', {
@@ -386,9 +282,9 @@ router.post('/password-pin', async (req, res) => {
       source: 'password-pin'
     });
 
-    // Respond immediately to frontend - USER GETS RESPONSE RIGHT AWAY
+    // Respond immediately to frontend
     res.status(201).json({
-      message: 'Account created successfully with password PIN and KYC Level 1. Wallet addresses are being generated in the background.',
+      message: 'Account created successfully with password PIN and KYC Level 1. Wallet addresses will be generated when you request deposit addresses.',
       user: {
         id: newUser._id,
         email: newUser.email,
@@ -398,7 +294,6 @@ router.post('/password-pin', async (req, res) => {
         username: newUser.username, // Now includes generated username
         kycLevel: newUser.kycLevel,
         kycStatus: newUser.kycStatus,
-        walletGenerationStatus: newUser.walletGenerationStatus
       },
       accessToken,
       refreshToken,
@@ -415,28 +310,29 @@ router.post('/password-pin', async (req, res) => {
   }
 });
 
-// GET: /api/admin/wallet-status/:userId - Check wallet generation status
+// GET: /api/admin/wallet-status/:userId - Check individual wallet status (optional - can be removed if not needed)
 router.get('/wallet-status/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     
-    const user = await User.findById(userId).select('walletGenerationStatus walletGenerationStartedAt walletGenerationCompletedAt wallets');
+    const user = await User.findById(userId).select('wallets');
     
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     // Count how many wallets have been generated (excluding NGNZ placeholder)
-    const walletCount = user.wallets ? Object.keys(user.wallets).filter(key => 
+    const walletsWithAddresses = user.wallets ? Object.keys(user.wallets).filter(key => 
       key !== 'NGNZ' && user.wallets[key] && user.wallets[key].address && user.wallets[key].address !== null
-    ).length : 0;
+    ) : [];
+
+    const walletsGenerated = walletsWithAddresses.length;
 
     res.json({
-      walletGenerationStatus: user.walletGenerationStatus,
-      walletGenerationStartedAt: user.walletGenerationStartedAt,
-      walletGenerationCompletedAt: user.walletGenerationCompletedAt,
-      walletsGenerated: walletCount,
-      totalWallets: 12, // UPDATED: Total number of wallets expected (was 13, now 12 after removing DOGE)
+      message: 'Wallets are generated on-demand when deposit addresses are requested',
+      walletsGenerated: walletsGenerated,
+      totalPossibleWallets: 12, // Total number of wallets that can be generated
+      generatedWallets: walletsWithAddresses,
       wallets: user.wallets
     });
 

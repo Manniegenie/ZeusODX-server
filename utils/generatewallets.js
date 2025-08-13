@@ -4,24 +4,6 @@ const { validateObiexConfig } = require('../utils/obiexAuth');
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000; // 1 second
-const CONCURRENCY_LIMIT = 3;
-
-// UPDATED: DOGE removed from wallet generation
-const currenciesToCreate = [
-  { currency: 'BTC', network: 'BTC' },
-  { currency: 'ETH', network: 'ETH' },
-  { currency: 'SOL', network: 'SOL' },
-  { currency: 'USDT', network: 'ETH' },
-  { currency: 'USDT', network: 'TRX' },
-  { currency: 'USDT', network: 'BSC' },
-  { currency: 'USDC', network: 'ETH' },
-  { currency: 'USDC', network: 'BSC' },
-  { currency: 'BNB', network: 'ETH' },
-  { currency: 'BNB', network: 'BSC' },
-  // { currency: 'DOGE', network: 'DOGE' }, // REMOVED
-  { currency: 'MATIC', network: 'ETH' },
-  { currency: 'AVAX', network: 'BSC' },
-];
 
 // Retry wrapper with exponential backoff and jitter
 const retryWithBackoff = async (fn, retries = MAX_RETRIES, delay = RETRY_DELAY_MS) => {
@@ -43,137 +25,151 @@ const retryWithBackoff = async (fn, retries = MAX_RETRIES, delay = RETRY_DELAY_M
   }
 };
 
-// Simple concurrency limiter semaphore
-const semaphore = (limit) => {
-  let activeCount = 0;
-  const queue = [];
-
-  const next = () => {
-    if (queue.length === 0 || activeCount >= limit) return;
-    activeCount++;
-    const { fn, resolve, reject } = queue.shift();
-    fn()
-      .then(resolve)
-      .catch(reject)
-      .finally(() => {
-        activeCount--;
-        next();
-      });
-  };
-
-  return (fn) =>
-    new Promise((resolve, reject) => {
-      queue.push({ fn, resolve, reject });
-      process.nextTick(next);
-    });
-};
-
-const limit = semaphore(CONCURRENCY_LIMIT);
-
-const generateWallets = async (email, userId) => {
+// Function to generate a single wallet for a specific currency/network
+const generateSingleWallet = async (email, userId, currency, network) => {
   validateObiexConfig();
-  logger.info(`Starting wallet generation for ${email}`, { userId });
+  logger.info(`Starting single wallet generation for ${email}`, { 
+    userId, 
+    currency, 
+    network 
+  });
 
   // Ensure purpose is alphanumeric and uses only hyphens
   const cleanedPurpose = String(userId).replace(/[^a-zA-Z0-9-]/g, '-');
-  const walletResults = {};
-
-  const tasks = currenciesToCreate.map(({ currency, network }) => {
-    return limit(async () => {
-      const key = `${currency}_${network}`;
-      const payload = {
-        purpose: cleanedPurpose,
-        currency,
-        network,
-      };
-
-      try {
-        logger.info(`Creating wallet: ${key}`, { currency, network, userId });
-        const response = await retryWithBackoff(() => obiexService.createDepositAddress(payload));
-        
-        // Extract all possible response fields
-        const address = response?.value || response?.data?.value || null;
-        const addressId = response?.id || response?.data?.id || null;
-        const referenceId = response?.reference || response?.data?.reference || null;
-
-        walletResults[key] = {
-          address,
-          addressId,
-          referenceId, // This will be saved as walletReferenceId in the user model
-          network,
-          currency,
-          status: address ? 'success' : 'no_address',
-        };
-
-        logger.info(`Wallet created successfully: ${key}`, { 
-          address: address || 'Not returned', 
-          addressId, 
-          referenceId,
-          userId,
-          email 
-        });
-      } catch (err) {
-        const errorData = err.response?.data || {};
-        logger.warn('Wallet creation failed', {
-          key,
-          email,
-          userId,
-          network,
-          currency,
-          error: errorData,
-          message: errorData?.message || err.message,
-          status: err.response?.status,
-        });
-
-        walletResults[key] = {
-          address: null,
-          addressId: null,
-          referenceId: null,
-          network,
-          currency,
-          status: 'failed',
-          error: errorData?.message || err.message,
-        };
-      }
-
-      // Slight delay between wallet creations for rate limiting safety
-      await new Promise(res => setTimeout(res, 200));
-    });
-  });
-
-  await Promise.all(tasks);
-
-  const successCount = Object.values(walletResults).filter(w => w.status === 'success').length;
-  const totalCount = currenciesToCreate.length;
-
-  logger.info(`Wallet generation complete: ${successCount}/${totalCount} successful`, {
-    userId,
-    email,
-    successCount,
-    totalCount,
-    successful: Object.keys(walletResults).filter(k => walletResults[k].status === 'success'),
-    failed: Object.keys(walletResults).filter(k => walletResults[k].status === 'failed'),
-  });
-
-  return {
-    success: successCount > 0,
-    totalRequested: totalCount,
-    successfullyCreated: successCount,
-    wallets: walletResults,
-    summary: {
-      successful: Object.keys(walletResults).filter(k => walletResults[k].status === 'success'),
-      failed: Object.keys(walletResults).filter(k => walletResults[k].status === 'failed'),
-      successfulWallets: Object.keys(walletResults).filter(k => walletResults[k].status === 'success').map(k => ({
-        key: k,
-        address: walletResults[k].address,
-        referenceId: walletResults[k].referenceId
-      })),
-      failedWallets: Object.keys(walletResults).filter(k => walletResults[k].status === 'failed').map(k => ({
-        key: k,
-        error: walletResults[k].error
-      }))
-    },
+  
+  const payload = {
+    purpose: cleanedPurpose,
+    currency,
+    network,
   };
+
+  const key = `${currency}_${network}`;
+
+  try {
+    logger.info(`Creating single wallet: ${key}`, { currency, network, userId });
+    const response = await retryWithBackoff(() => obiexService.createDepositAddress(payload));
+    
+    // Extract all possible response fields
+    const address = response?.value || response?.data?.value || null;
+    const addressId = response?.id || response?.data?.id || null;
+    const referenceId = response?.reference || response?.data?.reference || null;
+
+    if (!address) {
+      throw new Error(`No address returned for ${currency}/${network}`);
+    }
+
+    const walletData = {
+      address,
+      addressId,
+      referenceId, // This will be saved as walletReferenceId in the user model
+      network,
+      currency,
+      status: 'success',
+    };
+
+    logger.info(`Single wallet created successfully: ${key}`, { 
+      address: address || 'Not returned', 
+      addressId, 
+      referenceId,
+      userId,
+      email 
+    });
+
+    return {
+      success: true,
+      wallet: walletData,
+      key: key
+    };
+
+  } catch (err) {
+    const errorData = err.response?.data || {};
+    logger.error('Single wallet creation failed', {
+      key,
+      email,
+      userId,
+      network,
+      currency,
+      error: errorData,
+      message: errorData?.message || err.message,
+      status: err.response?.status,
+    });
+
+    throw new Error(`Failed to generate wallet for ${currency}/${network}: ${errorData?.message || err.message}`);
+  }
 };
 
-module.exports = generateWallets;
+// Mapping for currency/network to schema keys (same as in your deposit route)
+const CURRENCY_NETWORK_TO_SCHEMA = {
+  // Bitcoin
+  'BTC_BTC': 'BTC_BTC',
+  
+  // Ethereum
+  'ETH_ETH': 'ETH_ETH',
+  
+  // Solana
+  'SOL_SOL': 'SOL_SOL',
+  
+  // USDT variants
+  'USDT_ETH': 'USDT_ETH',
+  'USDT_TRX': 'USDT_TRX',
+  'USDT_BSC': 'USDT_BSC',
+  
+  // USDC variants
+  'USDC_ETH': 'USDC_ETH',
+  'USDC_BSC': 'USDC_BSC',
+  
+  // BNB variants
+  'BNB_ETH': 'BNB_ETH',
+  'BNB_BSC': 'BNB_BSC',
+  
+  // Polygon (MATIC)
+  'MATIC_ETH': 'MATIC_ETH',
+  
+  // Avalanche
+  'AVAX_BSC': 'AVAX_BSC',
+};
+
+// Function to get the correct currency/network for obiex from schema key
+const getCurrencyNetworkFromSchema = (schemaKey) => {
+  // Find the entry where the value matches the schemaKey
+  const entry = Object.entries(CURRENCY_NETWORK_TO_SCHEMA).find(([key, value]) => value === schemaKey);
+  
+  if (!entry) {
+    throw new Error(`No currency/network mapping found for schema key: ${schemaKey}`);
+  }
+  
+  const [currencyNetwork] = entry;
+  const [currency, network] = currencyNetwork.split('_');
+  
+  return { currency, network };
+};
+
+// Main function to generate wallet by schema key (for use in deposit route)
+const generateWalletBySchemaKey = async (email, userId, schemaKey) => {
+  try {
+    const { currency, network } = getCurrencyNetworkFromSchema(schemaKey);
+    const result = await generateSingleWallet(email, userId, currency, network);
+    
+    // Return in format expected by the deposit route
+    return {
+      address: result.wallet.address,
+      network: result.wallet.network,
+      walletReferenceId: result.wallet.referenceId || null,
+    };
+    
+  } catch (error) {
+    logger.error('Error generating wallet by schema key', {
+      schemaKey,
+      email,
+      userId,
+      error: error.message
+    });
+    throw error;
+  }
+};
+
+module.exports = {
+  generateSingleWallet,
+  generateWalletBySchemaKey,
+  getCurrencyNetworkFromSchema
+};

@@ -61,7 +61,7 @@ const userSchema = new mongoose.Schema({
   lastFailedLogin: { type: Date },
   lastLoginEmailSent: { type: Date, default: null },
 
-  // Wallets
+  // Wallets - DOGE_DOGE REMOVED
   wallets: {
     BTC_BTC: { address: String, network: String, walletReferenceId: String },
     ETH_ETH: { address: String, network: String, walletReferenceId: String },
@@ -73,13 +73,12 @@ const userSchema = new mongoose.Schema({
     USDC_BSC: { address: String, network: String, walletReferenceId: String },
     BNB_ETH: { address: String, network: String, walletReferenceId: String },
     BNB_BSC: { address: String, network: String, walletReferenceId: String },
-    DOGE_DOGE: { address: String, network: String, walletReferenceId: String },
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
     AVAX_BSC: { address: String, network: String, walletReferenceId: String },
     NGNZ: { address: String, network: String, walletReferenceId: String },
   },
 
-  // Balances
+  // Balances - DOGE BALANCES REMOVED
   solBalance: { type: Number, default: 0, min: 0 },
   solPendingBalance: { type: Number, default: 0, min: 0 },
   btcBalance: { type: Number, default: 0, min: 0 },
@@ -92,8 +91,6 @@ const userSchema = new mongoose.Schema({
   ethPendingBalance: { type: Number, default: 0, min: 0 },
   bnbBalance: { type: Number, default: 0, min: 0 },
   bnbPendingBalance: { type: Number, default: 0, min: 0 },
-  dogeBalance: { type: Number, default: 0, min: 0 },
-  dogePendingBalance: { type: Number, default: 0, min: 0 },
   maticBalance: { type: Number, default: 0, min: 0 },
   maticPendingBalance: { type: Number, default: 0, min: 0 },
   avaxBalance: { type: Number, default: 0, min: 0 },
@@ -104,10 +101,10 @@ const userSchema = new mongoose.Schema({
   lastBalanceUpdate: { type: Date, default: null },
   portfolioLastUpdated: { type: Date, default: null },
 
-  // Wallet generation
-  walletGenerationStatus: { type: String, enum: ['pending','in_progress','completed','failed'], default: 'pending' },
-  walletGenerationStartedAt: { type: Date, default: null },
-  walletGenerationCompletedAt: { type: Date, default: null },
+  // WALLET GENERATION STATUS FIELDS REMOVED - No longer needed with on-demand generation
+  // walletGenerationStatus: { type: String, enum: ['pending','in_progress','completed','failed'], default: 'pending' },
+  // walletGenerationStartedAt: { type: Date, default: null },
+  // walletGenerationCompletedAt: { type: Date, default: null },
 
   // 2FA
   twoFASecret: { type: String, default: null },
@@ -146,7 +143,7 @@ userSchema.set('toJSON', {
   },
 });
 
-// Pre-save: Hash sensitive fields + balance tracking
+// Pre-save: Hash sensitive fields + balance tracking - DOGE REMOVED
 userSchema.pre('save', async function (next) {
   try {
     const fieldsToHash = ['password','passwordpin','transactionpin','securitypin'];
@@ -158,7 +155,7 @@ userSchema.pre('save', async function (next) {
     }
     const balanceFields = [
       'solBalance','btcBalance','usdtBalance','usdcBalance','ethBalance',
-      'bnbBalance','dogeBalance','maticBalance','avaxBalance','ngnzBalance'
+      'bnbBalance','maticBalance','avaxBalance','ngnzBalance' // DOGE REMOVED
     ];
     if (balanceFields.some(f => this.isModified(f))) {
       this.lastBalanceUpdate = new Date();

@@ -3,8 +3,10 @@ const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const QRCode = require('qrcode'); // npm install qrcode
 const User = require('../models/user');
+const { generateWalletBySchemaKey } = require("../utils/generateSingleWallet"); // Import single wallet generation utility
+const logger = require('../utils/logger'); // Import logger
 
-// Mapping between token/network combinations and schema wallet keys
+// Mapping between token/network combinations and schema wallet keys (DOGE removed)
 const WALLET_KEY_MAPPING = {
   // Bitcoin
   'BTC_BTC': 'BTC_BTC',
@@ -45,10 +47,6 @@ const WALLET_KEY_MAPPING = {
   'BNB_BEP20': 'BNB_BSC',
   'BNB_BINANCE': 'BNB_BSC',
   
-  // Dogecoin
-  'DOGE_DOGE': 'DOGE_DOGE',
-  'DOGE_DOGECOIN': 'DOGE_DOGE',
-  
   // Polygon (MATIC)
   'MATIC_ETH': 'MATIC_ETH',
   'MATIC_ETHEREUM': 'MATIC_ETH',
@@ -66,7 +64,7 @@ const WALLET_KEY_MAPPING = {
   'NGNB': 'NGNB',
 };
 
-// Supported tokens and their networks
+// Supported tokens and their networks (DOGE removed to match utility)
 const SUPPORTED_TOKENS = {
   'BTC': ['BTC', 'BITCOIN'],
   'ETH': ['ETH', 'ETHEREUM'],
@@ -74,7 +72,6 @@ const SUPPORTED_TOKENS = {
   'USDT': ['ETH', 'ETHEREUM', 'ERC20', 'TRX', 'TRON', 'TRC20', 'BSC', 'BEP20', 'BINANCE'],
   'USDC': ['ETH', 'ETHEREUM', 'ERC20', 'BSC', 'BEP20', 'BINANCE'],
   'BNB': ['ETH', 'ETHEREUM', 'ERC20', 'BSC', 'BEP20', 'BINANCE'],
-  'DOGE': ['DOGE', 'DOGECOIN'],
   'MATIC': ['ETH', 'ETHEREUM', 'ERC20', 'POLYGON'],
   'AVAX': ['BSC', 'BEP20', 'BINANCE', 'AVALANCHE'],
   'NGNB': ['NGNB', ''] // NGNB can be without network or with NGNB as network
@@ -101,7 +98,47 @@ function isValidTokenNetworkCombo(tokenSymbol, network) {
   return supportedNetworks.includes(network);
 }
 
-// POST: Get deposit address with QR code
+// Function to generate a single wallet for a specific token/network
+const generateSingleWalletForUser = async (userId, email, walletKey) => {
+  try {
+    logger.info('Starting single wallet generation', { 
+      userId, 
+      email, 
+      walletKey 
+    });
+
+    // Generate the wallet using the new utility function
+    const walletData = await generateWalletBySchemaKey(email, userId, walletKey);
+
+    // Update user with the specific wallet address
+    const updateData = {
+      [`wallets.${walletKey}`]: walletData
+    };
+
+    await User.findByIdAndUpdate(userId, updateData);
+
+    logger.info('Single wallet generation completed successfully', {
+      userId,
+      email,
+      walletKey,
+      address: walletData.address
+    });
+
+    return walletData;
+
+  } catch (error) {
+    logger.error('Single wallet generation failed', {
+      userId,
+      email,
+      walletKey,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+};
+
+// POST: Get deposit address with QR code (with on-demand wallet generation)
 router.post(
   '/address',
   [
@@ -186,30 +223,55 @@ router.post(
         });
       }
 
-      const wallet = user.wallets[walletKey];
+      let wallet = user.wallets[walletKey];
 
+      // 3. Check if wallet exists and has an address
       if (!wallet || !wallet.address) {
-        // Get list of available wallets for better error response
-        const availableWallets = Object.keys(user.wallets)
-          .filter(key => user.wallets[key]?.address)
-          .map(key => {
-            const wallet = user.wallets[key];
-            return {
-              key,
-              network: wallet.network,
-              hasAddress: !!wallet.address
-            };
+        // Generate wallet on-demand
+        logger.info('Wallet address not found, generating on-demand', {
+          userId,
+          tokenSymbol,
+          network,
+          walletKey
+        });
+
+        try {
+          // Generate the wallet for this specific token/network
+          wallet = await generateSingleWalletForUser(userId, user.email, walletKey);
+          
+          logger.info('Wallet generated successfully on-demand', {
+            userId,
+            tokenSymbol,
+            network,
+            walletKey,
+            address: wallet.address
           });
 
-        return res.status(404).json({
+        } catch (generationError) {
+          logger.error('Failed to generate wallet on-demand', {
+            userId,
+            tokenSymbol,
+            network,
+            error: generationError.message
+          });
+
+          return res.status(500).json({
+            success: false,
+            message: `Failed to generate wallet address for ${tokenSymbol} on ${network} network. Please try again later.`,
+            error: process.env.NODE_ENV === 'development' ? generationError.message : 'Wallet generation failed'
+          });
+        }
+      }
+
+      // 4. At this point, we should have a valid wallet
+      if (!wallet || !wallet.address) {
+        return res.status(500).json({
           success: false,
-          message: `Wallet address for ${tokenSymbol} on ${network} network not found.`,
-          requestedWalletKey: walletKey,
-          availableWallets: availableWallets
+          message: `Unable to provide wallet address for ${tokenSymbol} on ${network} network.`
         });
       }
 
-      // 3. Generate QR code for the wallet address
+      // 5. Generate QR code for the wallet address
       let qrCodeData = null;
       try {
         // Generate QR code as base64 data URL
@@ -224,17 +286,18 @@ router.post(
           width: 256
         });
       } catch (qrError) {
-        console.error('QR code generation failed:', qrError);
+        logger.error('QR code generation failed:', qrError);
         // Continue without QR code rather than failing the request
       }
 
-      // 4. Create response data with QR code
+      // 6. Create response data with QR code
       const responseData = {
         token: tokenSymbol,
         network: wallet.network || network,
         address: wallet.address,
         walletReferenceId: wallet.walletReferenceId || null,
         walletKey: walletKey, // Include the actual schema key used
+        generatedOnDemand: !user.wallets[walletKey] || !user.wallets[walletKey].address, // Indicate if this was generated on-demand
         qrCode: qrCodeData ? {
           dataUrl: qrCodeData,
           format: 'base64',
@@ -242,7 +305,7 @@ router.post(
         } : null
       };
 
-      // 5. Return deposit address info with QR code
+      // 7. Return deposit address info with QR code
       return res.status(200).json({
         success: true,
         message: 'Deposit address retrieved successfully.',
@@ -254,7 +317,7 @@ router.post(
       });
 
     } catch (err) {
-      console.error('Error fetching deposit address:', err);
+      logger.error('Error fetching/generating deposit address:', err);
       return res.status(500).json({
         success: false,
         message: 'Server error while fetching deposit address.',
@@ -280,6 +343,79 @@ router.get('/supported-tokens', (req, res) => {
       walletKeyMapping: WALLET_KEY_MAPPING
     }
   });
+});
+
+// GET: Get user's generated wallets status
+router.get('/wallet-status', async (req, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized. Please provide a valid authentication token.'
+    });
+  }
+
+  try {
+    const user = await User.findById(userId).select('wallets username');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.'
+      });
+    }
+
+    // Get status of all wallets
+    const walletStatus = {};
+    const generatedWallets = [];
+    const pendingWallets = [];
+
+    Object.keys(WALLET_KEY_MAPPING).forEach(key => {
+      const walletKey = WALLET_KEY_MAPPING[key];
+      const wallet = user.wallets[walletKey];
+      
+      if (wallet && wallet.address && wallet.address !== null) {
+        walletStatus[key] = {
+          status: 'generated',
+          address: wallet.address,
+          network: wallet.network,
+          walletReferenceId: wallet.walletReferenceId
+        };
+        generatedWallets.push(key);
+      } else {
+        walletStatus[key] = {
+          status: 'pending',
+          address: null,
+          network: null,
+          walletReferenceId: null
+        };
+        pendingWallets.push(key);
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Wallet status retrieved successfully.',
+      data: {
+        userId: userId,
+        username: user.username,
+        walletsGenerated: generatedWallets.length,
+        totalPossibleWallets: Object.keys(WALLET_KEY_MAPPING).length,
+        generatedWallets: generatedWallets,
+        pendingWallets: pendingWallets,
+        walletStatus: walletStatus
+      }
+    });
+
+  } catch (err) {
+    logger.error('Error fetching wallet status:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while fetching wallet status.',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+  }
 });
 
 // Alternative endpoint for just QR code generation
@@ -338,7 +474,7 @@ router.post(
       });
 
     } catch (err) {
-      console.error('QR code generation error:', err);
+      logger.error('QR code generation error:', err);
       return res.status(500).json({
         success: false,
         message: 'Failed to generate QR code.',
