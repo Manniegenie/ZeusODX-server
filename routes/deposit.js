@@ -3,7 +3,7 @@ const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const QRCode = require('qrcode'); // npm install qrcode
 const User = require('../models/user');
-const { generateWalletBySchemaKey } = require("../utils/generateSingleWallet"); // Import single wallet generation utility
+const { generateWalletBySchemaKey } = require("../utils/generatewallets"); // Import single wallet generation utility
 const logger = require('../utils/logger'); // Import logger
 
 // Mapping between token/network combinations and schema wallet keys (DOGE removed)
