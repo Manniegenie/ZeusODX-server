@@ -1,427 +1,671 @@
 const express = require('express');
 const router = express.Router();
-const { body, validationResult } = require('express-validator');
 const Transaction = require('../models/transaction');
+const BillTransaction = require('../models/billstransaction');
 const logger = require('../utils/logger');
 
-// POST /api/transactions/currency - Get transactions for a specific currency via JSON
-router.post('/currency', 
-  [
-    // Validate JSON request body
-    body('currency')
-      .trim()
-      .notEmpty()
-      .withMessage('Currency is required')
-      .isLength({ min: 2, max: 10 })
-      .withMessage('Currency must be between 2 and 10 characters')
-      .toUpperCase(),
+// Helper function to build date range filter
+function buildDateRangeFilter(dateFrom, dateTo) {
+  const filter = {};
+  
+  if (dateFrom || dateTo) {
+    filter.createdAt = {};
     
-    // Optional filters
-    body('type')
-      .optional()
-      .isIn(['DEPOSIT', 'WITHDRAWAL'])
-      .withMessage('Type must be either DEPOSIT or WITHDRAWAL'),
+    if (dateFrom) {
+      filter.createdAt.$gte = new Date(dateFrom);
+    }
     
-    body('status')
-      .optional()
-      .isIn(['PENDING', 'APPROVED', 'PROCESSING', 'SUCCESSFUL', 'FAILED', 'REJECTED', 'CONFIRMED'])
-      .withMessage('Invalid status value'),
+    if (dateTo) {
+      const endDate = new Date(dateTo);
+      endDate.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = endDate;
+    }
+  }
+  
+  return filter;
+}
+
+// Helper function to get default date range (current month)
+function getDefaultDateRange() {
+  const now = new Date();
+  const dateTo = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const dateFrom = new Date(now.getFullYear(), now.getMonth(), 1);
+  
+  return {
+    dateFrom: dateFrom.toISOString().split('T')[0],
+    dateTo: dateTo.toISOString().split('T')[0]
+  };
+}
+
+// Helper functions for formatting
+function formatTransactionType(type) {
+  const typeMap = {
+    'DEPOSIT': 'Deposit',
+    'WITHDRAWAL': 'Withdrawal', 
+    'INTERNAL_TRANSFER_SENT': 'Withdrawal',
+    'INTERNAL_TRANSFER_RECEIVED': 'Deposit',
+    'SWAP': 'Swap'
+  };
+  return typeMap[type] || type;
+}
+
+function formatBillType(billType) {
+  const billTypeMap = {
+    'airtime': 'Airtime',
+    'data': 'Data',
+    'electricity': 'Electricity',
+    'cable_tv': 'Cable TV',
+    'internet': 'Internet',
+    'betting': 'Betting',
+    'education': 'Education',
+    'other': 'Other'
+  };
+  return billTypeMap[billType] || billType;
+}
+
+function formatStatus(status, type = 'token') {
+  if (type === 'bill') {
+    switch (status) {
+      case 'completed-api': return 'Successful';
+      case 'failed': return 'Failed';
+      case 'initiated-api':
+      case 'processing-api': return 'Pending';
+      case 'refunded': return 'Refunded';
+      default: return 'Pending';
+    }
+  } else {
+    switch (status) {
+      case 'SUCCESSFUL':
+      case 'COMPLETED':
+      case 'CONFIRMED': return 'Successful';
+      case 'FAILED':
+      case 'REJECTED': return 'Failed';
+      case 'PENDING':
+      case 'PROCESSING':
+      case 'APPROVED': return 'Pending';
+      default: return 'Pending';
+    }
+  }
+}
+
+function formatAmount(amount, currency, type = '', isNegative = false) {
+  const sign = isNegative ? '-' : '+';
+  if (currency === 'NGNB') {
+    return `${sign}₦${amount.toLocaleString()}`;
+  }
+  return `${sign}${amount} ${currency}`;
+}
+
+function formatDate(date) {
+  return new Date(date).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+}
+
+// POST /api/transactions/token-specific - Get transactions for specific currency
+router.post('/token-specific', async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized'
+      });
+    }
+
+    // Simple validation with defaults
+    const body = req.body || {};
+    const {
+      currency,
+      type,
+      status,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = body;
+
+    if (!currency) {
+      return res.status(400).json({
+        success: false,
+        message: 'Currency is required'
+      });
+    }
+
+    // Get date range
+    const defaultRange = getDefaultDateRange();
+    const dateFrom = body.dateFrom || defaultRange.dateFrom;
+    const dateTo = body.dateTo || defaultRange.dateTo;
+
+    // Build filter
+    const filter = {
+      userId: userId,
+      currency: currency.toUpperCase()
+    };
+
+    // Add date range filter
+    Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
+
+    if (type) {
+      switch (type.toUpperCase()) {
+        case 'DEPOSIT':
+          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] };
+          break;
+        case 'WITHDRAWAL':
+          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] };
+          break;
+        case 'SWAP':
+          filter.type = 'SWAP';
+          break;
+      }
+    }
     
-    body('network')
-      .optional()
-      .trim()
-      .isLength({ max: 20 })
-      .withMessage('Network must be less than 20 characters'),
-    
+    if (status) {
+      switch (status.toLowerCase()) {
+        case 'successful':
+          filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] };
+          break;
+        case 'failed':
+          filter.status = { $in: ['FAILED', 'REJECTED'] };
+          break;
+        case 'pending':
+          filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] };
+          break;
+      }
+    }
+
     // Pagination
-    body('page')
-      .optional()
-      .isInt({ min: 1 })
-      .withMessage('Page must be a positive integer')
-      .toInt(),
-    
-    body('limit')
-      .optional()
-      .isInt({ min: 1, max: 100 })
-      .withMessage('Limit must be between 1 and 100')
-      .toInt(),
-    
-    // Date filters
-    body('startDate')
-      .optional()
-      .isISO8601()
-      .withMessage('Start date must be a valid ISO 8601 date'),
-    
-    body('endDate')
-      .optional()
-      .isISO8601()
-      .withMessage('End date must be a valid ISO 8601 date'),
-    
-    // Sort options
-    body('sortBy')
-      .optional()
-      .isIn(['createdAt', 'amount', 'status', 'updatedAt'])
-      .withMessage('Sort by must be createdAt, amount, status, or updatedAt'),
-    
-    body('sortOrder')
-      .optional()
-      .isIn(['asc', 'desc'])
-      .withMessage('Sort order must be asc or desc')
-  ],
-  async (req, res) => {
-    try {
-      // Check validation errors
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors: errors.array()
-        });
-      }
+    const skip = (page - 1) * limit;
+    const sort = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-      const userId = req.user?.id;
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: 'Unauthorized - user ID required'
-        });
-      }
+    // Get transactions
+    const [transactions, totalCount] = await Promise.all([
+      Transaction.find(filter)
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Transaction.countDocuments(filter)
+    ]);
 
-      // Extract parameters from JSON body
-      const {
-        currency,
-        type,
-        status,
-        network,
-        page = 1,
-        limit = 20,
-        startDate,
-        endDate,
-        sortBy = 'createdAt',
-        sortOrder = 'desc'
-      } = req.body;
-
-      // Build query filter
-      const filter = {
-        userId: userId,
-        currency: currency.toUpperCase()
+    // Format transactions
+    const formattedTokenTransactions = transactions.map(tx => {
+      const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
+      
+      return {
+        id: tx._id,
+        type: formatTransactionType(tx.type),
+        status: formatStatus(tx.status),
+        amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
+        date: formatDate(tx.createdAt),
+        details: {
+          transactionId: tx.transactionId || tx._id,
+          currency: tx.currency,
+          network: tx.network,
+          address: tx.address,
+          hash: tx.hash,
+          fee: tx.fee,
+          narration: tx.narration
+        }
       };
+    });
 
-      // Add optional filters
-      if (type) filter.type = type;
-      if (status) filter.status = status;
-      if (network) filter.network = network;
-
-      // Add date range filter
-      if (startDate || endDate) {
-        filter.createdAt = {};
-        if (startDate) filter.createdAt.$gte = new Date(startDate);
-        if (endDate) filter.createdAt.$lte = new Date(endDate);
+    return res.status(200).json({
+      success: true,
+      message: `${currency.toUpperCase()} transaction history retrieved successfully`,
+      data: {
+        transactions: formattedTokenTransactions,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / limit),
+          totalCount,
+          limit: parseInt(limit)
+        },
+        dateRange: {
+          dateFrom,
+          dateTo
+        }
       }
+    });
 
-      // Calculate pagination
-      const skip = (page - 1) * limit;
+  } catch (error) {
+    logger.error('Error fetching token-specific transactions', {
+      userId: req.user?.id,
+      currency: req.body?.currency,
+      error: error.message
+    });
 
-      // Build sort object
-      const sort = {};
-      sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    return res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+});
 
-      // Execute query with pagination
-      const [transactions, totalCount] = await Promise.all([
-        Transaction.find(filter)
-          .sort(sort)
-          .skip(skip)
-          .limit(limit)
-          .lean(), // Use lean() for better performance
-        Transaction.countDocuments(filter)
-      ]);
-
-      // Calculate pagination metadata
-      const totalPages = Math.ceil(totalCount / limit);
-      const hasNextPage = page < totalPages;
-      const hasPrevPage = page > 1;
-
-      // Calculate summary statistics for this currency
-      const summaryStats = await Transaction.aggregate([
-        { $match: { userId: userId, currency: currency.toUpperCase() } },
-        {
-          $group: {
-            _id: '$type',
-            totalAmount: { $sum: '$amount' },
-            totalFees: { $sum: '$fee' },
-            obiexFees: { $sum: '$obiexFee' },
-            count: { $sum: 1 },
-            avgAmount: { $avg: '$amount' }
-          }
-        }
-      ]);
-
-      // Get status breakdown
-      const statusBreakdown = await Transaction.aggregate([
-        { $match: { userId: userId, currency: currency.toUpperCase() } },
-        {
-          $group: {
-            _id: '$status',
-            count: { $sum: 1 },
-            totalAmount: { $sum: '$amount' }
-          }
-        }
-      ]);
-
-      // Format summary for easier consumption
-      const summary = {
-        totalDeposits: 0,
-        totalWithdrawals: 0,
-        depositCount: 0,
-        withdrawalCount: 0,
-        totalFees: 0,
-        totalObiexFees: 0,
-        avgDepositAmount: 0,
-        avgWithdrawalAmount: 0,
-        statusBreakdown: {}
-      };
-
-      summaryStats.forEach(stat => {
-        if (stat._id === 'DEPOSIT') {
-          summary.totalDeposits = stat.totalAmount;
-          summary.depositCount = stat.count;
-          summary.avgDepositAmount = stat.avgAmount;
-        } else if (stat._id === 'WITHDRAWAL') {
-          summary.totalWithdrawals = stat.totalAmount;
-          summary.withdrawalCount = stat.count;
-          summary.avgWithdrawalAmount = stat.avgAmount;
-        }
-        summary.totalFees += stat.totalFees;
-        summary.totalObiexFees += stat.obiexFees;
+// POST /api/transactions/all-tokens - Get ALL token transactions
+router.post('/all-tokens', async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized'
       });
+    }
 
-      // Format status breakdown
-      statusBreakdown.forEach(status => {
-        summary.statusBreakdown[status._id] = {
-          count: status.count,
-          totalAmount: status.totalAmount
+    // Simple validation with defaults
+    const body = req.body || {};
+    const {
+      type,
+      status,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = body;
+
+    // Get date range
+    const defaultRange = getDefaultDateRange();
+    const dateFrom = body.dateFrom || defaultRange.dateFrom;
+    const dateTo = body.dateTo || defaultRange.dateTo;
+
+    // Build filter
+    const filter = { userId: userId };
+    
+    // Add date range filter
+    Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
+
+    if (type) {
+      switch (type.toUpperCase()) {
+        case 'DEPOSIT':
+          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] };
+          break;
+        case 'WITHDRAWAL':
+          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] };
+          break;
+        case 'SWAP':
+          filter.type = 'SWAP';
+          break;
+      }
+    }
+    
+    if (status) {
+      switch (status.toLowerCase()) {
+        case 'successful':
+          filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] };
+          break;
+        case 'failed':
+          filter.status = { $in: ['FAILED', 'REJECTED'] };
+          break;
+        case 'pending':
+          filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] };
+          break;
+      }
+    }
+
+    // Pagination
+    const skip = (page - 1) * limit;
+    const sort = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Get transactions
+    const [transactions, totalCount] = await Promise.all([
+      Transaction.find(filter)
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Transaction.countDocuments(filter)
+    ]);
+
+    // Format transactions
+    const formattedAllTokens = transactions.map(tx => {
+      const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
+      
+      return {
+        id: tx._id,
+        type: formatTransactionType(tx.type),
+        status: formatStatus(tx.status),
+        amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
+        date: formatDate(tx.createdAt),
+        details: {
+          transactionId: tx.transactionId || tx._id,
+          currency: tx.currency,
+          network: tx.network,
+          address: tx.address,
+          hash: tx.hash,
+          fee: tx.fee,
+          narration: tx.narration
+        }
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'All token transaction history retrieved successfully',
+      data: {
+        transactions: formattedAllTokens,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / limit),
+          totalCount,
+          limit: parseInt(limit)
+        },
+        dateRange: {
+          dateFrom,
+          dateTo
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error fetching all token transactions', {
+      userId: req.user?.id,
+      error: error.message
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+});
+
+// POST /api/transactions/all-utilities - Get ALL utility transactions
+router.post('/all-utilities', async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized'
+      });
+    }
+
+    // Simple validation with defaults
+    const body = req.body || {};
+    const {
+      utilityType,
+      status,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = body;
+
+    // Get date range
+    const defaultRange = getDefaultDateRange();
+    const dateFrom = body.dateFrom || defaultRange.dateFrom;
+    const dateTo = body.dateTo || defaultRange.dateTo;
+
+    // Build filter
+    const filter = { userId: userId };
+    
+    // Add date range filter
+    Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
+
+    // Add utility type filter if specified
+    if (utilityType) {
+      filter.billType = utilityType.toLowerCase();
+    }
+
+    // Map status to bill transaction statuses
+    if (status) {
+      switch (status.toLowerCase()) {
+        case 'successful':
+          filter.status = 'completed-api';
+          break;
+        case 'failed':
+          filter.status = 'failed';
+          break;
+        case 'pending':
+          filter.status = { $in: ['initiated-api', 'processing-api'] };
+          break;
+      }
+    }
+
+    // Pagination
+    const skip = (page - 1) * limit;
+    const sort = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Get transactions
+    const [transactions, totalCount] = await Promise.all([
+      BillTransaction.find(filter)
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      BillTransaction.countDocuments(filter)
+    ]);
+
+    // Format transactions
+    const formattedUtilities = transactions.map(tx => {
+      const amount = tx.amountNGNB || tx.amountNaira;
+      
+      return {
+        id: tx._id,
+        type: formatBillType(tx.billType),
+        utilityType: tx.billType,
+        status: formatStatus(tx.status, 'bill'),
+        amount: `₦${amount.toLocaleString()}`,
+        date: formatDate(tx.createdAt),
+        details: {
+          orderId: tx.orderId,
+          requestId: tx.requestId,
+          productName: tx.productName,
+          quantity: tx.quantity,
+          network: tx.network,
+          customerInfo: tx.customerInfo?.phone || tx.customerPhone,
+          billType: tx.billType,
+          paymentCurrency: tx.paymentCurrency
+        }
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'All utility transaction history retrieved successfully',
+      data: {
+        transactions: formattedUtilities,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / limit),
+          totalCount,
+          limit: parseInt(limit)
+        },
+        dateRange: {
+          dateFrom,
+          dateTo
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error fetching all utility transactions', {
+      userId: req.user?.id,
+      error: error.message
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+});
+
+// POST /api/transactions/complete-history - Get ALL transactions (tokens + utilities combined)
+router.post('/complete-history', async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized'
+      });
+    }
+
+    // Simple validation with defaults
+    const body = req.body || {};
+    const {
+      transactionType = 'all',
+      status,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = body;
+
+    // Get date range
+    const defaultRange = getDefaultDateRange();
+    const dateFrom = body.dateFrom || defaultRange.dateFrom;
+    const dateTo = body.dateTo || defaultRange.dateTo;
+
+    let allTransactions = [];
+    let totalCount = 0;
+
+    // Build date range filter
+    const dateRangeFilter = buildDateRangeFilter(dateFrom, dateTo);
+
+    // Build queries for both transaction types
+    const tokenFilter = { userId: userId, ...dateRangeFilter };
+    const billFilter = { userId: userId, ...dateRangeFilter };
+
+    // Apply status filters
+    if (status) {
+      switch (status.toLowerCase()) {
+        case 'successful':
+          tokenFilter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] };
+          billFilter.status = 'completed-api';
+          break;
+        case 'failed':
+          tokenFilter.status = { $in: ['FAILED', 'REJECTED'] };
+          billFilter.status = 'failed';
+          break;
+        case 'pending':
+          tokenFilter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] };
+          billFilter.status = { $in: ['initiated-api', 'processing-api'] };
+          break;
+      }
+    }
+
+    // Fetch token transactions
+    if (transactionType === 'all' || transactionType === 'token') {
+      const [tokenTxs, tokenCount] = await Promise.all([
+        Transaction.find(tokenFilter).lean(),
+        Transaction.countDocuments(tokenFilter)
+      ]);
+
+      const formattedTokens = tokenTxs.map(tx => {
+        const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
+        
+        return {
+          id: tx._id,
+          type: formatTransactionType(tx.type),
+          status: formatStatus(tx.status),
+          amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
+          date: formatDate(tx.createdAt),
+          createdAt: tx.createdAt,
+          details: {
+            transactionId: tx.transactionId || tx._id,
+            category: 'token',
+            currency: tx.currency,
+            network: tx.network,
+            address: tx.address,
+            hash: tx.hash,
+            fee: tx.fee,
+            narration: tx.narration
+          }
         };
       });
 
-      const response = {
-        success: true,
-        message: `${currency.toUpperCase()} transactions retrieved successfully`,
-        data: {
-          transactions: transactions,
-          pagination: {
-            currentPage: page,
-            totalPages: totalPages,
-            totalCount: totalCount,
-            limit: limit,
-            hasNextPage: hasNextPage,
-            hasPrevPage: hasPrevPage
-          },
-          filters: {
-            currency: currency.toUpperCase(),
-            type: type || 'all',
-            status: status || 'all',
-            network: network || 'all',
-            dateRange: {
-              start: startDate || null,
-              end: endDate || null
-            }
-          },
-          summary: summary
-        }
-      };
-
-      logger.info('Currency transactions fetched', {
-        userId,
-        currency: currency.toUpperCase(),
-        filters: { type, status, network },
-        resultCount: transactions.length,
-        totalCount
-      });
-
-      return res.status(200).json(response);
-
-    } catch (error) {
-      logger.error('Error fetching currency transactions', {
-        userId: req.user?.id,
-        currency: req.body?.currency,
-        error: error.message,
-        stack: error.stack
-      });
-
-      return res.status(500).json({
-        success: false,
-        message: 'Internal server error while fetching transactions',
-        error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
-      });
+      allTransactions = [...allTransactions, ...formattedTokens];
+      totalCount += tokenCount;
     }
-  }
-);
 
-// POST /api/transactions/multiple-currencies - Get transactions for multiple currencies
-router.post('/multiple-currencies',
-  [
-    body('currencies')
-      .isArray({ min: 1 })
-      .withMessage('Currencies must be a non-empty array')
-      .custom((currencies) => {
-        if (!currencies.every(curr => typeof curr === 'string' && curr.length >= 2 && curr.length <= 10)) {
-          throw new Error('Each currency must be a string between 2 and 10 characters');
-        }
-        return true;
-      }),
-    
-    body('type')
-      .optional()
-      .isIn(['DEPOSIT', 'WITHDRAWAL'])
-      .withMessage('Type must be either DEPOSIT or WITHDRAWAL'),
-    
-    body('status')
-      .optional()
-      .isIn(['PENDING', 'APPROVED', 'PROCESSING', 'SUCCESSFUL', 'FAILED', 'REJECTED', 'CONFIRMED'])
-      .withMessage('Invalid status value'),
-    
-    body('page')
-      .optional()
-      .isInt({ min: 1 })
-      .toInt(),
-    
-    body('limit')
-      .optional()
-      .isInt({ min: 1, max: 100 })
-      .toInt()
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors: errors.array()
-        });
-      }
-
-      const userId = req.user?.id;
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: 'Unauthorized'
-        });
-      }
-
-      const {
-        currencies,
-        type,
-        status,
-        network,
-        page = 1,
-        limit = 20,
-        startDate,
-        endDate,
-        sortBy = 'createdAt',
-        sortOrder = 'desc'
-      } = req.body;
-
-      // Build filter
-      const filter = {
-        userId: userId,
-        currency: { $in: currencies.map(c => c.toUpperCase()) }
-      };
-
-      if (type) filter.type = type;
-      if (status) filter.status = status;
-      if (network) filter.network = network;
-
-      if (startDate || endDate) {
-        filter.createdAt = {};
-        if (startDate) filter.createdAt.$gte = new Date(startDate);
-        if (endDate) filter.createdAt.$lte = new Date(endDate);
-      }
-
-      const skip = (page - 1) * limit;
-      const sort = {};
-      sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
-
-      const [transactions, totalCount] = await Promise.all([
-        Transaction.find(filter)
-          .sort(sort)
-          .skip(skip)
-          .limit(limit)
-          .lean(),
-        Transaction.countDocuments(filter)
+    // Fetch utility transactions
+    if (transactionType === 'all' || transactionType === 'utility') {
+      const [billTxs, billCount] = await Promise.all([
+        BillTransaction.find(billFilter).lean(),
+        BillTransaction.countDocuments(billFilter)
       ]);
 
-      // Get summary by currency
-      const currencySummary = await Transaction.aggregate([
-        { $match: { userId: userId, currency: { $in: currencies.map(c => c.toUpperCase()) } } },
-        {
-          $group: {
-            _id: { currency: '$currency', type: '$type' },
-            totalAmount: { $sum: '$amount' },
-            count: { $sum: 1 }
+      const formattedBills = billTxs.map(tx => {
+        const amount = tx.amountNGNB || tx.amountNaira;
+        
+        return {
+          id: tx._id,
+          type: formatBillType(tx.billType),
+          status: formatStatus(tx.status, 'bill'),
+          amount: `₦${amount.toLocaleString()}`,
+          date: formatDate(tx.createdAt),
+          createdAt: tx.createdAt,
+          details: {
+            orderId: tx.orderId,
+            category: 'utility',
+            billType: tx.billType,
+            productName: tx.productName,
+            network: tx.network,
+            customerInfo: tx.customerInfo?.phone || tx.customerPhone
           }
-        }
-      ]);
-
-      // Format currency summary
-      const summary = {};
-      currencies.forEach(currency => {
-        const currUpper = currency.toUpperCase();
-        summary[currUpper] = {
-          deposits: { amount: 0, count: 0 },
-          withdrawals: { amount: 0, count: 0 }
         };
       });
 
-      currencySummary.forEach(item => {
-        const { currency, type } = item._id;
-        if (type === 'DEPOSIT') {
-          summary[currency].deposits = {
-            amount: item.totalAmount,
-            count: item.count
-          };
-        } else if (type === 'WITHDRAWAL') {
-          summary[currency].withdrawals = {
-            amount: item.totalAmount,
-            count: item.count
-          };
-        }
-      });
-
-      return res.status(200).json({
-        success: true,
-        message: `Transactions for ${currencies.length} currencies retrieved successfully`,
-        data: {
-          transactions: transactions,
-          pagination: {
-            currentPage: page,
-            totalPages: Math.ceil(totalCount / limit),
-            totalCount: totalCount,
-            limit: limit
-          },
-          filters: {
-            currencies: currencies.map(c => c.toUpperCase()),
-            type: type || 'all',
-            status: status || 'all'
-          },
-          currencySummary: summary
-        }
-      });
-
-    } catch (error) {
-      logger.error('Error fetching multiple currency transactions', {
-        userId: req.user?.id,
-        error: error.message
-      });
-
-      return res.status(500).json({
-        success: false,
-        message: 'Server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-      });
+      allTransactions = [...allTransactions, ...formattedBills];
+      totalCount += billCount;
     }
+
+    // Sort transactions
+    allTransactions.sort((a, b) => {
+      if (sortOrder === 'asc') {
+        return new Date(a.createdAt) - new Date(b.createdAt);
+      } else {
+        return new Date(b.createdAt) - new Date(a.createdAt);
+      }
+    });
+
+    // Apply pagination
+    const skip = (page - 1) * limit;
+    const paginatedTransactions = allTransactions.slice(skip, skip + limit);
+
+    // Remove createdAt field from final response
+    paginatedTransactions.forEach(tx => delete tx.createdAt);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Complete transaction history retrieved successfully',
+      data: {
+        transactions: paginatedTransactions,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / limit),
+          totalCount,
+          limit: parseInt(limit)
+        },
+        dateRange: {
+          dateFrom,
+          dateTo
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error fetching complete transaction history', {
+      userId: req.user?.id,
+      error: error.message
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
   }
-);
+});
 
 module.exports = router;
