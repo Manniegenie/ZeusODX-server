@@ -96,14 +96,16 @@ function formatAmount(amount, currency, type = '', isNegative = false) {
   return `${sign}${amount} ${currency}`;
 }
 
+// Always format display date in Africa/Lagos
 function formatDate(date) {
-  return new Date(date).toLocaleDateString('en-US', {
+  return new Date(date).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-    hour12: true
+    hour12: true,
+    timeZone: 'Africa/Lagos'
   });
 }
 
@@ -197,13 +199,14 @@ router.post('/token-specific', async (req, res) => {
     // Format transactions
     const formattedTokenTransactions = transactions.map(tx => {
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
-      
+      const createdAtISO = new Date(tx.createdAt).toISOString();
       return {
         id: tx._id,
         type: formatTransactionType(tx.type),
         status: formatStatus(tx.status),
         amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
-        date: formatDate(tx.createdAt),
+        date: formatDate(tx.createdAt),          // human-readable, Lagos time
+        createdAt: createdAtISO,                 // raw ISO for client-side TZ formatting/sorting
         details: {
           transactionId: tx.transactionId || tx._id,
           currency: tx.currency,
@@ -327,13 +330,14 @@ router.post('/all-tokens', async (req, res) => {
     // Format transactions
     const formattedAllTokens = transactions.map(tx => {
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
-      
+      const createdAtISO = new Date(tx.createdAt).toISOString();
       return {
         id: tx._id,
         type: formatTransactionType(tx.type),
         status: formatStatus(tx.status),
         amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
-        date: formatDate(tx.createdAt),
+        date: formatDate(tx.createdAt),      // Lagos
+        createdAt: createdAtISO,             // ISO
         details: {
           transactionId: tx.transactionId || tx._id,
           currency: tx.currency,
@@ -448,14 +452,15 @@ router.post('/all-utilities', async (req, res) => {
     // Format transactions
     const formattedUtilities = transactions.map(tx => {
       const amount = tx.amountNGNB || tx.amountNaira;
-      
+      const createdAtISO = new Date(tx.createdAt).toISOString();
       return {
         id: tx._id,
         type: formatBillType(tx.billType),
         utilityType: tx.billType,
         status: formatStatus(tx.status, 'bill'),
         amount: `₦${amount.toLocaleString()}`,
-        date: formatDate(tx.createdAt),
+        date: formatDate(tx.createdAt),  // Lagos
+        createdAt: createdAtISO,         // ISO
         details: {
           orderId: tx.orderId,
           requestId: tx.requestId,
@@ -564,14 +569,15 @@ router.post('/complete-history', async (req, res) => {
 
       const formattedTokens = tokenTxs.map(tx => {
         const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
-        
+        const createdAtISO = new Date(tx.createdAt).toISOString();
+
         return {
           id: tx._id,
           type: formatTransactionType(tx.type),
           status: formatStatus(tx.status),
           amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
-          date: formatDate(tx.createdAt),
-          createdAt: tx.createdAt,
+          date: formatDate(tx.createdAt),   // Lagos
+          createdAt: createdAtISO,          // ISO for sorting & client formatting
           details: {
             transactionId: tx.transactionId || tx._id,
             category: 'token',
@@ -598,14 +604,15 @@ router.post('/complete-history', async (req, res) => {
 
       const formattedBills = billTxs.map(tx => {
         const amount = tx.amountNGNB || tx.amountNaira;
-        
+        const createdAtISO = new Date(tx.createdAt).toISOString();
+
         return {
           id: tx._id,
           type: formatBillType(tx.billType),
           status: formatStatus(tx.status, 'bill'),
           amount: `₦${amount.toLocaleString()}`,
-          date: formatDate(tx.createdAt),
-          createdAt: tx.createdAt,
+          date: formatDate(tx.createdAt),  // Lagos
+          createdAt: createdAtISO,         // ISO
           details: {
             orderId: tx.orderId,
             category: 'utility',
@@ -621,7 +628,7 @@ router.post('/complete-history', async (req, res) => {
       totalCount += billCount;
     }
 
-    // Sort transactions
+    // Sort transactions (by ISO createdAt)
     allTransactions.sort((a, b) => {
       if (sortOrder === 'asc') {
         return new Date(a.createdAt) - new Date(b.createdAt);
@@ -634,8 +641,7 @@ router.post('/complete-history', async (req, res) => {
     const skip = (page - 1) * limit;
     const paginatedTransactions = allTransactions.slice(skip, skip + limit);
 
-    // Remove createdAt field from final response
-    paginatedTransactions.forEach(tx => delete tx.createdAt);
+    // NOTE: keep createdAt so client can format to local TZ; do not delete.
 
     return res.status(200).json({
       success: true,
