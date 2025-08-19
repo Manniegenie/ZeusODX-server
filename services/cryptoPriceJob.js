@@ -75,6 +75,31 @@ function releaseLock(lockId = null) {
   return true;
 }
 
+// Enhanced API key validation function
+function validateFCSApiKey(apiKey) {
+  if (!apiKey) {
+    logger.error('FCS API key is missing');
+    return false;
+  }
+  
+  if (typeof apiKey !== 'string') {
+    logger.error('FCS API key must be a string');
+    return false;
+  }
+  
+  if (apiKey.length < 16) {
+    logger.error('FCS API key appears to be too short');
+    return false;
+  }
+  
+  // Check for demo key pattern
+  if (apiKey.toLowerCase().includes('demo')) {
+    logger.warn('Using demo API key - limited functionality');
+  }
+  
+  return true;
+}
+
 // FCS API Configuration
 const FCS_API_CONFIG = {
   hasValidApiKey: validateFCSApiKey(process.env.FCS_API_KEY),
@@ -95,12 +120,7 @@ const SUPPORTED_TOKENS = {
   // NGNZ excluded - calculated from offramp rate in portfolio.js
 };
 
-function validateFCSApiKey(apiKey) {
-  if (!apiKey) return false;
-  return typeof apiKey === 'string' && apiKey.length >= 16;
-}
-
-// Retry logic with exponential backoff
+// Enhanced retry logic with backoff for specific errors
 async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RETRY_DELAY) {
   let lastError;
   
@@ -110,7 +130,17 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
     } catch (error) {
       lastError = error;
       
-      if (error.response && error.response.status === 429) {
+      // Don't retry on authentication/authorization errors
+      const nonRetryableErrors = [101, 102, 103, 104, 111, 212, 213];
+      if (error.message.includes('API Key') || 
+          error.message.includes('Account') ||
+          nonRetryableErrors.some(code => error.message.includes(code.toString()))) {
+        logger.error('Non-retryable error encountered', { error: error.message });
+        throw error;
+      }
+      
+      // Handle rate limiting with longer delay
+      if (error.response && (error.response.status === 429 || error.message.includes('213'))) {
         if (attempt === maxRetries) break;
         
         const rateLimitWait = CONFIG.RATE_LIMIT_DELAY;
@@ -122,7 +152,11 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
       if (attempt === maxRetries) break;
       
       const waitTime = delay * Math.pow(2, attempt);
-      logger.warn(`Attempt ${attempt + 1} failed, retrying in ${waitTime}ms`, { error: error.message });
+      logger.warn(`Attempt ${attempt + 1} failed, retrying in ${waitTime}ms`, { 
+        error: error.message,
+        attempt: attempt + 1,
+        maxRetries: maxRetries + 1
+      });
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
@@ -130,7 +164,7 @@ async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RET
   throw lastError;
 }
 
-// Fetch prices from FCS API
+// Fixed FCS API fetch function based on official FCS documentation
 async function fetchFCSApiPrices() {
   try {
     logger.info('Starting FCS API price fetch for job');
@@ -153,37 +187,93 @@ async function fetchFCSApiPrices() {
       .map(token => SUPPORTED_TOKENS[token].fcsApiSymbol)
       .join(',');
     
-    logger.info('Requesting from FCS API', { fcsSymbols });
-    
-    const config = {
-      params: {
-        symbol: fcsSymbols,
-        access_key: FCS_API_CONFIG.apiKey
-      },
-      timeout: CONFIG.REQUEST_TIMEOUT,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'CryptoPriceJob/1.0'
-      }
-    };
+    logger.info('Requesting from FCS API', { fcsSymbols, apiKey: FCS_API_CONFIG.apiKey });
     
     if (!FCS_API_CONFIG.hasValidApiKey) {
       throw new Error('No valid FCS API key found');
     }
     
-    const response = await axios.get(`${FCS_API_CONFIG.baseUrl}/crypto/latest`, config);
+    // Fixed axios configuration to match FCS documentation pattern
+    const requestUrl = `${FCS_API_CONFIG.baseUrl}/crypto/latest`;
     
-    if (!response.data || !response.data.response || !Array.isArray(response.data.response)) {
-      throw new Error('Invalid response format from FCS API');
+    // Create form data matching FCS documentation format
+    const data = {
+      symbol: fcsSymbols,
+      api_key: FCS_API_CONFIG.apiKey  // Note: using 'api_key' not 'access_key'
+    };
+    
+    const config = {
+      method: 'POST',  // POST request as per FCS docs
+      url: requestUrl,
+      data: data,      // Send data in request body
+      timeout: CONFIG.REQUEST_TIMEOUT,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Node.js/CryptoPriceJob',
+        'Content-Type': 'application/json'
+      },
+      // SSL and network configuration
+      httpsAgent: new (require('https').Agent)({
+        rejectUnauthorized: true,
+        keepAlive: true,
+        timeout: CONFIG.REQUEST_TIMEOUT
+      }),
+      // Ensure proper response handling
+      responseType: 'json',
+      maxRedirects: 5,
+      validateStatus: function (status) {
+        return status >= 200 && status < 300; // Only accept 2xx responses as success
+      }
+    };
+    
+    logger.info('Making POST request to FCS API', {
+      url: requestUrl,
+      data: data,
+      headers: config.headers
+    });
+    
+    const response = await axios(config);
+    
+    logger.info('FCS API raw response received', {
+      status: response.status,
+      statusText: response.statusText,
+      hasData: !!response.data,
+      dataType: typeof response.data,
+      contentType: response.headers['content-type']
+    });
+    
+    // Validate response structure
+    if (!response.data || typeof response.data !== 'object') {
+      throw new Error('Invalid response format from FCS API - no data object');
     }
     
-    if (!response.data.status) {
-      throw new Error(`FCS API returned error: ${response.data.msg || 'Unknown error'}`);
+    // Check FCS API status
+    if (response.data.status !== true) {
+      const errorMsg = response.data.msg || 'Unknown FCS API error';
+      const errorCode = response.data.code || 'unknown';
+      logger.error('FCS API returned error status', {
+        status: response.data.status,
+        code: errorCode,
+        msg: errorMsg,
+        fullResponse: response.data
+      });
+      throw new Error(`FCS API error (${errorCode}): ${errorMsg}`);
     }
     
-    logger.info('FCS API response received', { 
+    // Validate response array
+    if (!Array.isArray(response.data.response)) {
+      logger.error('Invalid response format - response field is not an array', {
+        responseType: typeof response.data.response,
+        responseValue: response.data.response
+      });
+      throw new Error('Invalid response format from FCS API - response not array');
+    }
+    
+    logger.info('FCS API response validated successfully', { 
       responseCount: response.data.response.length,
-      creditCount: response.data.info?.credit_count
+      creditCount: response.data.info?.credit_count,
+      serverTime: response.data.info?.server_time,
+      processTime: response.data.info?.process_time
     });
     
     // Process FCS API response
@@ -199,24 +289,123 @@ async function fetchFCSApiPrices() {
       const price = parseFloat(priceStr); // Convert to number
       
       if (isNaN(price) || price <= 0) {
-        logger.warn(`Invalid price from FCS API for ${token}`, { price: priceStr });
+        logger.warn(`Invalid price from FCS API for ${token}`, { 
+          token,
+          symbol,
+          priceString: priceStr,
+          parsedPrice: price 
+        });
         continue;
       }
       
-      prices[token] = price; // Changed from Map to object for PriceChange.storePrices compatibility
-      logger.debug(`Set FCS API price: ${token} = $${price.toFixed(8)}`);
+      prices[token] = price;
+      logger.debug(`Set FCS API price: ${token} = $${price.toFixed(8)}`, {
+        symbol,
+        price,
+        rawData: item
+      });
     }
     
-    logger.info(`Successfully fetched ${Object.keys(prices).length} prices from FCS API`);
+    const successMessage = `Successfully fetched ${Object.keys(prices).length} prices from FCS API`;
+    logger.info(successMessage, {
+      pricesCount: Object.keys(prices).length,
+      tokens: Object.keys(prices),
+      creditUsed: response.data.info?.credit_count
+    });
+    
     return prices;
     
   } catch (error) {
-    logger.error('FCS API price fetch failed', { 
-      error: error.message,
-      status: error.response?.status,
-      responseData: error.response?.data
-    });
+    // Enhanced error logging with more details
+    const errorDetails = {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+      syscall: error.syscall,
+      hostname: error.hostname,
+      ...(error.response && {
+        response: {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data,
+          headers: error.response.headers
+        }
+      }),
+      ...(error.request && !error.response && {
+        request: {
+          method: error.request.method,
+          path: error.request.path,
+          host: error.request.host
+        }
+      }),
+      ...(error.config && {
+        config: {
+          url: error.config.url,
+          method: error.config.method,
+          data: error.config.data,
+          timeout: error.config.timeout
+        }
+      })
+    };
+    
+    logger.error('FCS API price fetch failed', errorDetails);
     throw error;
+  }
+}
+
+// Test function to validate API key and connection
+async function testFCSConnection() {
+  try {
+    logger.info('Testing FCS API connection...');
+    
+    const data = {
+      symbol: 'BTC/USD', // Single symbol for testing
+      api_key: FCS_API_CONFIG.apiKey
+    };
+    
+    const config = {
+      method: 'POST',
+      url: `${FCS_API_CONFIG.baseUrl}/crypto/latest`,
+      data: data,
+      timeout: 10000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Node.js/CryptoPriceJob',
+        'Content-Type': 'application/json'
+      },
+      validateStatus: function (status) {
+        return true; // Accept any status for testing
+      }
+    };
+    
+    const response = await axios(config);
+    
+    logger.info('FCS API test response', {
+      status: response.status,
+      statusText: response.statusText,
+      data: response.data,
+      headers: {
+        'content-type': response.headers['content-type']
+      }
+    });
+    
+    if (response.status === 200 && response.data.status === true) {
+      logger.info('FCS API connection test successful');
+      return { success: true, data: response.data };
+    } else {
+      logger.error('FCS API connection test failed', {
+        status: response.status,
+        data: response.data
+      });
+      return { success: false, error: response.data };
+    }
+    
+  } catch (error) {
+    logger.error('FCS API connection test failed', {
+      error: error.message,
+      response: error.response?.data
+    });
+    return { success: false, error: error.message };
   }
 }
 
@@ -270,7 +459,7 @@ async function updateCryptoPrices() {
     // Store prices using PriceChange model's built-in method
     let storedCount = 0;
     try {
-      storedCount = await PriceChange.storePrices(prices, 'coingecko'); // Using 'coingecko' as source since FCS is similar
+      storedCount = await PriceChange.storePrices(prices, 'fcsapi'); // Using 'fcsapi' as source
       
       if (storedCount > 0) {
         const endTime = new Date();
@@ -404,6 +593,7 @@ module.exports = {
   updateCryptoPrices,
   cleanupOldPrices,
   fetchFCSApiPrices,
+  testFCSConnection,
   getPriceStatistics,
   testPriceChanges,
   // Export lock functions for testing/debugging
@@ -417,21 +607,31 @@ module.exports = {
 
 // Run immediately if called directly
 if (require.main === module) {
-  updateCryptoPrices()
+  // Test connection first, then run the job if successful
+  testFCSConnection()
     .then((result) => {
       if (result.success) {
-        logger.info('Job completed successfully', result);
+        logger.info('✅ FCS API connection test successful, running price update job');
+        return updateCryptoPrices();
+      } else {
+        logger.error('❌ FCS API connection test failed, aborting job', result.error);
+        process.exit(1);
+      }
+    })
+    .then((jobResult) => {
+      if (jobResult.success) {
+        logger.info('✅ Crypto price update job completed successfully', jobResult);
         process.exit(0);
-      } else if (result.skipped) {
-        logger.info('Job skipped', result);
+      } else if (jobResult.skipped) {
+        logger.info('ℹ️ Crypto price update job skipped', jobResult);
         process.exit(0);
       } else {
-        logger.error('Job failed', result);
+        logger.error('❌ Crypto price update job failed', jobResult);
         process.exit(1);
       }
     })
     .catch((error) => {
-      logger.error('Job crashed', { error: error.message });
+      logger.error('💥 Job crashed', { error: error.message, stack: error.stack });
       process.exit(1);
     });
 }
