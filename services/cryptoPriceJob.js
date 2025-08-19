@@ -197,24 +197,20 @@ async function fetchFCSApiPrices() {
       throw new Error('No valid FCS API key found');
     }
     
-    // Fixed axios configuration to match FCS documentation pattern
+    // Fixed axios configuration to match successful curl command (GET with query params)
     const requestUrl = `${FCS_API_CONFIG.baseUrl}/crypto/latest`;
     
-    // Create form data matching FCS API requirements for crypto endpoint
-    const data = {
-      symbol: fcsSymbols,
-      access_key: FCS_API_CONFIG.apiKey  // Note: crypto endpoint uses 'access_key'
-    };
-    
     const config = {
-      method: 'POST',  // POST request as per FCS docs
+      method: 'GET',  // GET request like successful curl command
       url: requestUrl,
-      data: data,      // Send data in request body
+      params: {       // Use params for query string (like curl)
+        symbol: fcsSymbols,
+        access_key: FCS_API_CONFIG.apiKey
+      },
       timeout: CONFIG.REQUEST_TIMEOUT,
       headers: {
         'Accept': 'application/json',
-        'User-Agent': 'Node.js/CryptoPriceJob',
-        'Content-Type': 'application/json'
+        'User-Agent': 'Node.js/CryptoPriceJob'
       },
       // SSL and network configuration
       httpsAgent: new (require('https').Agent)({
@@ -230,9 +226,9 @@ async function fetchFCSApiPrices() {
       }
     };
     
-    logger.info('Making POST request to FCS API', {
+    logger.info('Making GET request to FCS API', {
       url: requestUrl,
-      data: { ...data, access_key: '[REDACTED]' }, // Hide API key in logs
+      params: { ...config.params, access_key: '[REDACTED]' }, // Hide API key in logs
       headers: config.headers
     });
     
@@ -357,25 +353,52 @@ async function fetchFCSApiPrices() {
   }
 }
 
-// Test function to validate API key and connection
+// Simple test function that exactly matches your working curl command
+async function testExactCurlFormat() {
+  try {
+    logger.info('Testing exact curl format...');
+    
+    // Exact replica of your working curl command
+    const response = await axios.get(`${FCS_API_CONFIG.baseUrl}/crypto/latest`, {
+      params: {
+        symbol: 'BTC/USD',
+        access_key: FCS_API_CONFIG.apiKey
+      },
+      headers: {
+        'Accept': 'application/json'
+      }
+    });
+    
+    logger.info('Exact curl format test result', {
+      status: response.status,
+      data: response.data
+    });
+    
+    return { success: true, data: response.data };
+    
+  } catch (error) {
+    logger.error('Exact curl format test failed', {
+      error: error.message,
+      response: error.response?.data
+    });
+    return { success: false, error: error.message };
+  }
+}
 async function testFCSConnection() {
   try {
     logger.info('Testing FCS API connection...');
     
-    const data = {
-      symbol: 'BTC/USD', // Single symbol for testing
-      access_key: FCS_API_CONFIG.apiKey
-    };
-    
     const config = {
-      method: 'POST',
+      method: 'GET',
       url: `${FCS_API_CONFIG.baseUrl}/crypto/latest`,
-      data: data,
+      params: {
+        symbol: 'BTC/USD', // Single symbol for testing
+        access_key: FCS_API_CONFIG.apiKey
+      },
       timeout: 10000,
       headers: {
         'Accept': 'application/json',
-        'User-Agent': 'Node.js/CryptoPriceJob',
-        'Content-Type': 'application/json'
+        'User-Agent': 'Node.js/CryptoPriceJob'
       },
       validateStatus: function (status) {
         return true; // Accept any status for testing
@@ -598,6 +621,7 @@ module.exports = {
   cleanupOldPrices,
   fetchFCSApiPrices,
   testFCSConnection,
+  testExactCurlFormat,
   getPriceStatistics,
   testPriceChanges,
   // Export lock functions for testing/debugging
@@ -611,8 +635,17 @@ module.exports = {
 
 // Run immediately if called directly
 if (require.main === module) {
-  // Test connection first, then run the job if successful
-  testFCSConnection()
+  // Test exact curl format first, then run connection test, then main job
+  testExactCurlFormat()
+    .then((curlResult) => {
+      if (curlResult.success) {
+        logger.info('✅ Exact curl format test successful');
+        return testFCSConnection();
+      } else {
+        logger.error('❌ Exact curl format test failed, trying connection test anyway');
+        return testFCSConnection();
+      }
+    })
     .then((result) => {
       if (result.success) {
         logger.info('✅ FCS API connection test successful, running price update job');
