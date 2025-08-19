@@ -187,7 +187,11 @@ async function fetchFCSApiPrices() {
       .map(token => SUPPORTED_TOKENS[token].fcsApiSymbol)
       .join(',');
     
-    logger.info('Requesting from FCS API', { fcsSymbols, apiKey: FCS_API_CONFIG.apiKey });
+    logger.info('Requesting from FCS API', { 
+      fcsSymbols, 
+      apiKeyLength: FCS_API_CONFIG.apiKey?.length || 0,
+      hasApiKey: !!FCS_API_CONFIG.apiKey 
+    });
     
     if (!FCS_API_CONFIG.hasValidApiKey) {
       throw new Error('No valid FCS API key found');
@@ -196,10 +200,10 @@ async function fetchFCSApiPrices() {
     // Fixed axios configuration to match FCS documentation pattern
     const requestUrl = `${FCS_API_CONFIG.baseUrl}/crypto/latest`;
     
-    // Create form data matching FCS documentation format
+    // Create form data matching FCS API requirements for crypto endpoint
     const data = {
       symbol: fcsSymbols,
-      api_key: FCS_API_CONFIG.apiKey  // Note: using 'api_key' not 'access_key'
+      access_key: FCS_API_CONFIG.apiKey  // Note: crypto endpoint uses 'access_key'
     };
     
     const config = {
@@ -228,7 +232,7 @@ async function fetchFCSApiPrices() {
     
     logger.info('Making POST request to FCS API', {
       url: requestUrl,
-      data: data,
+      data: { ...data, access_key: '[REDACTED]' }, // Hide API key in logs
       headers: config.headers
     });
     
@@ -360,7 +364,7 @@ async function testFCSConnection() {
     
     const data = {
       symbol: 'BTC/USD', // Single symbol for testing
-      api_key: FCS_API_CONFIG.apiKey
+      access_key: FCS_API_CONFIG.apiKey
     };
     
     const config = {
