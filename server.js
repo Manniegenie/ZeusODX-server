@@ -174,6 +174,7 @@ const fetchnetworkRoutes = require('./routes/fetchnetwork');
 const TwooFARoutes = require('./adminRoutes/2FA');
 const HistoryRoutes = require('./routes/transactionhistory');
 const ProfileRoutes = require('./routes/Profile');
+const bankAccountRoutes = require('./routes/bankAccount');
 
 
 // Public Routes
@@ -233,6 +234,7 @@ app.use("/user-query", authenticateToken, userqueryRoutes);
 app.use("/fetchnetwork", fetchnetworkRoutes);
 app.use("/history", authenticateToken, HistoryRoutes);
 app.use("/profile", authenticateToken, ProfileRoutes);
+app.use("/bank", authenticateToken, bankAccountRoutes);
 
 
 // Health Check

@@ -8,20 +8,47 @@ const userSchema = new mongoose.Schema({
   username: { type: String }, 
   isUsernameCustom: { type: Boolean, default: false },
   email: { type: String, required: true, unique: true },
+  emailVerified: { type: Boolean, default: false },
   password: { type: String },
   passwordpin: { type: String },
   transactionpin: { type: String },
   securitypin: { type: String },
+
+  // OTP fields (used for both pin changes and email verification)
+  pinChangeOtp: { type: String, default: null },
+  pinChangeOtpCreatedAt: { type: Date, default: null },
+  pinChangeOtpExpiresAt: { type: Date, default: null },
+  pinChangeOtpVerified: { type: Boolean, default: false },
 
   // Personal Info
   firstname: { type: String },
   lastname: { type: String },
   phonenumber: { type: String },
   bvn: { type: String },
+  bvnVerified: { type: Boolean, default: false },
 
   // Avatar
   avatarUrl: { type: String, default: null },
   avatarLastUpdated: { type: Date, default: null },
+
+  // Bank Accounts (Limited to 10 per user)
+  bankAccounts: {
+    type: [{
+      accountName: { type: String, required: true },
+      bankName: { type: String, required: true },
+      accountNumber: { type: String, required: true },
+      addedAt: { type: Date, default: Date.now },
+      isVerified: { type: Boolean, default: false },
+      isActive: { type: Boolean, default: true }
+    }],
+    validate: {
+      validator: function(accounts) {
+        return accounts.length <= 10;
+      },
+      message: 'Maximum of 10 bank accounts allowed per user'
+    },
+    default: []
+  },
 
   // KYC Levels
   kycLevel: { type: Number, default: 0, min: 0, max: 3, enum: [0,1,2,3] },
@@ -101,11 +128,6 @@ const userSchema = new mongoose.Schema({
   lastBalanceUpdate: { type: Date, default: null },
   portfolioLastUpdated: { type: Date, default: null },
 
-  // WALLET GENERATION STATUS FIELDS REMOVED - No longer needed with on-demand generation
-  // walletGenerationStatus: { type: String, enum: ['pending','in_progress','completed','failed'], default: 'pending' },
-  // walletGenerationStartedAt: { type: Date, default: null },
-  // walletGenerationCompletedAt: { type: Date, default: null },
-
   // 2FA
   twoFASecret: { type: String, default: null },
   is2FAEnabled: { type: Boolean, default: false },
@@ -164,11 +186,13 @@ userSchema.pre('save', async function (next) {
   } catch (err) { next(err); }
 });
 
-// Methods
+// Authentication Methods
 userSchema.methods.comparePassword = async function (candidate) { return this.password && bcrypt.compare(candidate, this.password); };
 userSchema.methods.comparePasswordPin = async function (candidate) { return this.passwordpin && bcrypt.compare(candidate, this.passwordpin); };
 userSchema.methods.compareTransactionPin = async function (candidate) { return this.transactionpin && bcrypt.compare(candidate, this.transactionpin); };
 userSchema.methods.compareSecurityPin = async function (candidate) { return this.securitypin && bcrypt.compare(candidate, this.securitypin); };
+
+// Account Security Methods
 userSchema.methods.canUpdateUsername = function () { return !this.isUsernameCustom; };
 userSchema.methods.isLocked = function () { return !!(this.lockUntil && this.lockUntil > Date.now()); };
 userSchema.methods.incLoginAttempts = async function () {
@@ -180,6 +204,110 @@ userSchema.methods.incLoginAttempts = async function () {
   return this.updateOne(updates);
 };
 userSchema.methods.resetLoginAttempts = async function () { return this.updateOne({ $unset: { loginAttempts: 1, lockUntil: 1 } }); };
+
+// Email Methods - CRITICAL: This method is called in your signin route!
+userSchema.methods.shouldSendLoginEmail = function() {
+  if (!this.lastLoginEmailSent) return true;
+  
+  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+  return this.lastLoginEmailSent < fifteenMinutesAgo;
+};
+
+// Email verification method - UPDATED to include pinChangeOtpVerified
+userSchema.methods.markEmailAsVerified = function() {
+  this.emailVerified = true;
+  this.pinChangeOtp = null;
+  this.pinChangeOtpCreatedAt = null;
+  this.pinChangeOtpExpiresAt = null;
+  this.pinChangeOtpVerified = false;
+  return this.save();
+};
+
+// Generate OTP for email verification (reuses pin change OTP fields)
+userSchema.methods.generateEmailVerificationOTP = function() {
+  function generateOTP(length = 6) {
+    const digits = '0123456789';
+    let otp = '';
+    for (let i = 0; i < length; i++) {
+      otp += digits[Math.floor(Math.random() * digits.length)];
+    }
+    return otp;
+  }
+
+  const otp = generateOTP();
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000); // 10 minutes
+  
+  this.pinChangeOtp = otp;
+  this.pinChangeOtpCreatedAt = createdAt;
+  this.pinChangeOtpExpiresAt = expiresAt;
+  this.pinChangeOtpVerified = false; // Reset verification status
+  
+  return otp;
+};
+
+// Check if email verification OTP is valid
+userSchema.methods.isEmailVerificationOTPValid = function(otp) {
+  return this.pinChangeOtp === otp && 
+         this.pinChangeOtpExpiresAt && 
+         this.pinChangeOtpExpiresAt > new Date();
+};
+
+// Check if email verification OTP has expired
+userSchema.methods.hasEmailVerificationOTPExpired = function() {
+  return !this.pinChangeOtpExpiresAt || new Date() > this.pinChangeOtpExpiresAt;
+};
+
+// NEW METHOD: Clear all pin change OTP fields
+userSchema.methods.clearPinChangeOtp = function() {
+  this.pinChangeOtp = null;
+  this.pinChangeOtpCreatedAt = null;
+  this.pinChangeOtpExpiresAt = null;
+  this.pinChangeOtpVerified = false;
+  return this.save();
+};
+
+// Bank Account Methods
+userSchema.methods.addBankAccount = function(accountData) {
+  if (this.bankAccounts.length >= 10) {
+    throw new Error('Maximum of 10 bank accounts allowed per user');
+  }
+  
+  const existingAccount = this.bankAccounts.find(
+    account => account.accountNumber === accountData.accountNumber && account.isActive
+  );
+  
+  if (existingAccount) {
+    throw new Error('Bank account with this account number already exists');
+  }
+  
+  this.bankAccounts.push({
+    accountName: accountData.accountName,
+    bankName: accountData.bankName,
+    accountNumber: accountData.accountNumber,
+    addedAt: new Date(),
+    isVerified: false,
+    isActive: true
+  });
+  return this.save();
+};
+
+userSchema.methods.removeBankAccount = function(accountId) {
+  this.bankAccounts.id(accountId).remove();
+  return this.save();
+};
+
+userSchema.methods.getActiveBankAccounts = function() {
+  return this.bankAccounts.filter(account => account.isActive);
+};
+
+userSchema.methods.getBankAccountsCount = function() {
+  return this.bankAccounts.filter(account => account.isActive).length;
+};
+
+userSchema.methods.canAddBankAccount = function() {
+  return this.getBankAccountsCount() < 10;
+};
 
 // KYC Limits Methods - Separate limits for different transaction types
 userSchema.methods.getKycLimits = function() {
