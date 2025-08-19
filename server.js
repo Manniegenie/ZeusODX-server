@@ -175,6 +175,7 @@ const TwooFARoutes = require('./adminRoutes/2FA');
 const HistoryRoutes = require('./routes/transactionhistory');
 const ProfileRoutes = require('./routes/Profile');
 const bankAccountRoutes = require('./routes/bankAccount');
+const Resetpin = require('./routes/ResetPin');
 
 
 // Public Routes
@@ -235,6 +236,7 @@ app.use("/fetchnetwork", fetchnetworkRoutes);
 app.use("/history", authenticateToken, HistoryRoutes);
 app.use("/profile", authenticateToken, ProfileRoutes);
 app.use("/bank", authenticateToken, bankAccountRoutes);
+app.use("/reset-pin", authenticateToken, Resetpin);
 
 
 // Health Check
