@@ -173,6 +173,7 @@ const userqueryRoutes = require('./routes/usernamequery');
 const fetchnetworkRoutes = require('./routes/fetchnetwork');
 const TwooFARoutes = require('./adminRoutes/2FA');
 const HistoryRoutes = require('./routes/transactionhistory');
+const ProfileRoutes = require('./routes/Profile');
 
 
 // Public Routes
@@ -231,6 +232,7 @@ app.use("/username-withdraw", authenticateToken, usernamewithdrawRoutes);
 app.use("/user-query", authenticateToken, userqueryRoutes);
 app.use("/fetchnetwork", fetchnetworkRoutes);
 app.use("/history", authenticateToken, HistoryRoutes);
+app.use("/profile", authenticateToken, ProfileRoutes);
 
 
 // Health Check
