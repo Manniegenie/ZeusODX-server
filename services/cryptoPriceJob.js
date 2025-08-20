@@ -1,550 +1,238 @@
-// jobs/updateCryptoPrices.js
 const axios = require('axios');
-const PriceChange = require('../models/pricechange'); // Changed from CryptoPrice to PriceChange
+const PriceChange = require('../models/pricechange');
 const logger = require('../utils/logger');
 
-// Configuration
+// ---- Config ----
 const CONFIG = {
   REQUEST_TIMEOUT: 15000,
   MAX_RETRIES: 3,
   RETRY_DELAY: 2000,
-  RATE_LIMIT_DELAY: 30000,
-  JOB_LOCK_TTL: 10 * 60 * 1000, // 10 minutes lock
+  RATE_LIMIT_DELAY: 30000, // if remote 429/418
+  JOB_LOCK_TTL: 10 * 60 * 1000,
+  MIN_REQUEST_INTERVAL_MS: 3000, // 1 req / 3s
 };
 
-// Simple in-memory job lock (for single instance)
-let jobLock = {
-  isLocked: false,
-  lockTime: null,
-  lockId: null
-};
+// Prefer mirror first to avoid geo 451
+const BINANCE_HOSTS = [
+  'https://data-api.binance.vision',
+  'https://api.binance.com',
+  'https://api1.binance.com',
+  'https://api2.binance.com',
+  'https://api3.binance.com',
+];
 
-// Check if job is already running
+// ---- In-memory lock (single instance) ----
+let jobLock = { isLocked: false, lockTime: null, lockId: null };
+
 function isJobLocked() {
   if (!jobLock.isLocked) return false;
-  
-  // Check if lock has expired (safety mechanism)
   const now = Date.now();
   if (jobLock.lockTime && (now - jobLock.lockTime) > CONFIG.JOB_LOCK_TTL) {
-    logger.warn('Job lock expired, releasing', { 
-      lockAge: now - jobLock.lockTime,
-      lockId: jobLock.lockId 
-    });
+    logger.warn('Job lock expired, releasing', { lockAge: now - jobLock.lockTime, lockId: jobLock.lockId });
     releaseLock();
     return false;
   }
-  
   return true;
 }
 
-// Acquire job lock
 function acquireLock() {
-  if (isJobLocked()) {
-    return false;
-  }
-  
-  const lockId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  jobLock = {
-    isLocked: true,
-    lockTime: Date.now(),
-    lockId: lockId
-  };
-  
+  if (isJobLocked()) return false;
+  const lockId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  jobLock = { isLocked: true, lockTime: Date.now(), lockId };
   logger.info('Job lock acquired', { lockId });
   return lockId;
 }
 
-// Release job lock
 function releaseLock(lockId = null) {
   if (lockId && jobLock.lockId !== lockId) {
-    logger.warn('Attempted to release lock with wrong ID', { 
-      providedId: lockId, 
-      currentId: jobLock.lockId 
-    });
+    logger.warn('Attempted to release lock with wrong ID', { providedId: lockId, currentId: jobLock.lockId });
     return false;
   }
-  
   const releasedId = jobLock.lockId;
-  jobLock = {
-    isLocked: false,
-    lockTime: null,
-    lockId: null
-  };
-  
+  jobLock = { isLocked: false, lockTime: null, lockId: null };
   logger.info('Job lock released', { lockId: releasedId });
   return true;
 }
 
-// Enhanced API key validation function
-function validateFCSApiKey(apiKey) {
-  if (!apiKey) {
-    logger.error('FCS API key is missing');
-    return false;
+// ---- Supported tokens ----
+const SUPPORTED_TOKENS = {
+  BTC: { binanceSymbol: 'BTCUSDT', isStablecoin: false },
+  ETH: { binanceSymbol: 'ETHUSDT', isStablecoin: false },
+  SOL: { binanceSymbol: 'SOLUSDT', isStablecoin: false },
+  USDT: { binanceSymbol: null,       isStablecoin: true  }, // treat as 1.0
+  USDC: { binanceSymbol: 'USDCUSDT', isStablecoin: true  },
+  BNB: { binanceSymbol: 'BNBUSDT',   isStablecoin: false },
+  MATIC:{ binanceSymbol: 'MATICUSDT',isStablecoin: false },
+  AVAX: { binanceSymbol: 'AVAXUSDT', isStablecoin: false },
+};
+
+// ---- Global rate gate ----
+let lastRequestAt = 0;
+async function rateLimitGate() {
+  const now = Date.now();
+  const since = now - lastRequestAt;
+  const waitMs = Math.max(0, CONFIG.MIN_REQUEST_INTERVAL_MS - since);
+  if (waitMs > 0) {
+    logger.debug(`Rate limiting: sleep ${waitMs}ms`);
+    await new Promise(res => setTimeout(res, waitMs));
   }
-  
-  if (typeof apiKey !== 'string') {
-    logger.error('FCS API key must be a string');
-    return false;
-  }
-  
-  if (apiKey.length < 16) {
-    logger.error('FCS API key appears to be too short');
-    return false;
-  }
-  
-  // Check for demo key pattern
-  if (apiKey.toLowerCase().includes('demo')) {
-    logger.warn('Using demo API key - limited functionality');
-  }
-  
-  return true;
+  lastRequestAt = Date.now();
 }
 
-// FCS API Configuration
-const FCS_API_CONFIG = {
-  hasValidApiKey: validateFCSApiKey(process.env.FCS_API_KEY),
-  baseUrl: 'https://fcsapi.com/api-v3',
-  apiKey: process.env.FCS_API_KEY
-};
-
-// Supported tokens (excluding NGNZ - handled by portfolio.js via offramp rate)
-const SUPPORTED_TOKENS = {
-  BTC: { fcsApiSymbol: 'BTC/USD', isStablecoin: false },
-  ETH: { fcsApiSymbol: 'ETH/USD', isStablecoin: false },
-  SOL: { fcsApiSymbol: 'SOL/USD', isStablecoin: false },
-  USDT: { fcsApiSymbol: 'USDT/USD', isStablecoin: true },
-  USDC: { fcsApiSymbol: 'USDC/USD', isStablecoin: true },
-  BNB: { fcsApiSymbol: 'BNB/USD', isStablecoin: false },
-  MATIC: { fcsApiSymbol: 'MATIC/USD', isStablecoin: false },
-  AVAX: { fcsApiSymbol: 'AVAX/USD', isStablecoin: false }
-  // NGNZ excluded - calculated from offramp rate in portfolio.js
-};
-
-// Enhanced retry logic with backoff for specific errors
+// ---- Retry/backoff helper ----
 async function withRetry(fn, maxRetries = CONFIG.MAX_RETRIES, delay = CONFIG.RETRY_DELAY) {
   let lastError;
-  
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error) {
       lastError = error;
-      
-      // Don't retry on authentication/authorization errors
-      const nonRetryableErrors = [101, 102, 103, 104, 111, 212, 213];
-      if (error.message.includes('API Key') || 
-          error.message.includes('Account') ||
-          nonRetryableErrors.some(code => error.message.includes(code.toString()))) {
-        logger.error('Non-retryable error encountered', { error: error.message });
-        throw error;
-      }
-      
-      // Handle rate limiting with longer delay
-      if (error.response && (error.response.status === 429 || error.message.includes('213'))) {
+      const status = error.response?.status;
+
+      if (status === 429 || status === 418) {
         if (attempt === maxRetries) break;
-        
-        const rateLimitWait = CONFIG.RATE_LIMIT_DELAY;
-        logger.warn(`Rate limited, waiting ${rateLimitWait}ms before retry ${attempt + 1}`);
-        await new Promise(resolve => setTimeout(resolve, rateLimitWait));
+        logger.warn(`Remote rate limited (HTTP ${status}), waiting ${CONFIG.RATE_LIMIT_DELAY}ms before retry ${attempt + 1}`);
+        await new Promise(r => setTimeout(r, CONFIG.RATE_LIMIT_DELAY));
         continue;
       }
-      
+
       if (attempt === maxRetries) break;
-      
       const waitTime = delay * Math.pow(2, attempt);
-      logger.warn(`Attempt ${attempt + 1} failed, retrying in ${waitTime}ms`, { 
-        error: error.message,
-        attempt: attempt + 1,
-        maxRetries: maxRetries + 1
-      });
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+      logger.warn(`Attempt ${attempt + 1} failed, retrying in ${waitTime}ms`, { error: error.message, status });
+      await new Promise(r => setTimeout(r, waitTime));
     }
   }
-  
   throw lastError;
 }
 
-// Fixed FCS API fetch function based on official FCS documentation
-async function fetchFCSApiPrices() {
-  try {
-    logger.info('Starting FCS API price fetch for job');
-    
-    const prices = {};
-    
-    // Get tokens supported by FCS API
-    const fcsApiTokens = Object.keys(SUPPORTED_TOKENS).filter(token => {
-      const tokenInfo = SUPPORTED_TOKENS[token];
-      return tokenInfo && tokenInfo.fcsApiSymbol;
-    });
-    
-    if (fcsApiTokens.length === 0) {
-      logger.warn('No tokens to request from FCS API');
-      return prices;
-    }
-    
-    // Build symbol list for FCS API
-    const fcsSymbols = fcsApiTokens
-      .map(token => SUPPORTED_TOKENS[token].fcsApiSymbol)
-      .join(',');
-    
-    logger.info('Requesting from FCS API', { 
-      fcsSymbols, 
-      apiKeyLength: FCS_API_CONFIG.apiKey?.length || 0,
-      hasApiKey: !!FCS_API_CONFIG.apiKey 
-    });
-    
-    if (!FCS_API_CONFIG.hasValidApiKey) {
-      throw new Error('No valid FCS API key found');
-    }
-    
-    // Fixed axios configuration to match successful curl command (GET with query params)
-    const requestUrl = `${FCS_API_CONFIG.baseUrl}/crypto/latest`;
-    
-    const config = {
-      method: 'GET',  // GET request like successful curl command
-      url: requestUrl,
-      params: {       // Use params for query string (like curl)
-        symbol: fcsSymbols,
-        access_key: FCS_API_CONFIG.apiKey
-      },
-      timeout: CONFIG.REQUEST_TIMEOUT,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Node.js/CryptoPriceJob'
-      },
-      // SSL and network configuration
-      httpsAgent: new (require('https').Agent)({
-        rejectUnauthorized: true,
-        keepAlive: true,
-        timeout: CONFIG.REQUEST_TIMEOUT
-      }),
-      // Ensure proper response handling
-      responseType: 'json',
-      maxRedirects: 5,
-      validateStatus: function (status) {
-        return status >= 200 && status < 300; // Only accept 2xx responses as success
-      }
-    };
-    
-    logger.info('Making GET request to FCS API', {
-      url: requestUrl,
-      params: { ...config.params, access_key: '[REDACTED]' }, // Hide API key in logs
-      headers: config.headers
-    });
-    
-    const response = await axios(config);
-    
-    logger.info('FCS API raw response received', {
-      status: response.status,
-      statusText: response.statusText,
-      hasData: !!response.data,
-      dataType: typeof response.data,
-      contentType: response.headers['content-type']
-    });
-    
-    // Validate response structure
-    if (!response.data || typeof response.data !== 'object') {
-      throw new Error('Invalid response format from FCS API - no data object');
-    }
-    
-    // Check FCS API status
-    if (response.data.status !== true) {
-      const errorMsg = response.data.msg || 'Unknown FCS API error';
-      const errorCode = response.data.code || 'unknown';
-      logger.error('FCS API returned error status', {
-        status: response.data.status,
-        code: errorCode,
-        msg: errorMsg,
-        fullResponse: response.data
+// ---- Fetch from Binance with host failover ----
+async function fetchBinancePrices() {
+  logger.info('Starting Binance API price fetch');
+
+  await rateLimitGate();
+
+  let lastErr;
+  for (const base of BINANCE_HOSTS) {
+    const url = `${base}/api/v3/ticker/price`;
+    try {
+      const response = await axios.get(url, {
+        timeout: CONFIG.REQUEST_TIMEOUT,
+        headers: { 'Accept': 'application/json', 'User-Agent': 'CryptoPriceJob/1.0' }
       });
-      throw new Error(`FCS API error (${errorCode}): ${errorMsg}`);
-    }
-    
-    // Validate response array
-    if (!Array.isArray(response.data.response)) {
-      logger.error('Invalid response format - response field is not an array', {
-        responseType: typeof response.data.response,
-        responseValue: response.data.response
-      });
-      throw new Error('Invalid response format from FCS API - response not array');
-    }
-    
-    logger.info('FCS API response validated successfully', { 
-      responseCount: response.data.response.length,
-      creditCount: response.data.info?.credit_count,
-      serverTime: response.data.info?.server_time,
-      processTime: response.data.info?.process_time
-    });
-    
-    // Process FCS API response
-    for (const item of response.data.response) {
-      if (!item.s || !item.c) {
-        logger.warn('Invalid FCS API response item - missing symbol or price', { item });
-        continue;
+
+      if (!Array.isArray(response.data)) throw new Error('Invalid response format from Binance API');
+
+      const usedWeight = response.headers?.['x-mbx-used-weight-1m'];
+      if (usedWeight) logger.debug('Binance used-weight-1m', { usedWeight, host: base });
+
+      const bySymbol = new Map(response.data.map(t => [t.symbol, t.price]));
+      const prices = {};
+
+      for (const [token, info] of Object.entries(SUPPORTED_TOKENS)) {
+        if (token === 'USDT') { prices[token] = 1.0; continue; }
+        const raw = bySymbol.get(info.binanceSymbol);
+        if (!raw) { logger.warn(`No price for ${token} (${info.binanceSymbol}) on ${base}`); continue; }
+        const p = Number(raw);
+        if (!Number.isFinite(p) || p <= 0) { logger.warn(`Invalid price for ${token}`, { raw }); continue; }
+        prices[token] = p;
       }
-      
-      const symbol = item.s; // e.g., "BTC/USD"
-      const token = symbol.split('/')[0]; // e.g., "BTC"
-      const priceStr = item.c; // Current price as string
-      const price = parseFloat(priceStr); // Convert to number
-      
-      if (isNaN(price) || price <= 0) {
-        logger.warn(`Invalid price from FCS API for ${token}`, { 
-          token,
-          symbol,
-          priceString: priceStr,
-          parsedPrice: price 
-        });
-        continue;
-      }
-      
-      prices[token] = price;
-      logger.debug(`Set FCS API price: ${token} = $${price.toFixed(8)}`, {
-        symbol,
-        price,
-        rawData: item
+
+      logger.info(`Fetched ${Object.keys(prices).length} prices from ${base}`);
+      // annotate originating source (binance vs binance_vision)
+      const source = base.includes('binance.vision') ? 'binance_vision' : 'binance';
+      return { prices, source };
+    } catch (e) {
+      lastErr = e;
+      logger.warn('Binance host failed, trying next', {
+        hostTried: base,
+        status: e.response?.status,
+        msg: e.message
       });
+      // 451 is geo/legal block; just try next immediately
+      if (e.response?.status !== 451) {
+        await new Promise(r => setTimeout(r, 500));
+      }
     }
-    
-    const successMessage = `Successfully fetched ${Object.keys(prices).length} prices from FCS API`;
-    logger.info(successMessage, {
-      pricesCount: Object.keys(prices).length,
-      tokens: Object.keys(prices),
-      creditUsed: response.data.info?.credit_count
-    });
-    
-    return prices;
-    
-  } catch (error) {
-    // Enhanced error logging with more details
-    const errorDetails = {
-      message: error.message,
-      code: error.code,
-      errno: error.errno,
-      syscall: error.syscall,
-      hostname: error.hostname,
-      ...(error.response && {
-        response: {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: error.response.data,
-          headers: error.response.headers
-        }
-      }),
-      ...(error.request && !error.response && {
-        request: {
-          method: error.request.method,
-          path: error.request.path,
-          host: error.request.host
-        }
-      }),
-      ...(error.config && {
-        config: {
-          url: error.config.url,
-          method: error.config.method,
-          data: error.config.data,
-          timeout: error.config.timeout
-        }
-      })
-    };
-    
-    logger.error('FCS API price fetch failed', errorDetails);
-    throw error;
   }
+  throw lastErr || new Error('All Binance hosts failed');
 }
 
-// Simple test function that exactly matches your working curl command
-async function testExactCurlFormat() {
-  try {
-    logger.info('Testing exact curl format...');
-    
-    // Exact replica of your working curl command
-    const response = await axios.get(`${FCS_API_CONFIG.baseUrl}/crypto/latest`, {
-      params: {
-        symbol: 'BTC/USD',
-        access_key: FCS_API_CONFIG.apiKey
-      },
-      headers: {
-        'Accept': 'application/json'
-      }
-    });
-    
-    logger.info('Exact curl format test result', {
-      status: response.status,
-      data: response.data
-    });
-    
-    return { success: true, data: response.data };
-    
-  } catch (error) {
-    logger.error('Exact curl format test failed', {
-      error: error.message,
-      response: error.response?.data
-    });
-    return { success: false, error: error.message };
-  }
-}
-async function testFCSConnection() {
-  try {
-    logger.info('Testing FCS API connection...');
-    
-    const config = {
-      method: 'GET',
-      url: `${FCS_API_CONFIG.baseUrl}/crypto/latest`,
-      params: {
-        symbol: 'BTC/USD', // Single symbol for testing
-        access_key: FCS_API_CONFIG.apiKey
-      },
-      timeout: 10000,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Node.js/CryptoPriceJob'
-      },
-      validateStatus: function (status) {
-        return true; // Accept any status for testing
-      }
-    };
-    
-    const response = await axios(config);
-    
-    logger.info('FCS API test response', {
-      status: response.status,
-      statusText: response.statusText,
-      data: response.data,
-      headers: {
-        'content-type': response.headers['content-type']
-      }
-    });
-    
-    if (response.status === 200 && response.data.status === true) {
-      logger.info('FCS API connection test successful');
-      return { success: true, data: response.data };
-    } else {
-      logger.error('FCS API connection test failed', {
-        status: response.status,
-        data: response.data
-      });
-      return { success: false, error: response.data };
-    }
-    
-  } catch (error) {
-    logger.error('FCS API connection test failed', {
-      error: error.message,
-      response: error.response?.data
-    });
-    return { success: false, error: error.message };
-  }
-}
-
-// Main job function with locking
+// ---- Main job ----
 async function updateCryptoPrices() {
-  // Check if job is already running
   if (isJobLocked()) {
-    logger.warn('Crypto price update job already running, skipping execution', {
+    logger.warn('Crypto price update job already running, skipping', {
       currentLockId: jobLock.lockId,
       lockAge: Date.now() - jobLock.lockTime
     });
     return { skipped: true, reason: 'Job already running' };
   }
-  
-  // Acquire lock
+
   const lockId = acquireLock();
   if (!lockId) {
     logger.error('Failed to acquire job lock');
     return { skipped: true, reason: 'Failed to acquire lock' };
   }
-  
+
   const startTime = new Date();
-  logger.info('Starting crypto price update job', { 
-    timestamp: startTime.toISOString(),
-    lockId: lockId
-  });
-  
+  logger.info('Starting crypto price update job', { timestamp: startTime.toISOString(), lockId });
+
   try {
-    // Fetch current prices from FCS API
-    let prices;
+    let fetched;
     try {
-      prices = await withRetry(() => fetchFCSApiPrices());
+      fetched = await withRetry(() => fetchBinancePrices());
     } catch (error) {
-      logger.error('Failed to fetch prices from FCS API, job aborted', { 
-        error: error.message,
-        lockId: lockId
-      });
+      logger.error('Failed to fetch prices from Binance, job aborted', { error: error.message, lockId });
       return { success: false, error: error.message };
     }
-    
-    if (Object.keys(prices).length === 0) {
-      logger.warn('No prices fetched from FCS API, job aborted', { lockId: lockId });
+
+    const { prices, source } = fetched;
+    if (!prices || Object.keys(prices).length === 0) {
+      logger.warn('No prices fetched from Binance, job aborted', { lockId });
       return { success: false, error: 'No prices fetched' };
     }
-    
+
     logger.info(`Processing ${Object.keys(prices).length} tokens for price storage`, {
-      tokens: Object.keys(prices),
-      lockId: lockId
+      lockId, tokens: Object.keys(prices)
     });
-    
-    // Store prices using PriceChange model's built-in method
+
     let storedCount = 0;
     try {
-      storedCount = await PriceChange.storePrices(prices, 'fcsapi'); // Using 'fcsapi' as source
-      
+      storedCount = await PriceChange.storePrices(prices, source); // source is 'binance' or 'binance_vision'
       if (storedCount > 0) {
         const endTime = new Date();
         const duration = endTime - startTime;
-        
         logger.info('Crypto price update job completed successfully', {
           pricesStored: storedCount,
           duration: `${duration}ms`,
           timestamp: endTime.toISOString(),
           symbols: Object.keys(prices),
-          priceData: Object.entries(prices).map(([symbol, price]) => ({
-            symbol,
-            price: `$${price.toFixed(8)}`
-          })),
-          lockId: lockId
+          source
         });
-        
-        return { 
-          success: true, 
-          pricesStored: storedCount,
-          duration: duration,
-          symbols: Object.keys(prices),
-          priceData: Object.entries(prices).map(([symbol, price]) => ({
-            symbol,
-            price
-          }))
-        };
+        return { success: true, pricesStored: storedCount, duration, symbols: Object.keys(prices), source };
       } else {
-        logger.warn('No prices were stored', { lockId: lockId });
+        logger.warn('No prices were stored', { lockId });
         return { success: false, error: 'No prices were stored' };
       }
-      
     } catch (storageError) {
       logger.error('Failed to store prices using PriceChange model', {
         error: storageError.message,
         pricesCount: Object.keys(prices).length,
-        lockId: lockId
+        lockId
       });
       return { success: false, error: `Storage failed: ${storageError.message}` };
     }
-    
   } catch (error) {
-    logger.error('Crypto price update job failed', { 
-      error: error.message,
-      stack: error.stack,
-      lockId: lockId
-    });
+    logger.error('Crypto price update job failed', { error: error.message, stack: error.stack, lockId });
     return { success: false, error: error.message };
   } finally {
-    // Always release the lock
     releaseLock(lockId);
   }
 }
 
-// Cleanup old price data using PriceChange model method
+// ---- Housekeeping & diagnostics ----
 async function cleanupOldPrices() {
   try {
-    const deletedCount = await PriceChange.cleanupOldPrices(30); // Keep 30 days
+    const deletedCount = await PriceChange.cleanupOldPrices(30);
     logger.info(`Cleaned up ${deletedCount} old price entries (older than 30 days)`);
     return deletedCount;
   } catch (error) {
@@ -553,29 +241,20 @@ async function cleanupOldPrices() {
   }
 }
 
-// Get price statistics using PriceChange model
 async function getPriceStatistics() {
   try {
     const stats = {};
     const tokens = Object.keys(SUPPORTED_TOKENS);
-    
     for (const token of tokens) {
-      const latestPrice = await PriceChange.findOne({
-        symbol: token.toUpperCase()
-      }).sort({ timestamp: -1 });
-      
-      const count = await PriceChange.countDocuments({
-        symbol: token.toUpperCase()
-      });
-      
+      const latestPrice = await PriceChange.findOne({ symbol: token.toUpperCase() }).sort({ timestamp: -1 });
+      const count = await PriceChange.countDocuments({ symbol: token.toUpperCase() });
       stats[token] = {
-        count: count,
+        count,
         latestPrice: latestPrice ? latestPrice.price : null,
         latestTimestamp: latestPrice ? latestPrice.timestamp : null,
         source: latestPrice ? latestPrice.source : null
       };
     }
-    
     return stats;
   } catch (error) {
     logger.error('Error getting price statistics', { error: error.message });
@@ -583,92 +262,40 @@ async function getPriceStatistics() {
   }
 }
 
-// Test price changes calculation (for debugging)
-async function testPriceChanges() {
-  try {
-    const prices = await fetchFCSApiPrices();
-    if (Object.keys(prices).length === 0) {
-      throw new Error('No prices fetched for testing');
-    }
-    
-    // Test 1-hour price changes
-    const changes1h = await PriceChange.getPriceChanges(prices, 1);
-    
-    logger.info('Price changes test results', {
-      currentPrices: prices,
-      changes1h: changes1h,
-      tokensWithChanges: Object.keys(changes1h).filter(k => changes1h[k].dataAvailable).length
-    });
-    
-    return {
-      prices,
-      changes1h,
-      summary: {
-        totalTokens: Object.keys(prices).length,
-        tokensWithChanges: Object.keys(changes1h).filter(k => changes1h[k].dataAvailable).length
-      }
-    };
-    
-  } catch (error) {
-    logger.error('Error testing price changes', { error: error.message });
-    throw error;
-  }
-}
-
-// Export for use with job schedulers
+// ---- Exports ----
 module.exports = {
   updateCryptoPrices,
   cleanupOldPrices,
-  fetchFCSApiPrices,
-  testFCSConnection,
-  testExactCurlFormat,
+  fetchBinancePrices, // returns { prices, source }
+  // Backward-compatible alias:
+  fetchFCSApiPrices: fetchBinancePrices,
   getPriceStatistics,
-  testPriceChanges,
-  // Export lock functions for testing/debugging
+  // Lock helpers
   isJobLocked,
   acquireLock,
   releaseLock,
-  // Export configuration for debugging
+  // Debug
   SUPPORTED_TOKENS,
   CONFIG
 };
 
 // Run immediately if called directly
 if (require.main === module) {
-  // Test exact curl format first, then run connection test, then main job
-  testExactCurlFormat()
-    .then((curlResult) => {
-      if (curlResult.success) {
-        logger.info('✅ Exact curl format test successful');
-        return testFCSConnection();
-      } else {
-        logger.error('❌ Exact curl format test failed, trying connection test anyway');
-        return testFCSConnection();
-      }
-    })
+  updateCryptoPrices()
     .then((result) => {
       if (result.success) {
-        logger.info('✅ FCS API connection test successful, running price update job');
-        return updateCryptoPrices();
-      } else {
-        logger.error('❌ FCS API connection test failed, aborting job', result.error);
-        process.exit(1);
-      }
-    })
-    .then((jobResult) => {
-      if (jobResult.success) {
-        logger.info('✅ Crypto price update job completed successfully', jobResult);
+        logger.info('Job completed successfully', result);
         process.exit(0);
-      } else if (jobResult.skipped) {
-        logger.info('ℹ️ Crypto price update job skipped', jobResult);
+      } else if (result.skipped) {
+        logger.info('Job skipped', result);
         process.exit(0);
       } else {
-        logger.error('❌ Crypto price update job failed', jobResult);
+        logger.error('Job failed', result);
         process.exit(1);
       }
     })
     .catch((error) => {
-      logger.error('💥 Job crashed', { error: error.message, stack: error.stack });
+      logger.error('Job crashed', { error: error.message });
       process.exit(1);
     });
 }

@@ -5,7 +5,7 @@ const priceChangeSchema = new mongoose.Schema({
     type: String,
     required: true,
     uppercase: true,
-    enum: ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX', 'NGNZ'] // DOGE REMOVED, NGNZ added
+    enum: ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX', 'NGNZ']
   },
   price: {
     type: Number,
@@ -19,7 +19,18 @@ const priceChangeSchema = new mongoose.Schema({
   },
   source: {
     type: String,
-    enum: ['coingecko', 'portfolio_service', 'currency_api', 'manual'],
+    enum: [
+      'coingecko',
+      'portfolio_service',
+      'currency_api',
+      'manual',
+      // exchanges / market data
+      'binance',
+      'binance_vision',
+      'coinbase',
+      'kraken',
+      'okx'
+    ],
     default: 'portfolio_service'
   }
 }, {
@@ -27,34 +38,37 @@ const priceChangeSchema = new mongoose.Schema({
   collection: 'pricechanges'
 });
 
-// Indexes for efficient queries
+// Indexes
 priceChangeSchema.index({ symbol: 1, timestamp: -1 });
 priceChangeSchema.index({ timestamp: -1 });
 priceChangeSchema.index({ symbol: 1, timestamp: 1 });
 
-// Static method to store current prices
+// Helpers
+function enumHas(path, value) {
+  const allowed = priceChangeSchema.path(path).enumValues || [];
+  return allowed.includes(value);
+}
+
+// Store current prices (safe source normalization)
 priceChangeSchema.statics.storePrices = async function(prices, source = 'portfolio_service') {
   try {
+    const safeSource = enumHas('source', source) ? source : 'portfolio_service';
     const priceEntries = [];
     const timestamp = new Date();
-    
+
     for (const [symbol, price] of Object.entries(prices)) {
-      const upper = symbol.toUpperCase();
-      if (price && price > 0 && this.schema.paths.symbol.enumValues.includes(upper)) {
-        priceEntries.push({
-          symbol: upper,
-          price: parseFloat(price),
-          timestamp,
-          source
-        });
-      }
+      const upper = String(symbol || '').toUpperCase();
+      if (!enumHas('symbol', upper)) continue;
+      const p = Number(price);
+      if (!Number.isFinite(p) || p <= 0) continue;
+
+      priceEntries.push({ symbol: upper, price: p, timestamp, source: safeSource });
     }
-    
+
     if (priceEntries.length > 0) {
       await this.insertMany(priceEntries);
-      console.log(`Stored ${priceEntries.length} price entries at ${timestamp.toISOString()}`);
+      // Optional: console.log(`Stored ${priceEntries.length} price entries at ${timestamp.toISOString()}`);
     }
-    
     return priceEntries.length;
   } catch (error) {
     console.error('Error storing prices:', error.message);
@@ -62,97 +76,86 @@ priceChangeSchema.statics.storePrices = async function(prices, source = 'portfol
   }
 };
 
-// Static method to get historical price
+// Historical lookup
 priceChangeSchema.statics.getHistoricalPrice = async function(symbol, hoursAgo = 12) {
   try {
-    const targetTime = new Date(Date.now() - (hoursAgo * 60 * 60 * 1000));
-    
-    const priceEntry = await this.findOne({
-      symbol: symbol.toUpperCase(),
+    const targetTime = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
+    const doc = await this.findOne({
+      symbol: String(symbol).toUpperCase(),
       timestamp: { $lte: targetTime }
     }).sort({ timestamp: -1 });
-    
-    return priceEntry ? priceEntry.price : null;
-  } catch (error) {
-    console.error(`Error getting historical price for ${symbol}:`, error.message);
+    return doc ? doc.price : null;
+  } catch (e) {
+    console.error(`Error getting historical price for ${symbol}:`, e.message);
     return null;
   }
 };
 
-// Static method to get price changes for multiple tokens
+// Price changes (ignores stables/NGNZ)
 priceChangeSchema.statics.getPriceChanges = async function(currentPrices, hoursAgo = 12) {
   try {
-    const volatileTokens = Object.keys(currentPrices).filter(token => 
-      !['USDT', 'USDC', 'NGNZ'].includes(token.toUpperCase())
-    );
-    
-    const priceChanges = {};
-    
-    for (const token of volatileTokens) {
-      const currentPrice = currentPrices[token];
-      const historicalPrice = await this.getHistoricalPrice(token, hoursAgo);
-      
-      if (currentPrice && historicalPrice && historicalPrice > 0) {
-        const absoluteChange = currentPrice - historicalPrice;
-        const percentageChange = ((currentPrice - historicalPrice) / historicalPrice) * 100;
-        
-        priceChanges[token.toUpperCase()] = {
-          priceChange: parseFloat(absoluteChange.toFixed(8)),
-          percentageChange: parseFloat(percentageChange.toFixed(2)),
-          oldPrice: parseFloat(historicalPrice.toFixed(8)),
-          newPrice: parseFloat(currentPrice.toFixed(8)),
+    const skip = new Set(['USDT', 'USDC', 'NGNZ']);
+    const out = {};
+
+    for (const token of Object.keys(currentPrices)) {
+      const sym = token.toUpperCase();
+      if (skip.has(sym)) continue;
+
+      const current = Number(currentPrices[token]);
+      const past = await this.getHistoricalPrice(sym, hoursAgo);
+
+      if (Number.isFinite(current) && Number.isFinite(past) && past > 0) {
+        const abs = current - past;
+        const pct = (abs / past) * 100;
+        out[sym] = {
+          priceChange: Number(abs.toFixed(8)),
+          percentageChange: Number(pct.toFixed(2)),
+          oldPrice: Number(past.toFixed(8)),
+          newPrice: Number(current.toFixed(8)),
           timeframe: `${hoursAgo}h`,
           dataAvailable: true
         };
       } else {
-        priceChanges[token.toUpperCase()] = {
+        out[sym] = {
           priceChange: 0,
           percentageChange: 0,
-          oldPrice: currentPrice || 0,
-          newPrice: currentPrice || 0,
+          oldPrice: current || 0,
+          newPrice: current || 0,
           timeframe: `${hoursAgo}h`,
           dataAvailable: false
         };
       }
     }
-    
-    return priceChanges;
-  } catch (error) {
-    console.error('Error calculating price changes:', error.message);
+    return out;
+  } catch (e) {
+    console.error('Error calculating price changes:', e.message);
     return {};
   }
 };
 
-// Static method to cleanup old price data
+// Cleanup
 priceChangeSchema.statics.cleanupOldPrices = async function(daysToKeep = 30) {
   try {
-    const cutoffDate = new Date(Date.now() - (daysToKeep * 24 * 60 * 60 * 1000));
-    
-    const result = await this.deleteMany({
-      timestamp: { $lt: cutoffDate }
-    });
-    
-    console.log(`Cleaned up ${result.deletedCount} old price entries older than ${daysToKeep} days`);
-    return result.deletedCount;
-  } catch (error) {
-    console.error('Error cleaning up old prices:', error.message);
-    throw error;
+    const cutoff = new Date(Date.now() - daysToKeep * 24 * 60 * 60 * 1000);
+    const res = await this.deleteMany({ timestamp: { $lt: cutoff } });
+    // Optional: console.log(`Cleaned up ${res.deletedCount} entries older than ${daysToKeep} days`);
+    return res.deletedCount;
+  } catch (e) {
+    console.error('Error cleaning up old prices:', e.message);
+    throw e;
   }
 };
 
-// Static method to get price history for a token
+// History window
 priceChangeSchema.statics.getPriceHistory = async function(symbol, hours = 24) {
   try {
-    const startTime = new Date(Date.now() - (hours * 60 * 60 * 1000));
-    
-    const history = await this.find({
-      symbol: symbol.toUpperCase(),
-      timestamp: { $gte: startTime }
+    const start = new Date(Date.now() - hours * 60 * 60 * 1000);
+    return await this.find({
+      symbol: String(symbol).toUpperCase(),
+      timestamp: { $gte: start }
     }).sort({ timestamp: 1 }).select('price timestamp -_id');
-    
-    return history;
-  } catch (error) {
-    console.error(`Error getting price history for ${symbol}:`, error.message);
+  } catch (e) {
+    console.error(`Error getting price history for ${symbol}:`, e.message);
     return [];
   }
 };
