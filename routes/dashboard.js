@@ -6,180 +6,186 @@ const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio'
 const { getCurrentRate } = require('../services/offramppriceservice');
 const logger = require('../utils/logger');
 
+// Aggressive caching for dashboard data
+const dashboardCache = new Map();
+const priceChangeCache = new Map();
+const DASHBOARD_CACHE_TTL = 30000; // 30 seconds
+const PRICE_CHANGE_CACHE_TTL = 300000; // 5 minutes
+
 /**
- * Calculate USD balances on-demand using cached prices
+ * Get cached user data with only required fields
  */
-async function calculateUSDBalances(user) {
+async function getCachedUser(userId) {
+  const cacheKey = `dashboard_user_${userId}`;
+  const cached = dashboardCache.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.timestamp) < DASHBOARD_CACHE_TTL) {
+    return cached.user;
+  }
+  
+  // Only select fields we actually need for dashboard
+  const user = await User.findById(userId).select(
+    'firstname lastname email username phonenumber avatarUrl avatarLastUpdated is2FAEnabled ' +
+    'kycLevel kycStatus failedLoginAttempts lastFailedLogin wallets ' +
+    'btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance avaxBalance ngnzBalance ' +
+    'btcPendingBalance ethPendingBalance solPendingBalance usdtPendingBalance usdcPendingBalance bnbPendingBalance maticPendingBalance avaxPendingBalance ngnzPendingBalance'
+  ).lean();
+  
+  if (user) {
+    dashboardCache.set(cacheKey, { user, timestamp: Date.now() });
+    setTimeout(() => dashboardCache.delete(cacheKey), DASHBOARD_CACHE_TTL);
+  }
+  
+  return user;
+}
+
+/**
+ * Get cached price changes
+ */
+async function getCachedPriceChanges(prices) {
+  const cacheKey = 'price_changes_1h';
+  const cached = priceChangeCache.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.timestamp) < PRICE_CHANGE_CACHE_TTL) {
+    return cached.changes;
+  }
+  
   try {
-    const tokens = Object.keys(SUPPORTED_TOKENS);
-    const prices = await getPricesWithCache(tokens);
-
-    const calculatedBalances = {};
-    let totalPortfolioUSD = 0;
-
-    for (const token of tokens) {
-      const tokenLower = token.toLowerCase();
-      const balanceField = `${tokenLower}Balance`;
-      const usdBalanceField = `${tokenLower}BalanceUSD`;
-
-      const tokenAmount = user[balanceField] || 0;
-      const tokenPrice = prices[token] || 0;
-      const usdValue = tokenAmount * tokenPrice;
-
-      calculatedBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
-      totalPortfolioUSD += usdValue;
-
-      if (logger && logger.debug) {
-        logger.debug(`Calculated USD balance for ${token}`, {
-          tokenAmount,
-          tokenPrice,
-          usdValue: calculatedBalances[usdBalanceField],
-          isNGNZ: token === 'NGNZ'
-        });
-      }
-    }
-
-    calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
-
-    if (logger && logger.debug) {
-      logger.debug('Calculated total portfolio balance', { 
-        totalPortfolioUSD: calculatedBalances.totalPortfolioBalance,
-        tokensProcessed: tokens.length,
-        includesNGNZ: !!prices.NGNZ
-      });
-    }
-
-    return calculatedBalances;
+    const changes = await PriceChange.getPriceChanges(prices, 1);
+    priceChangeCache.set(cacheKey, { changes, timestamp: Date.now() });
+    setTimeout(() => priceChangeCache.delete(cacheKey), PRICE_CHANGE_CACHE_TTL);
+    return changes;
   } catch (error) {
-    if (logger && logger.error) {
-      logger.error('Error calculating USD balances', { error: error.message });
-    } else {
-      console.error('Error calculating USD balances:', error.message);
-    }
-
-    const fallbackBalances = {};
-    const tokens = Object.keys(SUPPORTED_TOKENS);
-    for (const token of tokens) {
-      const tokenLower = token.toLowerCase();
-      const usdBalanceField = `${tokenLower}BalanceUSD`;
-      fallbackBalances[usdBalanceField] = 0;
-    }
-    fallbackBalances.totalPortfolioBalance = 0;
-    return fallbackBalances;
+    logger.error('Failed to get price changes:', error.message);
+    return {};
   }
 }
 
-// GET /dashboard - Get all dashboard data
+/**
+ * Optimized USD balance calculation - single loop through tokens
+ */
+function calculateUSDBalancesOptimized(user, prices) {
+  const tokens = Object.keys(SUPPORTED_TOKENS);
+  const calculatedBalances = {};
+  let totalPortfolioUSD = 0;
+
+  for (const token of tokens) {
+    const tokenLower = token.toLowerCase();
+    const balanceField = `${tokenLower}Balance`;
+    const usdBalanceField = `${tokenLower}BalanceUSD`;
+
+    const tokenAmount = user[balanceField] || 0;
+    const tokenPrice = prices[token] || 0;
+    const usdValue = tokenAmount * tokenPrice;
+
+    calculatedBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
+    totalPortfolioUSD += usdValue;
+  }
+
+  calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
+  return calculatedBalances;
+}
+
+/**
+ * Build portfolio balances in a single optimized loop
+ */
+function buildPortfolioBalances(user, prices, usdBalances, priceChanges) {
+  const portfolioBalances = {};
+  const allTokenSymbols = Object.keys(SUPPORTED_TOKENS);
+  
+  for (const token of allTokenSymbols) {
+    const tokenLower = token.toLowerCase();
+    const balanceField = `${tokenLower}Balance`;
+    const pendingBalanceField = `${tokenLower}PendingBalance`;
+    const usdBalanceField = `${tokenLower}BalanceUSD`;
+    
+    portfolioBalances[token] = {
+      balance: user[balanceField] || 0,
+      balanceUSD: usdBalances[usdBalanceField] || 0,
+      pendingBalance: user[pendingBalanceField] || 0,
+      currentPrice: prices[token] || 0,
+      priceChange12h: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token]?.percentageChange || null),
+      priceChangeData: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token] || null)
+    };
+  }
+  
+  return portfolioBalances;
+}
+
+// GET /dashboard - Optimized dashboard endpoint
 router.get('/dashboard', async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const userId = req.user.id;
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+    
+    // Check if we have a cached complete dashboard response
+    const dashboardCacheKey = `dashboard_complete_${userId}`;
+    const cachedDashboard = dashboardCache.get(dashboardCacheKey);
+    
+    if (cachedDashboard && (Date.now() - cachedDashboard.timestamp) < DASHBOARD_CACHE_TTL) {
+      logger.info('Dashboard cache hit', { userId, cacheAge: Date.now() - cachedDashboard.timestamp });
+      return res.status(200).json({ success: true, data: cachedDashboard.data });
     }
 
-    // Calculate KYC completion percentage
-    const kycPercentageMap = { 0: 0, 1: 33, 2: 67, 3: 100 };
-    const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
-
-    // Get supported token symbols (excluding NGNZ - we'll fetch it separately)
+    // Get token symbols (excluding NGNZ for separate fetch)
     const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
 
-    logger.info('Fetching dashboard data', { 
-      userId, 
-      requestedTokens: tokenSymbols 
-    });
-
-    // Fetch prices and NGNZ rate separately
-    const [tokenPricesResult, ngnzRateInfo] = await Promise.allSettled([
+    // Run all major operations in parallel
+    const [user, tokenPricesResult, ngnzRateInfo] = await Promise.allSettled([
+      getCachedUser(userId),
       getPricesWithCache(tokenSymbols),
       getCurrentRate()
     ]);
 
-    // Handle pricing data
+    // Handle results
+    if (user.status === 'rejected' || !user.value) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const userData = user.value;
     const prices = tokenPricesResult.status === 'fulfilled' ? tokenPricesResult.value : {};
     const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
 
-    // Add NGNZ price like the old route
-    if (ngnzRate && ngnzRate.finalPrice) {
+    // Add NGNZ price
+    if (ngnzRate?.finalPrice) {
       prices.NGNZ = ngnzRate.finalPrice;
     }
 
-    logger.info('Pricing data fetched', {
-      pricesCount: Object.keys(prices).length,
-      hasNGNZ: !!prices.NGNZ,
-      priceSymbols: Object.keys(prices)
-    });
+    // Run USD calculations and price changes in parallel
+    const [usdBalances, priceChanges] = await Promise.allSettled([
+      Promise.resolve(calculateUSDBalancesOptimized(userData, prices)),
+      getCachedPriceChanges(prices)
+    ]);
 
-    // Store current prices using PriceChange model
-    if (prices && Object.keys(prices).length > 0) {
-      try {
-        await PriceChange.storePrices(prices, 'portfolio_service');
-        logger.debug('Current prices stored successfully');
-      } catch (priceStoreError) {
-        logger.error('Failed to store current prices:', priceStoreError.message);
-      }
-    }
+    const calculatedUSDBalances = usdBalances.status === 'fulfilled' ? usdBalances.value : { totalPortfolioBalance: 0 };
+    const changes1Hour = priceChanges.status === 'fulfilled' ? priceChanges.value : {};
 
-    // Calculate 1-hour price changes using PriceChange model (but keep field names as 12h for frontend compatibility)
-    let changes1Hour = {};
-    try {
-      changes1Hour = await PriceChange.getPriceChanges(prices, 1); // 1 hour instead of 12
-      logger.info('1-hour price changes calculated', {
-        changesCount: Object.keys(changes1Hour).length,
-        tokensWithData: Object.keys(changes1Hour).filter(k => changes1Hour[k].dataAvailable).length
-      });
-    } catch (priceChangeError) {
-      logger.error('Failed to calculate 1-hour price changes:', priceChangeError.message);
-    }
+    // Build portfolio balances (optimized single loop)
+    const portfolioBalances = buildPortfolioBalances(userData, prices, calculatedUSDBalances, changes1Hour);
 
-    // Calculate USD balances using portfolio service prices
-    const calculatedUSDBalances = await calculateUSDBalances(user);
+    // Calculate KYC completion percentage
+    const kycPercentageMap = { 0: 0, 1: 33, 2: 67, 3: 100 };
+    const kycCompletionPercentage = kycPercentageMap[userData.kycLevel] || 0;
 
-    // Build portfolio balances data for all supported tokens
-    const portfolioBalances = {};
-    const allTokenSymbols = Object.keys(SUPPORTED_TOKENS);
-    
-    for (const token of allTokenSymbols) {
-      const tokenLower = token.toLowerCase();
-      const balanceField = `${tokenLower}Balance`;
-      const pendingBalanceField = `${tokenLower}PendingBalance`;
-      const usdBalanceField = `${tokenLower}BalanceUSD`;
-      
-      portfolioBalances[token] = {
-        balance: user[balanceField] || 0,
-        balanceUSD: calculatedUSDBalances[usdBalanceField] || 0,
-        pendingBalance: user[pendingBalanceField] || 0,
-        currentPrice: prices[token] || 0,
-        priceChange12h: changes1Hour[token] ? changes1Hour[token].percentageChange : null, // Frontend expects priceChange12h but we calculate 1h
-        priceChangeData: changes1Hour[token] || null
-      };
-      
-      // Special handling for NGNZ and stablecoins (no price changes)
-      if (['NGNZ', 'USDT', 'USDC'].includes(token)) {
-        portfolioBalances[token].priceChange12h = null; // Frontend expects priceChange12h field name
-        portfolioBalances[token].priceChangeData = null;
-      }
-    }
-
-    // Prepare dashboard response
+    // Build optimized dashboard response
     const dashboardData = {
       profile: {
-        id: user.id,
-        firstname: user.firstname,
-        lastname: user.lastname,
-        email: user.email,
-        username: user.username,
-        phonenumber: user.phonenumber,
-        avatarUrl: user.avatarUrl,
-        avatarLastUpdated: user.avatarLastUpdated,
-        is2FAEnabled: user.is2FAEnabled
+        id: userData.id,
+        firstname: userData.firstname,
+        lastname: userData.lastname,
+        email: userData.email,
+        username: userData.username,
+        phonenumber: userData.phonenumber,
+        avatarUrl: userData.avatarUrl,
+        avatarLastUpdated: userData.avatarLastUpdated,
+        is2FAEnabled: userData.is2FAEnabled
       },
       kyc: {
-        level: user.kycLevel,
-        status: user.kycStatus,
+        level: userData.kycLevel,
+        status: userData.kycStatus,
         completionPercentage: kycCompletionPercentage,
-        limits: user.getKycLimits()
+        limits: userData.getKycLimits ? userData.getKycLimits() : null
       },
       portfolio: {
         totalPortfolioBalance: calculatedUSDBalances.totalPortfolioBalance,
@@ -187,7 +193,7 @@ router.get('/dashboard', async (req, res) => {
       },
       market: {
         prices: prices,
-        priceChanges12h: changes1Hour, // Frontend expects priceChanges12h but we calculate 1h changes
+        priceChanges12h: changes1Hour,
         ngnzExchangeRate: ngnzRate ? {
           rate: ngnzRate.finalPrice,
           lastUpdated: ngnzRate.lastUpdated,
@@ -195,24 +201,30 @@ router.get('/dashboard', async (req, res) => {
         } : null,
         pricesLastUpdated: tokenPricesResult.status === 'fulfilled' ? new Date().toISOString() : null
       },
-      wallets: user.wallets,
+      wallets: userData.wallets,
       security: {
-        is2FAEnabled: user.is2FAEnabled,
-        failedLoginAttempts: user.failedLoginAttempts,
-        lastFailedLogin: user.lastFailedLogin
+        is2FAEnabled: userData.is2FAEnabled,
+        failedLoginAttempts: userData.failedLoginAttempts,
+        lastFailedLogin: userData.lastFailedLogin
       }
     };
 
-    // Log dashboard performance
-    logger.info('Dashboard data prepared successfully', {
+    // Cache the complete dashboard response
+    dashboardCache.set(dashboardCacheKey, { 
+      data: dashboardData, 
+      timestamp: Date.now() 
+    });
+    setTimeout(() => dashboardCache.delete(dashboardCacheKey), DASHBOARD_CACHE_TTL);
+
+    // Log performance metrics
+    const processingTime = Date.now() - startTime;
+    logger.info('Dashboard optimized fetch completed', {
       userId,
-      totalTokens: allTokenSymbols.length,
+      processingTime,
+      totalTokens: Object.keys(SUPPORTED_TOKENS).length,
       pricesRetrieved: Object.keys(prices).length,
-      changes1hRetrieved: Object.keys(changes1Hour).length, // Updated log message for clarity
-      ngnzPrice: prices.NGNZ,
       totalPortfolioUSD: calculatedUSDBalances.totalPortfolioBalance,
-      tokensWithChanges: Object.keys(changes1Hour).filter(k => changes1Hour[k].dataAvailable),
-      note: 'priceChange12h fields contain 1-hour changes for frontend compatibility'
+      cacheUsed: false
     });
 
     res.status(200).json({ success: true, data: dashboardData });
@@ -221,7 +233,8 @@ router.get('/dashboard', async (req, res) => {
     logger.error('Dashboard fetch error', { 
       error: err.message, 
       stack: err.stack,
-      userId: req.user?.id 
+      userId: req.user?.id,
+      processingTime: Date.now() - startTime
     });
     
     res.status(500).json({ 
@@ -232,7 +245,9 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// Store prices endpoint (for manual price storage)
+// REMOVED: Automatic price storage from dashboard fetch (moved to separate background job)
+
+// Store prices endpoint - NOW ASYNC (don't block dashboard)
 router.post('/store-prices', async (req, res) => {
   try {
     const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
@@ -245,103 +260,109 @@ router.post('/store-prices', async (req, res) => {
     const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
     const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
     
-    if (ngnzRate && ngnzRate.finalPrice) {
+    if (ngnzRate?.finalPrice) {
       prices.NGNZ = ngnzRate.finalPrice;
     }
 
-    const storedCount = await PriceChange.storePrices(prices, 'portfolio_service');
+    // Store prices asynchronously
+    PriceChange.storePrices(prices, 'manual_store').catch(error => {
+      logger.error('Background price storage failed:', error.message);
+    });
     
     res.status(200).json({ 
       success: true, 
-      message: 'Prices stored successfully', 
-      storedCount, 
-      prices 
+      message: 'Price storage initiated', 
+      pricesCount: Object.keys(prices).length
     });
   } catch (error) {
     logger.error('Store prices error', { error: error.message });
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to store prices', 
+      message: 'Failed to initiate price storage', 
       error: error.message 
     });
   }
 });
 
-// Debug route to test price changes
-router.get('/debug-price-changes', async (req, res) => {
-  try {
-    const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
-    
-    // Get current prices
-    const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
-      getPricesWithCache(tokenSymbols),
-      getCurrentRate()
-    ]);
-
-    const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
-    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
-    
-    if (ngnzRate && ngnzRate.finalPrice) {
-      prices.NGNZ = ngnzRate.finalPrice;
+// Lightweight health check endpoint
+router.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    timestamp: new Date().toISOString(),
+    cacheStats: {
+      dashboardEntries: dashboardCache.size,
+      priceChangeEntries: priceChangeCache.size
     }
-
-    // Test different timeframes
-    const changes1h = await PriceChange.getPriceChanges(prices, 1);
-    const changes12h = await PriceChange.getPriceChanges(prices, 12);
-    const changes24h = await PriceChange.getPriceChanges(prices, 24);
-
-    // Get price history count for each token
-    const historyStats = {};
-    for (const token of Object.keys(SUPPORTED_TOKENS)) {
-      const count = await PriceChange.countDocuments({ symbol: token.toUpperCase() });
-      const latest = await PriceChange.findOne({ symbol: token.toUpperCase() }).sort({ timestamp: -1 });
-      historyStats[token] = {
-        recordCount: count,
-        latestTimestamp: latest ? latest.timestamp : null,
-        latestPrice: latest ? latest.price : null
-      };
-    }
-
-    res.json({
-      success: true,
-      data: {
-        currentPrices: prices,
-        priceChanges: {
-          oneHour: changes1h,
-          twelveHours: changes12h,
-          twentyFourHours: changes24h
-        },
-        historyStats,
-        analysis: {
-          totalTokens: Object.keys(prices).length,
-          changes1hAvailable: Object.keys(changes1h).filter(k => changes1h[k].dataAvailable).length,
-          changes12hAvailable: Object.keys(changes12h).filter(k => changes12h[k].dataAvailable).length,
-          changes24hAvailable: Object.keys(changes24h).filter(k => changes24h[k].dataAvailable).length
-        }
-      }
-    });
-    
-  } catch (error) {
-    logger.error('Debug price changes error', { error: error.message });
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
+  });
 });
 
-// Cleanup old prices endpoint (for maintenance)
+// Debug route - only for development
+if (process.env.NODE_ENV === 'development') {
+  router.get('/debug-price-changes', async (req, res) => {
+    try {
+      const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
+      
+      const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
+        getPricesWithCache(tokenSymbols),
+        getCurrentRate()
+      ]);
+
+      const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
+      const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
+      
+      if (ngnzRate?.finalPrice) {
+        prices.NGNZ = ngnzRate.finalPrice;
+      }
+
+      const [changes1h, changes12h, changes24h] = await Promise.allSettled([
+        PriceChange.getPriceChanges(prices, 1),
+        PriceChange.getPriceChanges(prices, 12),
+        PriceChange.getPriceChanges(prices, 24)
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          currentPrices: prices,
+          priceChanges: {
+            oneHour: changes1h.status === 'fulfilled' ? changes1h.value : {},
+            twelveHours: changes12h.status === 'fulfilled' ? changes12h.value : {},
+            twentyFourHours: changes24h.status === 'fulfilled' ? changes24h.value : {}
+          },
+          cacheStats: {
+            dashboardEntries: dashboardCache.size,
+            priceChangeEntries: priceChangeCache.size
+          }
+        }
+      });
+      
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+}
+
+// Cleanup old prices endpoint
 router.post('/cleanup-prices', async (req, res) => {
   try {
     const daysToKeep = req.body.daysToKeep || 30;
-    const deletedCount = await PriceChange.cleanupOldPrices(daysToKeep);
+    
+    // Run cleanup in background
+    PriceChange.cleanupOldPrices(daysToKeep)
+      .then(deletedCount => {
+        logger.info('Price cleanup completed', { deletedCount, daysKept: daysToKeep });
+      })
+      .catch(error => {
+        logger.error('Price cleanup failed:', error.message);
+      });
     
     res.json({
       success: true,
-      message: `Cleaned up old price data`,
-      deletedCount,
-      daysKept: daysToKeep
+      message: 'Price cleanup initiated',
+      daysToKeep: daysToKeep
     });
   } catch (error) {
     logger.error('Cleanup prices error', { error: error.message });
@@ -351,5 +372,24 @@ router.post('/cleanup-prices', async (req, res) => {
     });
   }
 });
+
+// Clean up caches periodically
+setInterval(() => {
+  const now = Date.now();
+  
+  // Clean dashboard cache
+  for (const [key, entry] of dashboardCache.entries()) {
+    if (now - entry.timestamp > DASHBOARD_CACHE_TTL) {
+      dashboardCache.delete(key);
+    }
+  }
+  
+  // Clean price change cache
+  for (const [key, entry] of priceChangeCache.entries()) {
+    if (now - entry.timestamp > PRICE_CHANGE_CACHE_TTL) {
+      priceChangeCache.delete(key);
+    }
+  }
+}, 60000); // Clean every minute
 
 module.exports = router;
