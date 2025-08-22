@@ -52,8 +52,8 @@ async function getCachedUser(userId) {
   }
   
   const user = await User.findById(userId).select(
-    'twoFASecret is2FAEnabled passwordpin btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance avaxBalance ngnzBalance portfolioLastUpdated lastBalanceUpdate'
-  ).lean(); // Use lean() for better performance
+    'twoFASecret is2FAEnabled passwordpin ngnzBalance lastBalanceUpdate'
+  ).lean(); // Use lean() for better performance, only select what we need
   
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
@@ -65,115 +65,7 @@ async function getCachedUser(userId) {
 }
 
 /**
- * INTERNAL: Reserve user balance for pending transactions
- * @param {String} userId - User ID
- * @param {String} currency - Currency code  
- * @param {Number} amount - Amount to reserve
- * @returns {Promise<Object>} Updated user
- */
-async function reserveUserBalance(userId, currency, amount) {
-  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
-    throw new Error('Invalid parameters for balance reservation');
-  }
-  
-  try {
-    const currencyUpper = currency.toUpperCase();
-    
-    // Validate currency is supported
-    if (!SUPPORTED_TOKENS[currencyUpper]) {
-      throw new Error(`Unsupported currency: ${currencyUpper}`);
-    }
-    
-    // Map currency to correct pending balance field
-    const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
-    const pendingBalanceKey = `${currencyLower}PendingBalance`;
-    
-    const update = { 
-      $inc: { [pendingBalanceKey]: amount },
-      $set: { lastBalanceUpdate: new Date() }
-    };
-    
-    const user = await User.findByIdAndUpdate(
-      userId, 
-      update, 
-      { new: true, runValidators: true }
-    );
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    // Clear cache
-    userCache.delete(`user_${userId}`);
-    
-    logger.info(`Reserved ${amount} ${currencyUpper} for user ${userId}`);
-    return user;
-  } catch (error) {
-    logger.error(`Failed to reserve balance for user ${userId}`, { 
-      currency, 
-      amount, 
-      error: error.message 
-    });
-    throw error;
-  }
-}
-
-/**
- * INTERNAL: Release reserved user balance
- * @param {String} userId - User ID
- * @param {String} currency - Currency code
- * @param {Number} amount - Amount to release
- * @returns {Promise<Object>} Updated user
- */
-async function releaseReservedBalance(userId, currency, amount) {
-  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
-    throw new Error('Invalid parameters for balance release');
-  }
-  
-  try {
-    const currencyUpper = currency.toUpperCase();
-    
-    // Validate currency is supported
-    if (!SUPPORTED_TOKENS[currencyUpper]) {
-      throw new Error(`Unsupported currency: ${currencyUpper}`);
-    }
-    
-    // Map currency to correct pending balance field
-    const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
-    const pendingBalanceKey = `${currencyLower}PendingBalance`;
-    
-    const update = { 
-      $inc: { [pendingBalanceKey]: -amount },
-      $set: { lastBalanceUpdate: new Date() }
-    };
-    
-    const user = await User.findByIdAndUpdate(
-      userId, 
-      update, 
-      { new: true, runValidators: true }
-    );
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    // Clear cache
-    userCache.delete(`user_${userId}`);
-    
-    logger.info(`Released ${amount} ${currencyUpper} for user ${userId}`);
-    return user;
-  } catch (error) {
-    logger.error(`Failed to release reserved balance for user ${userId}`, { 
-      currency, 
-      amount, 
-      error: error.message 
-    });
-    throw error;
-  }
-}
-
-/**
- * INTERNAL: Update user balance directly (for completed transactions)
+ * SIMPLIFIED: Direct balance update only (no reservations, no portfolio updates)
  * @param {String} userId - User ID
  * @param {String} currency - Currency code
  * @param {Number} amount - Amount to add/subtract (negative for deductions)
@@ -196,14 +88,10 @@ async function updateUserBalance(userId, currency, amount) {
     const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
     const balanceField = `${currencyLower}Balance`;
     
-    // Build update object - only update token balance
+    // Simple atomic update
     const updateFields = {
-      $inc: {
-        [balanceField]: amount
-      },
-      $set: {
-        lastBalanceUpdate: new Date()
-      }
+      $inc: { [balanceField]: amount },
+      $set: { lastBalanceUpdate: new Date() }
     };
     
     const user = await User.findByIdAndUpdate(
@@ -226,44 +114,6 @@ async function updateUserBalance(userId, currency, amount) {
     logger.error(`Failed to update balance for user ${userId}`, { 
       currency, 
       amount, 
-      error: error.message 
-    });
-    throw error;
-  }
-}
-
-/**
- * INTERNAL: Simple portfolio balance update (just sets portfolioLastUpdated)
- * @param {String} userId - User ID
- * @returns {Promise<Object>} Updated user
- */
-async function updateUserPortfolioBalance(userId) {
-  if (!userId) {
-    throw new Error('User ID is required');
-  }
-  
-  try {
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { 
-        $set: { 
-          portfolioLastUpdated: new Date()
-        }
-      },
-      { new: true, runValidators: true }
-    );
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    // Clear cache
-    userCache.delete(`user_${userId}`);
-    
-    logger.info(`Updated portfolio timestamp for user ${userId}`);
-    return user;
-  } catch (error) {
-    logger.error(`Failed to update portfolio for user ${userId}`, { 
       error: error.message 
     });
     throw error;
@@ -428,12 +278,11 @@ async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) 
 }
 
 /**
- * Main airtime purchase endpoint - OPTIMIZED BUT MAINTAINING ORIGINAL RESPONSE STRUCTURE
+ * STREAMLINED airtime purchase endpoint - ATOMIC IMMEDIATE DEBIT
  */
 router.post('/purchase', async (req, res) => {
   const startTime = Date.now();
-  let balanceActionTaken = false;
-  let balanceActionType = null; // 'reserved' or 'updated'
+  let balanceDeducted = false;
   let transactionCreated = false;
   let pendingTransaction = null;
   let ebillsResponse = null;
@@ -461,9 +310,8 @@ router.post('/purchase', async (req, res) => {
     const currency = 'NGNZ'; // UPDATED: NGNB to NGNZ
     
     // Step 2: Get user data (with caching) and run validations in parallel
-    const [user, pendingTransactions, kycValidation] = await Promise.all([
+    const [user, kycValidation] = await Promise.all([
       getCachedUser(userId),
-      BillTransaction.getUserPendingTransactions(userId, 'airtime', 5),
       validateTransactionLimit(userId, amount, 'NGNZ', 'AIRTIME')
     ]);
     
@@ -530,42 +378,29 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-
-    // Step 5: Check for existing pending transactions
-    if (pendingTransactions.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: 'PENDING_TRANSACTION_EXISTS',
-        message: 'You already have a pending airtime purchase. Please wait for it to complete.'
-      });
-    }
     
-    // Step 6: Generate unique IDs
+    // Step 5: Generate unique IDs
     const timestamp = Date.now();
     const randomSuffix = Math.random().toString(36).substring(2, 8);
     const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
     
-    // Step 7: Validate balance
-    const balanceValidation = await validateUserBalance(userId, currency, amount, {
-      includeBalanceDetails: true,
-      logValidation: true
-    });
-    
-    if (!balanceValidation.success) {
+    // Step 6: Validate balance (simplified - just check cached user balance)
+    const availableBalance = user.ngnzBalance || 0;
+    if (availableBalance < amount) {
       return res.status(400).json({
         success: false,
         error: 'INSUFFICIENT_BALANCE',
-        message: balanceValidation.message,
+        message: `Insufficient NGNZ balance. Available: ${availableBalance}, Required: ${amount}`,
         details: {
-          availableBalance: balanceValidation.availableBalance,
+          availableBalance,
           requiredAmount: amount,
           currency: currency
         }
       });
     }
 
-    // Step 8: Create transaction record - UPDATED: NGNZ references
+    // Step 7: Create minimal transaction record
     const initialTransactionData = {
       orderId: uniqueOrderId,
       status: 'initiated-api',
@@ -593,7 +428,6 @@ router.post('/purchase', async (req, res) => {
       customerPhone: phone,
       userId: userId,
       timestamp: new Date(),
-      balanceReserved: false,
       twoFactorValidated: true,
       passwordPinValidated: true,
       kycValidated: true
@@ -602,9 +436,9 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`); // UPDATED: NGNB to NGNZ
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC`); // UPDATED: NGNB to NGNZ
     
-    // Step 9: Call eBills API
+    // Step 8: Call eBills API
     try {
       ebillsResponse = await callEBillsAPI({
         phone, amount, service_id,
@@ -629,134 +463,69 @@ router.post('/purchase', async (req, res) => {
     }
     
     // =====================================
-    // STEP 10: HANDLE BALANCE BASED ON STATUS - USING INTERNAL FUNCTIONS
+    // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
     // =====================================
     const ebillsStatus = ebillsResponse.data.status;
     
-    if (ebillsStatus === 'completed-api') {
-      // Transaction completed immediately - UPDATE BALANCE DIRECTLY
-      logger.info(`✅ Transaction completed immediately, updating balance directly for ${finalRequestId}`);
+    // Deduct balance immediately regardless of eBills status (as long as API call succeeded)
+    logger.info(`✅ eBills API succeeded (${ebillsStatus}), deducting balance immediately for ${finalRequestId}`);
+    
+    try {
+      await updateUserBalance(userId, currency, -amount);
+      balanceDeducted = true;
       
-      try {
-        // Deduct balance directly (negative amount) - USING INTERNAL FUNCTION
-        await updateUserBalance(userId, currency, -amount);
-        
-        // Update user's portfolio timestamp - USING INTERNAL FUNCTION
-        await updateUserPortfolioBalance(userId);
-        
-        balanceActionTaken = true;
-        balanceActionType = 'updated';
-        
-        logger.info(`✅ Balance updated directly: -${amount} ${currency} for user ${userId}`);
-        
-      } catch (balanceError) {
-        logger.error('CRITICAL: Balance update failed for completed transaction:', {
-          request_id: finalRequestId,
-          userId,
-          currency,
-          amount,
-          error: balanceError.message,
+      logger.info(`✅ Balance deducted immediately: -${amount} ${currency} for user ${userId}`);
+      
+    } catch (balanceError) {
+      logger.error('CRITICAL: Balance deduction failed after successful eBills API call:', {
+        request_id: finalRequestId,
+        userId,
+        currency,
+        amount,
+        error: balanceError.message,
+        ebills_order_id: ebillsResponse.data?.order_id
+      });
+      
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+        status: 'failed',
+        processingErrors: [{
+          error: `Balance deduction failed after eBills success: ${balanceError.message}`,
+          timestamp: new Date(),
+          phase: 'balance_deduction',
           ebills_order_id: ebillsResponse.data?.order_id
-        });
-        
-        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
-          status: 'failed',
-          processingErrors: [{
-            error: `Balance update failed for completed transaction: ${balanceError.message}`,
-            timestamp: new Date(),
-            phase: 'balance_update',
-            ebills_order_id: ebillsResponse.data?.order_id
-          }]
-        });
-        
-        return res.status(500).json({
-          success: false,
-          error: 'BALANCE_UPDATE_FAILED',
-          message: 'eBills transaction succeeded but balance update failed. Please contact support immediately.',
-          details: {
-            ebills_order_id: ebillsResponse.data?.order_id,
-            ebills_status: ebillsResponse.data?.status,
-            amount: amount,
-            phone: phone
-          }
-        });
-      }
+        }]
+      });
       
-    } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
-      // Transaction pending - RESERVE BALANCE - USING INTERNAL FUNCTION
-      logger.info(`⏳ Transaction pending (${ebillsStatus}), reserving balance for ${finalRequestId}`);
-      
-      try {
-        await reserveUserBalance(userId, currency, amount);
-        await pendingTransaction.markBalanceReserved();
-        
-        balanceActionTaken = true;
-        balanceActionType = 'reserved';
-        
-        logger.info(`✅ Balance reserved: ${amount} ${currency} for user ${userId}`);
-        
-      } catch (balanceError) {
-        logger.error('CRITICAL: Balance reservation failed after successful eBills API call:', {
-          request_id: finalRequestId,
-          userId,
-          currency,
-          amount,
-          error: balanceError.message,
-          ebills_order_id: ebillsResponse.data?.order_id
-        });
-        
-        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
-          status: 'failed',
-          processingErrors: [{
-            error: `Balance reservation failed after eBills success: ${balanceError.message}`,
-            timestamp: new Date(),
-            phase: 'balance_reservation',
-            ebills_order_id: ebillsResponse.data?.order_id
-          }]
-        });
-        
-        return res.status(500).json({
-          success: false,
-          error: 'BALANCE_RESERVATION_FAILED',
-          message: 'eBills transaction succeeded but balance reservation failed. Please contact support immediately.',
-          details: {
-            ebills_order_id: ebillsResponse.data?.order_id,
-            ebills_status: ebillsResponse.data?.status,
-            amount: amount,
-            phone: phone
-          }
-        });
-      }
-      
-    } else {
-      // Handle other statuses (refunded, failed, etc.)
-      logger.warn(`Unexpected eBills status: ${ebillsStatus} for ${finalRequestId}`);
+      return res.status(500).json({
+        success: false,
+        error: 'BALANCE_UPDATE_FAILED',
+        message: 'eBills transaction succeeded but balance deduction failed. Please contact support immediately.',
+        details: {
+          ebills_order_id: ebillsResponse.data?.order_id,
+          ebills_status: ebillsResponse.data?.status,
+          amount: amount,
+          phone: phone
+        }
+      });
     }
     
-    // Step 11: Update transaction with eBills response
+    // Step 10: Update transaction with eBills response
     const updateData = {
       orderId: ebillsResponse.data.order_id.toString(),
       status: ebillsResponse.data.status,
       productName: ebillsResponse.data.product_name,
+      balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
         ...initialTransactionData.metaData,
         service_name: ebillsResponse.data.service_name,
         amount_charged: ebillsResponse.data.amount_charged,
-        balance_action_taken: balanceActionTaken,
-        balance_action_type: balanceActionType,
+        balance_action_taken: true,
+        balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
         ebills_initial_balance: ebillsResponse.data.initial_balance,
         ebills_final_balance: ebillsResponse.data.final_balance
       }
     };
-    
-    // Set balance status based on action taken
-    if (balanceActionType === 'reserved') {
-      updateData.balanceReserved = true;
-    } else if (balanceActionType === 'updated') {
-      updateData.balanceReserved = false;
-      updateData.balanceCompleted = true;
-    }
     
     const finalTransaction = await BillTransaction.findByIdAndUpdate(
       pendingTransaction._id,
@@ -764,10 +533,10 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`📋 Transaction updated: ${ebillsResponse.data.order_id} | ${ebillsResponse.data.status} | Balance: ${balanceActionType || 'none'}`);
+    logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
-    // Step 12: Return response based on status - UPDATED: NGNZ references
-    if (ebillsResponse.data.status === 'completed-api') {
+    // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
+    if (ebillsStatus === 'completed-api') {
       return res.status(200).json({
         success: true,
         message: 'Airtime purchase completed successfully',
@@ -786,7 +555,7 @@ router.post('/purchase', async (req, res) => {
           }
         }
       });
-    } else if (['initiated-api', 'processing-api'].includes(ebillsResponse.data.status)) {
+    } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
       return res.status(202).json({
         success: true,
         message: 'Airtime purchase is being processed',
@@ -797,23 +566,23 @@ router.post('/purchase', async (req, res) => {
           amount: ebillsResponse.data.amount,
           service_name: ebillsResponse.data.service_name,
           request_id: finalRequestId,
-          balance_action: 'reserved',
+          balance_action: 'updated_directly', // Changed from 'reserved' since we deduct immediately
           payment_details: {
             currency: currency,
             ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
             amount_usd: (amount * (1 / 1554.42)).toFixed(2)
           }
         },
-        note: 'You will receive a notification when the transaction is completed'
+        note: 'Balance deducted immediately. You will receive a notification when the transaction is completed'
       });
     } else {
       return res.status(200).json({
         success: true,
-        message: `Airtime purchase status: ${ebillsResponse.data.status}`,
+        message: `Airtime purchase status: ${ebillsStatus}`,
         data: {
           ...ebillsResponse.data,
           request_id: finalRequestId,
-          balance_action: balanceActionType || 'none',
+          balance_action: 'updated_directly',
           payment_details: {
             currency: currency,
             ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
@@ -830,18 +599,14 @@ router.post('/purchase', async (req, res) => {
       processingTime: Date.now() - startTime
     });
 
-    // Cleanup based on what action was taken - USING INTERNAL FUNCTIONS
-    if (balanceActionTaken && balanceActionType === 'reserved') {
+    // SIMPLIFIED CLEANUP: If balance was deducted but something failed, reverse it
+    if (balanceDeducted) {
       try {
-        await releaseReservedBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0); // UPDATED: NGNB to NGNZ
-        logger.info('🔄 Released reserved NGNZ balance due to error'); // UPDATED: NGNB to NGNZ
-      } catch (releaseError) {
-        logger.error('❌ Failed to release reserved NGNZ balance after error:', releaseError.message); // UPDATED: NGNB to NGNZ
+        await updateUserBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0); // Add back
+        logger.info('🔄 Reversed balance deduction due to error');
+      } catch (reverseError) {
+        logger.error('❌ CRITICAL: Failed to reverse balance deduction after error:', reverseError.message);
       }
-    } else if (balanceActionTaken && balanceActionType === 'updated') {
-      // For direct balance updates, we'd need to reverse the transaction
-      // This is more complex and should be handled manually
-      logger.error('❌ CRITICAL: Direct balance update completed but transaction failed. Manual intervention required.');
     }
 
     if (transactionCreated && pendingTransaction) {
