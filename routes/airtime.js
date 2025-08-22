@@ -40,9 +40,6 @@ const TOKEN_FIELD_MAPPING = {
   NGNZ: 'ngnz'
 };
 
-// Pre-compile validation patterns
-const SUPPORTED_NETWORKS = new Set(['mtn', 'airtel', 'glo', '9mobile']);
-
 /**
  * Optimized user data retrieval with caching
  */
@@ -304,13 +301,13 @@ function validatePhoneNumber(phone) {
 }
 
 /**
- * Optimized validation - runs most validations in parallel
+ * Sanitize and validate airtime request body
  */
-async function validateAirtimeRequestOptimized(body, userId) {
+function validateAirtimeRequest(body) {
   const errors = [];
   const sanitized = {};
   
-  // Fast synchronous validations first
+  // Phone validation
   if (!body.phone) {
     errors.push('Phone number is required');
   } else {
@@ -320,15 +317,17 @@ async function validateAirtimeRequestOptimized(body, userId) {
     }
   }
   
+  // Service ID validation
   if (!body.service_id) {
     errors.push('Service ID is required');
   } else {
     sanitized.service_id = String(body.service_id).toLowerCase().trim();
-    if (!SUPPORTED_NETWORKS.has(sanitized.service_id)) {
+    if (!['mtn', 'airtel', 'glo', '9mobile'].includes(sanitized.service_id)) {
       errors.push('Invalid service ID. Must be: mtn, airtel, glo, or 9mobile');
     }
   }
   
+  // Amount validation - UPDATED: Minimum changed to ₦50 and references NGNZ
   if (body.amount === undefined || body.amount === null || body.amount === '') {
     errors.push('Amount is required');
   } else {
@@ -340,23 +339,25 @@ async function validateAirtimeRequestOptimized(body, userId) {
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
       
-      const minAmount = 50;
+      const minAmount = 50; // UPDATED: Minimum changed from 100 to 50
       const maxAmount = 50000;
       if (sanitized.amount < minAmount) {
-        errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNZ`);
+        errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNZ`); // UPDATED: NGNB to NGNZ
       }
       if (sanitized.amount > maxAmount) {
-        errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNZ`);
+        errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNZ`); // UPDATED: NGNB to NGNZ
       }
     }
   }
   
+  // 2FA validation
   if (!body.twoFactorCode?.trim()) {
     errors.push('Two-factor authentication code is required');
   } else {
     sanitized.twoFactorCode = String(body.twoFactorCode).trim();
   }
   
+  // Password PIN validation
   if (!body.passwordpin?.trim()) {
     errors.push('Password PIN is required');
   } else {
@@ -366,38 +367,13 @@ async function validateAirtimeRequestOptimized(body, userId) {
     }
   }
   
-  sanitized.payment_currency = 'NGNZ';
+  sanitized.payment_currency = 'NGNZ'; // UPDATED: NGNB to NGNZ
   
-  // Early return if basic validation fails
-  if (errors.length > 0) {
-    return { isValid: false, errors, sanitized };
-  }
-  
-  // Run expensive validations in parallel
-  try {
-    const [user, pendingTransactions, kycValidation] = await Promise.all([
-      getCachedUser(userId),
-      BillTransaction.getUserPendingTransactions(userId, 'airtime', 5),
-      validateTransactionLimit(userId, sanitized.amount, 'NGNZ', 'AIRTIME')
-    ]);
-    
-    return {
-      isValid: true,
-      errors: [],
-      sanitized,
-      user,
-      pendingTransactions,
-      kycValidation
-    };
-    
-  } catch (error) {
-    logger.error('Validation error:', error);
-    return {
-      isValid: false,
-      errors: ['Validation failed due to system error'],
-      sanitized
-    };
-  }
+  return {
+    isValid: errors.length === 0,
+    errors,
+    sanitized
+  };
 }
 
 /**
@@ -471,8 +447,8 @@ router.post('/purchase', async (req, res) => {
       passwordpin: '[REDACTED]'
     });
     
-    // Step 1: Optimized validation (now runs in parallel)
-    const validation = await validateAirtimeRequestOptimized(requestBody, userId);
+    // Step 1: Validate request
+    const validation = validateAirtimeRequest(requestBody);
     if (!validation.isValid) {
       return res.status(400).json({
         success: false,
@@ -482,10 +458,15 @@ router.post('/purchase', async (req, res) => {
     }
     
     const { phone, service_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
-    const { user, pendingTransactions, kycValidation } = validation;
-    const currency = 'NGNZ';
+    const currency = 'NGNZ'; // UPDATED: NGNB to NGNZ
     
-    // Step 2: Check cached results from parallel validation
+    // Step 2: Get user data (with caching) and run validations in parallel
+    const [user, pendingTransactions, kycValidation] = await Promise.all([
+      getCachedUser(userId),
+      BillTransaction.getUserPendingTransactions(userId, 'airtime', 5),
+      validateTransactionLimit(userId, amount, 'NGNZ', 'AIRTIME')
+    ]);
+    
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -513,6 +494,7 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ 2FA validation successful for airtime purchase', { userId });
 
+    // Step 3: Validate password pin
     if (!user.passwordpin) {
       return res.status(400).json({
         success: false,
@@ -534,7 +516,7 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ Password PIN validation successful for airtime purchase', { userId });
 
-    // Step 3: Check KYC from parallel validation
+    // Step 4: KYC validation
     if (!kycValidation.allowed) {
       return res.status(403).json({
         success: false,
@@ -549,7 +531,7 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 4: Check pending transactions from parallel validation
+    // Step 5: Check for existing pending transactions
     if (pendingTransactions.length > 0) {
       return res.status(409).json({
         success: false,
@@ -558,13 +540,13 @@ router.post('/purchase', async (req, res) => {
       });
     }
     
-    // Step 5: Generate unique IDs
+    // Step 6: Generate unique IDs
     const timestamp = Date.now();
     const randomSuffix = Math.random().toString(36).substring(2, 8);
     const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
     
-    // Step 6: Validate balance
+    // Step 7: Validate balance
     const balanceValidation = await validateUserBalance(userId, currency, amount, {
       includeBalanceDetails: true,
       logValidation: true
@@ -583,7 +565,7 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 7: Create transaction record - MAINTAINING ORIGINAL STRUCTURE
+    // Step 8: Create transaction record - UPDATED: NGNZ references
     const initialTransactionData = {
       orderId: uniqueOrderId,
       status: 'initiated-api',
@@ -600,12 +582,12 @@ router.post('/purchase', async (req, res) => {
         service_id,
         user_id: userId,
         payment_currency: currency,
-        ngnz_amount: amount,
+        ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
         exchange_rate: 1,
         twofa_validated: true,
         passwordpin_validated: true,
         kyc_validated: true,
-        is_ngnz_transaction: true
+        is_ngnz_transaction: true // UPDATED: Added for consistency
       },
       network: service_id.toUpperCase(),
       customerPhone: phone,
@@ -620,9 +602,9 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`); // UPDATED: NGNB to NGNZ
     
-    // Step 8: Call eBills API
+    // Step 9: Call eBills API
     try {
       ebillsResponse = await callEBillsAPI({
         phone, amount, service_id,
@@ -646,7 +628,9 @@ router.post('/purchase', async (req, res) => {
       });
     }
     
-    // Step 9: Handle balance based on status - MAINTAINING ORIGINAL LOGIC
+    // =====================================
+    // STEP 10: HANDLE BALANCE BASED ON STATUS - USING INTERNAL FUNCTIONS
+    // =====================================
     const ebillsStatus = ebillsResponse.data.status;
     
     if (ebillsStatus === 'completed-api') {
@@ -749,7 +733,7 @@ router.post('/purchase', async (req, res) => {
       logger.warn(`Unexpected eBills status: ${ebillsStatus} for ${finalRequestId}`);
     }
     
-    // Step 10: Update transaction with eBills response - MAINTAINING ORIGINAL STRUCTURE
+    // Step 11: Update transaction with eBills response
     const updateData = {
       orderId: ebillsResponse.data.order_id.toString(),
       status: ebillsResponse.data.status,
@@ -782,7 +766,7 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Transaction updated: ${ebillsResponse.data.order_id} | ${ebillsResponse.data.status} | Balance: ${balanceActionType || 'none'}`);
     
-    // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
+    // Step 12: Return response based on status - UPDATED: NGNZ references
     if (ebillsResponse.data.status === 'completed-api') {
       return res.status(200).json({
         success: true,
@@ -797,7 +781,7 @@ router.post('/purchase', async (req, res) => {
           balance_action: 'updated_directly',
           payment_details: {
             currency: currency,
-            ngnz_amount: amount,
+            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
             amount_usd: (amount * (1 / 1554.42)).toFixed(2)
           }
         }
@@ -816,7 +800,7 @@ router.post('/purchase', async (req, res) => {
           balance_action: 'reserved',
           payment_details: {
             currency: currency,
-            ngnz_amount: amount,
+            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
             amount_usd: (amount * (1 / 1554.42)).toFixed(2)
           }
         },
@@ -832,7 +816,7 @@ router.post('/purchase', async (req, res) => {
           balance_action: balanceActionType || 'none',
           payment_details: {
             currency: currency,
-            ngnz_amount: amount,
+            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
             amount_usd: (amount * (1 / 1554.42)).toFixed(2)
           }
         }
@@ -849,10 +833,10 @@ router.post('/purchase', async (req, res) => {
     // Cleanup based on what action was taken - USING INTERNAL FUNCTIONS
     if (balanceActionTaken && balanceActionType === 'reserved') {
       try {
-        await releaseReservedBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0);
-        logger.info('🔄 Released reserved NGNZ balance due to error');
+        await releaseReservedBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0); // UPDATED: NGNB to NGNZ
+        logger.info('🔄 Released reserved NGNZ balance due to error'); // UPDATED: NGNB to NGNZ
       } catch (releaseError) {
-        logger.error('❌ Failed to release reserved NGNZ balance after error:', releaseError.message);
+        logger.error('❌ Failed to release reserved NGNZ balance after error:', releaseError.message); // UPDATED: NGNB to NGNZ
       }
     } else if (balanceActionTaken && balanceActionType === 'updated') {
       // For direct balance updates, we'd need to reverse the transaction
