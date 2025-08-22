@@ -62,54 +62,66 @@ async function getCachedPriceChanges(prices) {
 }
 
 /**
- * Optimized USD balance calculation - single loop through tokens
+ * FIXED: USD balance calculation - keeping original logic but optimized
  */
-function calculateUSDBalancesOptimized(user, prices) {
-  const tokens = Object.keys(SUPPORTED_TOKENS);
-  const calculatedBalances = {};
-  let totalPortfolioUSD = 0;
+async function calculateUSDBalances(user) {
+  try {
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    const prices = await getPricesWithCache(tokens);
 
-  for (const token of tokens) {
-    const tokenLower = token.toLowerCase();
-    const balanceField = `${tokenLower}Balance`;
-    const usdBalanceField = `${tokenLower}BalanceUSD`;
+    const calculatedBalances = {};
+    let totalPortfolioUSD = 0;
 
-    const tokenAmount = user[balanceField] || 0;
-    const tokenPrice = prices[token] || 0;
-    const usdValue = tokenAmount * tokenPrice;
+    for (const token of tokens) {
+      const tokenLower = token.toLowerCase();
+      const balanceField = `${tokenLower}Balance`;
+      const usdBalanceField = `${tokenLower}BalanceUSD`;
 
-    calculatedBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
-    totalPortfolioUSD += usdValue;
+      const tokenAmount = user[balanceField] || 0;
+      const tokenPrice = prices[token] || 0;
+      const usdValue = tokenAmount * tokenPrice;
+
+      calculatedBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
+      totalPortfolioUSD += usdValue;
+
+      if (logger && logger.debug) {
+        logger.debug(`Calculated USD balance for ${token}`, {
+          tokenAmount,
+          tokenPrice,
+          usdValue: calculatedBalances[usdBalanceField],
+          isNGNZ: token === 'NGNZ'
+        });
+      }
+    }
+
+    calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
+
+    if (logger && logger.debug) {
+      logger.debug('Calculated total portfolio balance', { 
+        totalPortfolioUSD: calculatedBalances.totalPortfolioBalance,
+        tokensProcessed: tokens.length,
+        includesNGNZ: !!prices.NGNZ
+      });
+    }
+
+    return calculatedBalances;
+  } catch (error) {
+    if (logger && logger.error) {
+      logger.error('Error calculating USD balances', { error: error.message });
+    } else {
+      console.error('Error calculating USD balances:', error.message);
+    }
+
+    const fallbackBalances = {};
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    for (const token of tokens) {
+      const tokenLower = token.toLowerCase();
+      const usdBalanceField = `${tokenLower}BalanceUSD`;
+      fallbackBalances[usdBalanceField] = 0;
+    }
+    fallbackBalances.totalPortfolioBalance = 0;
+    return fallbackBalances;
   }
-
-  calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
-  return calculatedBalances;
-}
-
-/**
- * Build portfolio balances in a single optimized loop
- */
-function buildPortfolioBalances(user, prices, usdBalances, priceChanges) {
-  const portfolioBalances = {};
-  const allTokenSymbols = Object.keys(SUPPORTED_TOKENS);
-  
-  for (const token of allTokenSymbols) {
-    const tokenLower = token.toLowerCase();
-    const balanceField = `${tokenLower}Balance`;
-    const pendingBalanceField = `${tokenLower}PendingBalance`;
-    const usdBalanceField = `${tokenLower}BalanceUSD`;
-    
-    portfolioBalances[token] = {
-      balance: user[balanceField] || 0,
-      balanceUSD: usdBalances[usdBalanceField] || 0,
-      pendingBalance: user[pendingBalanceField] || 0,
-      currentPrice: prices[token] || 0,
-      priceChange12h: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token]?.percentageChange || null),
-      priceChangeData: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token] || null)
-    };
-  }
-  
-  return portfolioBalances;
 }
 
 // GET /dashboard - Optimized dashboard endpoint
@@ -128,72 +140,97 @@ router.get('/dashboard', async (req, res) => {
       return res.status(200).json({ success: true, data: cachedDashboard.data });
     }
 
-    // Get token symbols (excluding NGNZ for separate fetch)
+    // Get user data first
+    const user = await getCachedUser(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Get token symbols (excluding NGNZ for separate fetch - for market display)
     const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
 
-    // Run all major operations in parallel
-    const [user, tokenPricesResult, ngnzRateInfo] = await Promise.allSettled([
-      getCachedUser(userId),
+    logger.info('Fetching dashboard data', { 
+      userId, 
+      requestedTokens: tokenSymbols 
+    });
+
+    // Fetch prices and NGNZ rate separately (for market display)
+    const [tokenPricesResult, ngnzRateInfo] = await Promise.allSettled([
       getPricesWithCache(tokenSymbols),
       getCurrentRate()
     ]);
 
-    // Handle results
-    if (user.status === 'rejected' || !user.value) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const userData = user.value;
-    const prices = tokenPricesResult.status === 'fulfilled' ? tokenPricesResult.value : {};
+    // Handle pricing data for market display
+    const marketPrices = tokenPricesResult.status === 'fulfilled' ? tokenPricesResult.value : {};
     const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
 
-    // Add NGNZ price
-    if (ngnzRate?.finalPrice) {
-      prices.NGNZ = ngnzRate.finalPrice;
+    // Add NGNZ price for market display
+    if (ngnzRate && ngnzRate.finalPrice) {
+      marketPrices.NGNZ = ngnzRate.finalPrice;
     }
 
-    // Run USD calculations and price changes in parallel
-    const [usdBalances, priceChanges] = await Promise.allSettled([
-      Promise.resolve(calculateUSDBalancesOptimized(userData, prices)),
-      getCachedPriceChanges(prices)
-    ]);
+    logger.info('Pricing data fetched', {
+      pricesCount: Object.keys(marketPrices).length,
+      hasNGNZ: !!marketPrices.NGNZ,
+      priceSymbols: Object.keys(marketPrices)
+    });
 
-    const calculatedUSDBalances = usdBalances.status === 'fulfilled' ? usdBalances.value : { totalPortfolioBalance: 0 };
-    const changes1Hour = priceChanges.status === 'fulfilled' ? priceChanges.value : {};
+    // Calculate USD balances using original method (this fetches prices internally)
+    const calculatedUSDBalances = await calculateUSDBalances(user);
 
-    // Build portfolio balances (optimized single loop)
-    const portfolioBalances = buildPortfolioBalances(userData, prices, calculatedUSDBalances, changes1Hour);
+    // Get price changes using market prices
+    const priceChanges = await getCachedPriceChanges(marketPrices);
+
+    // Build portfolio balances using market prices for display
+    const portfolioBalances = {};
+    const allTokenSymbols = Object.keys(SUPPORTED_TOKENS);
+    
+    for (const token of allTokenSymbols) {
+      const tokenLower = token.toLowerCase();
+      const balanceField = `${tokenLower}Balance`;
+      const pendingBalanceField = `${tokenLower}PendingBalance`;
+      const usdBalanceField = `${tokenLower}BalanceUSD`;
+      
+      portfolioBalances[token] = {
+        balance: user[balanceField] || 0,
+        balanceUSD: calculatedUSDBalances[usdBalanceField] || 0,
+        pendingBalance: user[pendingBalanceField] || 0,
+        currentPrice: marketPrices[token] || 0,
+        priceChange12h: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token]?.percentageChange || null),
+        priceChangeData: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token] || null)
+      };
+    }
 
     // Calculate KYC completion percentage
     const kycPercentageMap = { 0: 0, 1: 33, 2: 67, 3: 100 };
-    const kycCompletionPercentage = kycPercentageMap[userData.kycLevel] || 0;
+    const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
 
     // Build optimized dashboard response
     const dashboardData = {
       profile: {
-        id: userData.id,
-        firstname: userData.firstname,
-        lastname: userData.lastname,
-        email: userData.email,
-        username: userData.username,
-        phonenumber: userData.phonenumber,
-        avatarUrl: userData.avatarUrl,
-        avatarLastUpdated: userData.avatarLastUpdated,
-        is2FAEnabled: userData.is2FAEnabled
+        id: user.id,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        email: user.email,
+        username: user.username,
+        phonenumber: user.phonenumber,
+        avatarUrl: user.avatarUrl,
+        avatarLastUpdated: user.avatarLastUpdated,
+        is2FAEnabled: user.is2FAEnabled
       },
       kyc: {
-        level: userData.kycLevel,
-        status: userData.kycStatus,
+        level: user.kycLevel,
+        status: user.kycStatus,
         completionPercentage: kycCompletionPercentage,
-        limits: userData.getKycLimits ? userData.getKycLimits() : null
+        limits: user.getKycLimits ? user.getKycLimits() : null
       },
       portfolio: {
         totalPortfolioBalance: calculatedUSDBalances.totalPortfolioBalance,
         balances: portfolioBalances
       },
       market: {
-        prices: prices,
-        priceChanges12h: changes1Hour,
+        prices: marketPrices,
+        priceChanges12h: priceChanges,
         ngnzExchangeRate: ngnzRate ? {
           rate: ngnzRate.finalPrice,
           lastUpdated: ngnzRate.lastUpdated,
@@ -201,11 +238,11 @@ router.get('/dashboard', async (req, res) => {
         } : null,
         pricesLastUpdated: tokenPricesResult.status === 'fulfilled' ? new Date().toISOString() : null
       },
-      wallets: userData.wallets,
+      wallets: user.wallets,
       security: {
-        is2FAEnabled: userData.is2FAEnabled,
-        failedLoginAttempts: userData.failedLoginAttempts,
-        lastFailedLogin: userData.lastFailedLogin
+        is2FAEnabled: user.is2FAEnabled,
+        failedLoginAttempts: user.failedLoginAttempts,
+        lastFailedLogin: user.lastFailedLogin
       }
     };
 
@@ -222,7 +259,7 @@ router.get('/dashboard', async (req, res) => {
       userId,
       processingTime,
       totalTokens: Object.keys(SUPPORTED_TOKENS).length,
-      pricesRetrieved: Object.keys(prices).length,
+      pricesRetrieved: Object.keys(marketPrices).length,
       totalPortfolioUSD: calculatedUSDBalances.totalPortfolioBalance,
       cacheUsed: false
     });
