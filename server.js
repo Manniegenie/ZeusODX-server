@@ -177,6 +177,7 @@ const ProfileRoutes = require('./routes/Profile');
 const bankAccountRoutes = require('./routes/bankAccount');
 const Resetpin = require('./routes/ResetPin');
 const DeleteAccountRoutes = require('./routes/deleteaccount');
+const nairaAccountsRoutes = require('./routes/fetchnaira');
 
 
 // Public Routes
@@ -186,6 +187,7 @@ app.use("/refresh-token", refreshtokenRoutes);
 app.use("/verify-otp", verifyotpRoutes);
 app.use("/passwordpin", passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
+app.use("/naira", nairaAccountsRoutes);
 
 
 // Webhook Routes
