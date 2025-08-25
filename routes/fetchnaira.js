@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const { attachObiexAuth } = require('../auth/obiexauth'); // Adjust path as needed
+const { attachObiexAuth } = require('../utils/obiexAuth'); // Adjust path as needed
 const logger = require('../utils/logger');
 
 router.get('/naira-accounts', async (req, res) => {
