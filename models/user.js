@@ -31,11 +31,12 @@ const userSchema = new mongoose.Schema({
   avatarUrl: { type: String, default: null },
   avatarLastUpdated: { type: Date, default: null },
 
-  // Bank Accounts (Limited to 10 per user)
+  // Bank Accounts (Limited to 10 per user) - UPDATED with bankCode
   bankAccounts: {
     type: [{
       accountName: { type: String, required: true },
       bankName: { type: String, required: true },
+      bankCode: { type: String, required: true }, // NEW: Bank sort code/UUID
       accountNumber: { type: String, required: true },
       addedAt: { type: Date, default: Date.now },
       isVerified: { type: Boolean, default: false },
@@ -267,10 +268,15 @@ userSchema.methods.clearPinChangeOtp = function() {
   return this.save();
 };
 
-// Bank Account Methods
+// Bank Account Methods - UPDATED to include bankCode
 userSchema.methods.addBankAccount = function(accountData) {
   if (this.bankAccounts.length >= 10) {
     throw new Error('Maximum of 10 bank accounts allowed per user');
+  }
+  
+  // Check for required fields
+  if (!accountData.bankCode) {
+    throw new Error('Bank code is required');
   }
   
   const existingAccount = this.bankAccounts.find(
@@ -284,6 +290,7 @@ userSchema.methods.addBankAccount = function(accountData) {
   this.bankAccounts.push({
     accountName: accountData.accountName,
     bankName: accountData.bankName,
+    bankCode: accountData.bankCode, // NEW: Include bank code
     accountNumber: accountData.accountNumber,
     addedAt: new Date(),
     isVerified: false,
