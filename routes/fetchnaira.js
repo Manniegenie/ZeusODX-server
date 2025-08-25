@@ -12,7 +12,7 @@ router.get('/naira-accounts', async (req, res) => {
     let config = {
       method: 'get',
       maxBodyLength: Infinity,
-      url: '/ngn-payments/banks',
+      url: 'ngn-payments/banks', // REMOVED leading slash to prevent double slash
       headers: {}
     };
 
@@ -21,7 +21,7 @@ router.get('/naira-accounts', async (req, res) => {
     
     // Add base URL (make sure this matches your environment variable)
     const baseURL = process.env.OBIEX_BASE_URL || 'https://api.obiex.finance';
-    config.url = `${baseURL}${config.url}`;
+    config.url = `${baseURL}${config.url}`; // attachObiexAuth already adds /v1
 
     logger.info('Making request to Obiex API:', { url: config.url });
 
