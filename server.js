@@ -181,6 +181,7 @@ const nairaAccountsRoutes = require('./routes/fetchnaira');
 const giftcardRatesRoutes = require("./routes/giftcardrates");
 const admingiftcardRoutes = require('./adminRoutes/giftcard');
 const giftcardRoutes = require("./routes/giftcard");
+const giftcardcountryRoutes = require("./routes/giftcardcountry");
 
 
 
@@ -248,6 +249,7 @@ app.use("/reset-pin", authenticateToken, Resetpin);
 app.use("/delete-account", authenticateToken, DeleteAccountRoutes);
 app.use("/giftcard", authenticateToken, giftcardRoutes);
 app.use("/giftcardrates", authenticateToken, giftcardRatesRoutes);
+app.use("/giftcardcountry", authenticateToken, giftcardcountryRoutes);
 
 
 // Health Check
