@@ -178,6 +178,10 @@ const bankAccountRoutes = require('./routes/bankAccount');
 const Resetpin = require('./routes/ResetPin');
 const DeleteAccountRoutes = require('./routes/deleteaccount');
 const nairaAccountsRoutes = require('./routes/fetchnaira');
+const giftcardRatesRoutes = require("./routes/giftcardrates");
+const admingiftcardRoutes = require('./adminRoutes/giftcard');
+const giftcardRoutes = require("./routes/giftcard");
+
 
 
 // Public Routes
@@ -206,6 +210,7 @@ app.use("/fetching", fetchrefreshtoken);
 app.use("/fund", FunduserRoutes);
 app.use("/marker", pricemarkdownRoutes);
 app.use("/2FA-Disable", TwooFARoutes);
+app.use('/admingiftcard', admingiftcardRoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
@@ -241,6 +246,8 @@ app.use("/profile", authenticateToken, ProfileRoutes);
 app.use("/bank", authenticateToken, bankAccountRoutes);
 app.use("/reset-pin", authenticateToken, Resetpin);
 app.use("/delete-account", authenticateToken, DeleteAccountRoutes);
+app.use("/giftcard", authenticateToken, giftcardRoutes);
+app.use("/giftcardrates", authenticateToken, giftcardRatesRoutes);
 
 
 // Health Check

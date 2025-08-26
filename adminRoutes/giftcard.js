@@ -1,0 +1,523 @@
+const express = require('express');
+const router = express.Router();
+const GiftCardPrice = require('../models/giftcardPrice');
+const logger = require('../utils/logger');
+
+// Validation function for rate data (updated for NGN rates)
+// Validation function for rate data (updated for NGN rates)
+function validateRateData(data) {
+  const { cardType, country, rate, physicalRate, ecodeRate, sourceCurrency, targetCurrency, minAmount, maxAmount } = data;
+  const errors = [];
+
+  // Updated allowed gift card types
+  const allowedCardTypes = [
+    'APPLE',              // Apple / iTunes
+    'STEAM',              // Steam card
+    'NORDSTROM',          // Nordstrom
+    'MACY',               // Macy
+    'NIKE',               // Nike gift card
+    'GOOGLE_PLAY',        // Google Play Store
+    'AMAZON',             // Amazon gift card
+    'VISA',               // Visa + Vanilla (4097|4118)
+    'RAZOR_GOLD',         // Razor gold gift card
+    'AMERICAN_EXPRESS',   // American Express (3779/3751)
+    'SEPHORA',            // Sephora
+    'FOOTLOCKER',         // Footlocker
+    'XBOX',               // Xbox card
+    'EBAY'                // eBay
+  ];
+
+  const allowedCountries = ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'];
+  const allowedCurrencies = ['USD', 'NGN', 'GBP', 'EUR', 'CAD'];
+
+  // Required fields
+  if (!cardType) {
+    errors.push('cardType is required');
+  } else if (!allowedCardTypes.includes(cardType.toUpperCase())) {
+    errors.push(`Invalid cardType: ${cardType}`);
+  }
+
+  if (!country) {
+    errors.push('country is required');
+  } else if (!allowedCountries.includes(country.toUpperCase())) {
+    errors.push(`Invalid country: ${country}`);
+  }
+
+  if (!rate && rate !== 0) {
+    errors.push('rate is required');
+  } else if (typeof rate !== 'number' || rate < 0) {
+    errors.push('rate must be a positive number');
+  } else if (rate < 100) {
+    errors.push('rate seems too low for NGN conversion (expected range: 1000-2000)');
+  }
+
+  // Optional field validations
+  if (physicalRate !== undefined && physicalRate !== null) {
+    if (typeof physicalRate !== 'number' || physicalRate < 0) {
+      errors.push('physicalRate must be a positive number');
+    } else if (physicalRate < 100) {
+      errors.push('physicalRate seems too low for NGN conversion (expected range: 1000-2000)');
+    }
+  }
+
+  if (ecodeRate !== undefined && ecodeRate !== null) {
+    if (typeof ecodeRate !== 'number' || ecodeRate < 0) {
+      errors.push('ecodeRate must be a positive number');
+    } else if (ecodeRate < 100) {
+      errors.push('ecodeRate seems too low for NGN conversion (expected range: 1000-2000)');
+    }
+  }
+
+  if (sourceCurrency && !allowedCurrencies.includes(sourceCurrency.toUpperCase())) {
+    errors.push('Invalid sourceCurrency');
+  }
+
+  if (targetCurrency && !allowedCurrencies.includes(targetCurrency.toUpperCase())) {
+    errors.push('Invalid targetCurrency');
+  }
+
+  if (minAmount !== undefined && minAmount !== null && (typeof minAmount !== 'number' || minAmount < 0)) {
+    errors.push('minAmount must be a positive number');
+  }
+
+  if (maxAmount !== undefined && maxAmount !== null && (typeof maxAmount !== 'number' || maxAmount < 0)) {
+    errors.push('maxAmount must be a positive number');
+  }
+
+  if (minAmount && maxAmount && minAmount > maxAmount) {
+    errors.push('minAmount cannot be greater than maxAmount');
+  }
+
+  return {
+    success: errors.length === 0,
+    errors,
+    validatedData: errors.length === 0 ? {
+      cardType: cardType.toUpperCase(),
+      country: country.toUpperCase(),
+      rate: parseFloat(rate),
+      physicalRate: physicalRate ? parseFloat(physicalRate) : null,
+      ecodeRate: ecodeRate ? parseFloat(ecodeRate) : null,
+      sourceCurrency: sourceCurrency ? sourceCurrency.toUpperCase() : 'USD',
+      targetCurrency: targetCurrency ? targetCurrency.toUpperCase() : 'NGN',
+      minAmount: minAmount ? parseFloat(minAmount) : 5,
+      maxAmount: maxAmount ? parseFloat(maxAmount) : 2000
+    } : null
+  };
+}
+
+// POST /admin/giftcard/rates - Create new rate
+router.post('/rates', async (req, res) => {
+  try {
+    const adminUserId = req.user?.id || null; // Handle case where no auth middleware
+    
+    const validation = validateRateData(req.body);
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validation.errors
+      });
+    }
+
+    const rateData = {
+      ...validation.validatedData,
+      updatedBy: adminUserId,
+      notes: req.body.notes || null
+    };
+
+    // Check if rate already exists
+    const existingRate = await GiftCardPrice.findOne({
+      cardType: rateData.cardType,
+      country: rateData.country
+    });
+
+    if (existingRate) {
+      return res.status(409).json({
+        success: false,
+        message: `Rate already exists for ${rateData.cardType} in ${rateData.country}. Use PUT to update.`
+      });
+    }
+
+    const newRate = await GiftCardPrice.create(rateData);
+
+    logger.info('Gift card rate created', {
+      adminUserId,
+      cardType: newRate.cardType,
+      country: newRate.country,
+      rate: newRate.rate
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Gift card rate created successfully',
+      data: {
+        id: newRate._id,
+        cardType: newRate.cardType,
+        country: newRate.country,
+        rate: newRate.rate,
+        rateDisplay: `₦${newRate.rate}/${newRate.sourceCurrency}`,
+        physicalRate: newRate.physicalRate,
+        ecodeRate: newRate.ecodeRate,
+        minAmount: newRate.minAmount,
+        maxAmount: newRate.maxAmount,
+        isActive: newRate.isActive,
+        createdAt: newRate.createdAt
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error creating gift card rate', {
+      adminUserId: req.user?.id,
+      error: error.message,
+      requestBody: req.body
+    });
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'Rate already exists for this card type and country'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create gift card rate'
+    });
+  }
+});
+
+// POST /admin/giftcard/rates/bulk - Create multiple rates
+router.post('/rates/bulk', async (req, res) => {
+  try {
+    const adminUserId = req.user?.id || null;
+    const { rates } = req.body;
+
+    if (!Array.isArray(rates) || rates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'rates must be a non-empty array'
+      });
+    }
+
+    if (rates.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum 100 rates can be created at once'
+      });
+    }
+
+    const validatedRates = [];
+    const errors = [];
+
+    // Validate all rates first
+    for (let i = 0; i < rates.length; i++) {
+      const validation = validateRateData(rates[i]);
+      if (!validation.success) {
+        errors.push({
+          index: i,
+          data: rates[i],
+          errors: validation.errors
+        });
+      } else {
+        validatedRates.push({
+          ...validation.validatedData,
+          updatedBy: adminUserId,
+          notes: rates[i].notes || null
+        });
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed for some rates',
+        errors: errors
+      });
+    }
+
+    // Create all rates
+    const createdRates = await GiftCardPrice.insertMany(validatedRates, { ordered: false });
+
+    logger.info('Bulk gift card rates created', {
+      adminUserId,
+      totalRates: createdRates.length
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `${createdRates.length} gift card rates created successfully`,
+      data: {
+        totalCreated: createdRates.length,
+        rates: createdRates.map(rate => ({
+          id: rate._id,
+          cardType: rate.cardType,
+          country: rate.country,
+          rate: rate.rate,
+          rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`
+        }))
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error creating bulk gift card rates', {
+      adminUserId: req.user?.id,
+      error: error.message
+    });
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'Some rates already exist. Duplicates were skipped.',
+        details: error.writeErrors || []
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create bulk gift card rates'
+    });
+  }
+});
+
+// PUT /admin/giftcard/rates/:id - Update existing rate
+router.put('/rates/:id', async (req, res) => {
+  try {
+    const adminUserId = req.user?.id || null;
+    const { id } = req.params;
+
+    const existingRate = await GiftCardPrice.findById(id);
+    if (!existingRate) {
+      return res.status(404).json({
+        success: false,
+        message: 'Gift card rate not found'
+      });
+    }
+
+    // Validate only provided fields
+    const updateData = {};
+    const fieldsToUpdate = ['rate', 'physicalRate', 'ecodeRate', 'minAmount', 'maxAmount', 'isActive', 'notes'];
+    
+    for (const field of fieldsToUpdate) {
+      if (req.body[field] !== undefined) {
+        updateData[field] = req.body[field];
+      }
+    }
+
+    // Validate rates if provided (updated for NGN ranges)
+    if (updateData.rate !== undefined) {
+      if (typeof updateData.rate !== 'number' || updateData.rate < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'rate must be a positive number'
+        });
+      } else if (updateData.rate < 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'rate seems too low for NGN conversion (expected range: 1000-2000)'
+        });
+      }
+    }
+
+    if (updateData.physicalRate !== undefined && updateData.physicalRate !== null) {
+      if (typeof updateData.physicalRate !== 'number' || updateData.physicalRate < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'physicalRate must be a positive number'
+        });
+      } else if (updateData.physicalRate < 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'physicalRate seems too low for NGN conversion (expected range: 1000-2000)'
+        });
+      }
+    }
+
+    if (updateData.ecodeRate !== undefined && updateData.ecodeRate !== null) {
+      if (typeof updateData.ecodeRate !== 'number' || updateData.ecodeRate < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'ecodeRate must be a positive number'
+        });
+      } else if (updateData.ecodeRate < 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'ecodeRate seems too low for NGN conversion (expected range: 1000-2000)'
+        });
+      }
+    }
+
+    updateData.updatedBy = adminUserId;
+    updateData.lastUpdated = new Date();
+
+    const updatedRate = await GiftCardPrice.findByIdAndUpdate(id, updateData, { new: true });
+
+    logger.info('Gift card rate updated', {
+      adminUserId,
+      rateId: id,
+      cardType: updatedRate.cardType,
+      country: updatedRate.country,
+      updatedFields: Object.keys(updateData)
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Gift card rate updated successfully',
+      data: {
+        id: updatedRate._id,
+        cardType: updatedRate.cardType,
+        country: updatedRate.country,
+        rate: updatedRate.rate,
+        rateDisplay: `₦${updatedRate.rate}/${updatedRate.sourceCurrency}`,
+        physicalRate: updatedRate.physicalRate,
+        ecodeRate: updatedRate.ecodeRate,
+        minAmount: updatedRate.minAmount,
+        maxAmount: updatedRate.maxAmount,
+        isActive: updatedRate.isActive,
+        lastUpdated: updatedRate.lastUpdated
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error updating gift card rate', {
+      adminUserId: req.user?.id,
+      rateId: req.params.id,
+      error: error.message
+    });
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update gift card rate'
+    });
+  }
+});
+
+// DELETE /admin/giftcard/rates/:id - Delete rate
+router.delete('/rates/:id', async (req, res) => {
+  try {
+    const adminUserId = req.user?.id || null;
+    const { id } = req.params;
+
+    const deletedRate = await GiftCardPrice.findByIdAndDelete(id);
+    
+    if (!deletedRate) {
+      return res.status(404).json({
+        success: false,
+        message: 'Gift card rate not found'
+      });
+    }
+
+    logger.info('Gift card rate deleted', {
+      adminUserId,
+      rateId: id,
+      cardType: deletedRate.cardType,
+      country: deletedRate.country
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Gift card rate deleted successfully',
+      data: {
+        deletedRate: {
+          cardType: deletedRate.cardType,
+          country: deletedRate.country,
+          rate: deletedRate.rate
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error deleting gift card rate', {
+      adminUserId: req.user?.id,
+      rateId: req.params.id,
+      error: error.message
+    });
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete gift card rate'
+    });
+  }
+});
+
+// GET /admin/giftcard/rates - Get all rates (admin view with more details)
+router.get('/rates', async (req, res) => {
+  try {
+    const { country, cardType, isActive, page = 1, limit = 50 } = req.query;
+    
+    const query = {};
+    
+    if (country) {
+      if (!['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'].includes(country.toUpperCase())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid country'
+        });
+      }
+      query.country = country.toUpperCase();
+    }
+    
+    if (cardType) {
+      query.cardType = cardType.toUpperCase();
+    }
+    
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true';
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const rates = await GiftCardPrice.find(query)
+      .populate('updatedBy', 'username email')
+      .sort({ country: 1, cardType: 1 })
+      .skip(skip)
+      .limit(limitNum);
+
+    const total = await GiftCardPrice.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        rates: rates.map(rate => ({
+          id: rate._id,
+          cardType: rate.cardType,
+          country: rate.country,
+          rate: rate.rate,
+          rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`,
+          physicalRate: rate.physicalRate,
+          ecodeRate: rate.ecodeRate,
+          sourceCurrency: rate.sourceCurrency,
+          targetCurrency: rate.targetCurrency,
+          minAmount: rate.minAmount,
+          maxAmount: rate.maxAmount,
+          isActive: rate.isActive,
+          lastUpdated: rate.lastUpdated,
+          updatedBy: rate.updatedBy,
+          notes: rate.notes,
+          createdAt: rate.createdAt
+        })),
+        pagination: {
+          currentPage: pageNum,
+          totalPages: Math.ceil(total / limitNum),
+          totalRates: total,
+          limit: limitNum
+        }
+      },
+      message: 'Gift card rates retrieved successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error fetching admin gift card rates', {
+      adminUserId: req.user?.id,
+      error: error.message
+    });
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gift card rates'
+    });
+  }
+});
+
+module.exports = router;
