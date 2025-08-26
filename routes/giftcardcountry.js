@@ -1,7 +1,7 @@
 // routes/giftcards.js
 const express = require('express');
 const router = express.Router();
-const GiftCardPrice = require('../models/GiftCardPrice'); // Adjust path as needed
+const GiftCardPrice = require('../models/giftcardPrice'); // Adjust path as needed
 
 /**
  * GET /api/giftcards/:cardType/countries
