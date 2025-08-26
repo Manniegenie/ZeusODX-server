@@ -67,7 +67,7 @@ router.get('/bank-accounts', async (req, res) => {
 });
 
 // POST: /api/user/bank-accounts - Add a new bank account
-router.post('/bank-accounts', async (req, res) => {
+router.post('/add-bank', async (req, res) => {
   try {
     const userId = req.user.id; // From global JWT middleware
     const { accountNumber, bankName, accountName, bankCode } = req.body; // UPDATED: Added bankCode
@@ -226,7 +226,7 @@ router.post('/bank-accounts', async (req, res) => {
 });
 
 // DELETE: /api/user/bank-accounts - Delete a bank account (using JSON body)
-router.delete('/bank-accounts', async (req, res) => {
+router.delete('/delete-bank', async (req, res) => {
   try {
     const userId = req.user.id; // From global JWT middleware
     const { accountId } = req.body; // Changed from req.params to req.body
