@@ -32,7 +32,7 @@ router.get('/bank-accounts', async (req, res) => {
       source: 'get-bank-accounts' 
     });
 
-    // Return bank accounts information
+    // Return bank accounts information - UPDATED to include bankCode
     res.json({
       success: true,
       data: {
@@ -40,6 +40,7 @@ router.get('/bank-accounts', async (req, res) => {
           id: account._id,
           accountName: account.accountName,
           bankName: account.bankName,
+          bankCode: account.bankCode, // NEW: Include bank code in response
           accountNumber: account.accountNumber,
           addedAt: account.addedAt,
           isVerified: account.isVerified,
@@ -69,22 +70,27 @@ router.get('/bank-accounts', async (req, res) => {
 router.post('/bank-accounts', async (req, res) => {
   try {
     const userId = req.user.id; // From global JWT middleware
-    const { accountNumber, bankName, accountName } = req.body;
+    const { accountNumber, bankName, accountName, bankCode } = req.body; // UPDATED: Added bankCode
 
     if (!userId) {
       logger.warn('No user ID found in token', { source: 'add-bank-account' });
       return res.status(400).json({ message: 'Invalid token payload' });
     }
 
-    // Validate required fields
-    if (!accountNumber || !bankName || !accountName) {
+    // Validate required fields - UPDATED to include bankCode
+    if (!accountNumber || !bankName || !accountName || !bankCode) {
       logger.warn('Missing required fields', { 
         userId, 
-        providedFields: { accountNumber: !!accountNumber, bankName: !!bankName, accountName: !!accountName },
+        providedFields: { 
+          accountNumber: !!accountNumber, 
+          bankName: !!bankName, 
+          accountName: !!accountName,
+          bankCode: !!bankCode // NEW: Include in validation logging
+        },
         source: 'add-bank-account' 
       });
       return res.status(400).json({ 
-        message: 'Account number, bank name, and account name are required' 
+        message: 'Account number, bank name, account name, and bank code are required' // UPDATED message
       });
     }
 
@@ -98,6 +104,19 @@ router.post('/bank-accounts', async (req, res) => {
       });
       return res.status(400).json({ 
         message: 'Account number must be between 8 and 20 characters' 
+      });
+    }
+
+    // Basic validation for bank code (ensure it's not empty and reasonable length)
+    const cleanBankCode = bankCode.toString().trim();
+    if (cleanBankCode.length < 2 || cleanBankCode.length > 10) {
+      logger.warn('Invalid bank code length', { 
+        userId, 
+        bankCodeLength: cleanBankCode.length,
+        source: 'add-bank-account' 
+      });
+      return res.status(400).json({ 
+        message: 'Bank code must be between 2 and 10 characters' 
       });
     }
 
@@ -139,11 +158,12 @@ router.post('/bank-accounts', async (req, res) => {
       });
     }
 
-    // Prepare new bank account data
+    // Prepare new bank account data - UPDATED to include bankCode
     const newBankAccount = {
       accountNumber: cleanAccountNumber,
       bankName: bankName.trim(),
       accountName: accountName.trim(),
+      bankCode: cleanBankCode, // NEW: Include bank code
       addedAt: new Date(),
       isVerified: false,
       isActive: true
@@ -151,17 +171,21 @@ router.post('/bank-accounts', async (req, res) => {
 
     // Add the bank account
     try {
-      const addedAccount = await user.addBankAccount(newBankAccount);
+      await user.addBankAccount(newBankAccount);
+      
+      // Get the newly added account (it will be the last one)
+      const addedAccount = user.bankAccounts[user.bankAccounts.length - 1];
       
       logger.info('Bank account added successfully', { 
         userId, 
         accountId: addedAccount._id,
         bankName: newBankAccount.bankName,
+        bankCode: newBankAccount.bankCode, // NEW: Include in logging
         accountName: newBankAccount.accountName,
         source: 'add-bank-account' 
       });
 
-      // Return success response with the new account data
+      // Return success response with the new account data - UPDATED to include bankCode
       res.status(201).json({
         success: true,
         message: 'Bank account added successfully',
@@ -170,6 +194,7 @@ router.post('/bank-accounts', async (req, res) => {
             id: addedAccount._id,
             accountName: addedAccount.accountName,
             bankName: addedAccount.bankName,
+            bankCode: addedAccount.bankCode, // NEW: Include bank code in response
             accountNumber: addedAccount.accountNumber,
             addedAt: addedAccount.addedAt,
             isVerified: addedAccount.isVerified,
@@ -183,6 +208,7 @@ router.post('/bank-accounts', async (req, res) => {
         error: addError.message, 
         userId, 
         bankName: newBankAccount.bankName,
+        bankCode: newBankAccount.bankCode, // NEW: Include in error logging
         source: 'add-bank-account' 
       });
       return res.status(500).json({ message: 'Failed to add bank account' });
@@ -235,10 +261,11 @@ router.delete('/bank-accounts', async (req, res) => {
       return res.status(404).json({ message: 'Bank account not found' });
     }
 
-    // Store account info for logging before deletion
+    // Store account info for logging before deletion - UPDATED to include bankCode
     const deletedAccountInfo = {
       accountName: bankAccount.accountName,
       bankName: bankAccount.bankName,
+      bankCode: bankAccount.bankCode, // NEW: Include bank code
       accountNumber: bankAccount.accountNumber
     };
 
@@ -253,7 +280,7 @@ router.delete('/bank-accounts', async (req, res) => {
         source: 'delete-bank-account' 
       });
 
-      // Return success response
+      // Return success response - UPDATED to include bankCode
       res.json({
         success: true,
         message: 'Bank account deleted successfully',
@@ -261,6 +288,7 @@ router.delete('/bank-accounts', async (req, res) => {
           id: accountId,
           accountName: deletedAccountInfo.accountName,
           bankName: deletedAccountInfo.bankName,
+          bankCode: deletedAccountInfo.bankCode, // NEW: Include bank code in response
           accountNumber: deletedAccountInfo.accountNumber
         }
       });
