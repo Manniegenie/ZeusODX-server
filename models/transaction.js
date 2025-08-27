@@ -9,7 +9,8 @@ const transactionSchema = new mongoose.Schema({
       'WITHDRAWAL', 
       'INTERNAL_TRANSFER_SENT', 
       'INTERNAL_TRANSFER_RECEIVED',
-      'SWAP' // Added SWAP type for swap transactions
+      'SWAP', // Added SWAP type for swap transactions
+      'GIFTCARD' // Added GIFTCARD type for gift card transactions
     ], 
     required: true 
   },
@@ -25,7 +26,7 @@ const transactionSchema = new mongoose.Schema({
   },
   network: { type: String },
   narration: { type: String },
-  source: { type: String, enum: ['CRYPTO_WALLET', 'BANK', 'INTERNAL'], default: 'CRYPTO_WALLET' },
+  source: { type: String, enum: ['CRYPTO_WALLET', 'BANK', 'INTERNAL', 'GIFTCARD'], default: 'CRYPTO_WALLET' },
   hash: { type: String },
   transactionId: { type: String }, // Generic transaction ID - no index here
   obiexTransactionId: { type: String }, // Specific Obiex transaction ID - no index here
@@ -45,6 +46,23 @@ const transactionSchema = new mongoose.Schema({
   fromAmount: { type: Number }, // Amount being swapped from
   toAmount: { type: Number }, // Amount being swapped to
   swapType: { type: String, enum: ['onramp', 'offramp', 'crypto_to_crypto'] }, // Type of swap
+  
+  // Gift card specific fields
+  giftCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'GiftCard' },
+  cardType: { type: String }, // AMAZON, APPLE, etc.
+  cardFormat: { type: String }, // PHYSICAL, E_CODE
+  cardRange: { type: String }, // 25-100, 100-200, etc.
+  country: { type: String }, // US, CANADA, etc.
+  imageUrls: [{ type: String }],
+  imagePublicIds: [{ type: String }],
+  totalImages: { type: Number, default: 0 },
+  eCode: { type: String },
+  description: { type: String },
+  expectedRate: { type: Number },
+  expectedRateDisplay: { type: String },
+  expectedAmountToReceive: { type: Number },
+  expectedSourceCurrency: { type: String },
+  expectedTargetCurrency: { type: String },
   
   // Additional timestamp fields
   completedAt: { type: Date },
@@ -72,6 +90,11 @@ transactionSchema.index({ userId: 1, type: 1, swapType: 1, status: 1 }); // For 
 transactionSchema.index({ fromCurrency: 1, toCurrency: 1, status: 1 }); // For swap pair queries
 transactionSchema.index({ userId: 1, type: 1, fromCurrency: 1, toCurrency: 1 }); // For user swap history
 transactionSchema.index({ reference: 1, type: 1 }); // For finding related transactions by reference and type
+
+// Additional indexes for gift card transactions
+transactionSchema.index({ giftCardId: 1 }); // For finding transaction by gift card
+transactionSchema.index({ userId: 1, type: 1, cardType: 1, status: 1 }); // For gift card queries
+transactionSchema.index({ cardType: 1, country: 1, status: 1 }); // For gift card analytics
 
 // Update the updatedAt field on save
 transactionSchema.pre('save', function(next) {
