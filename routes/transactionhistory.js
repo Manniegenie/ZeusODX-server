@@ -4,24 +4,63 @@ const Transaction = require('../models/transaction');
 const BillTransaction = require('../models/billstransaction');
 const logger = require('../utils/logger');
 
+// ----------------- helpers added (new) -----------------
+function firstTruthy(...vals) {
+  for (const v of vals) {
+    if (v !== undefined && v !== null && `${v}`.trim() !== '') return v;
+  }
+  return undefined;
+}
+
+function shapeTokenDetails(tx) {
+  const network = firstTruthy(
+    tx.network, tx.networkName, tx.network_code,
+    tx.chain, tx.blockchain, tx.chainName, tx.chain_id, tx.chainId,
+    tx?.metadata?.network, tx?.metadata?.chain
+  );
+
+  const address = firstTruthy(
+    tx.address, tx.walletAddress,
+    tx.to, tx.toAddress, tx.receivingAddress, tx.recipient, tx.recipientAddress, tx.destination, tx.destinationAddress,
+    tx.from, tx.fromAddress, tx.source, tx.sourceAddress,
+    tx?.metadata?.address
+  );
+
+  const hash = firstTruthy(
+    tx.hash, tx.txHash, tx.transactionHash,
+    tx.txid, tx.txId, tx.transaction_id, tx.transactionIdOnChain,
+    tx?.metadata?.txHash, tx?.metadata?.hash
+  );
+
+  const fee = firstTruthy(tx.fee, tx.networkFee, tx.gasFee, tx.txFee, tx?.metadata?.fee, 0);
+  const narration = firstTruthy(tx.narration, tx.note, tx.description, tx.memo, tx.reason);
+
+  return {
+    category: 'token',
+    transactionId: firstTruthy(tx.transactionId, tx.reference, tx.externalId, tx.id, tx._id),
+    currency: tx.currency,
+    network,
+    address,
+    hash,
+    fee,
+    narration,
+    createdAt: tx.createdAt,
+  };
+}
+// ------------------------------------------------------
+
 // Helper function to build date range filter
 function buildDateRangeFilter(dateFrom, dateTo) {
   const filter = {};
-  
   if (dateFrom || dateTo) {
     filter.createdAt = {};
-    
-    if (dateFrom) {
-      filter.createdAt.$gte = new Date(dateFrom);
-    }
-    
+    if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
     if (dateTo) {
       const endDate = new Date(dateTo);
       endDate.setHours(23, 59, 59, 999);
       filter.createdAt.$lte = endDate;
     }
   }
-  
   return filter;
 }
 
@@ -30,7 +69,6 @@ function getDefaultDateRange() {
   const now = new Date();
   const dateTo = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   const dateFrom = new Date(now.getFullYear(), now.getMonth(), 1);
-  
   return {
     dateFrom: dateFrom.toISOString().split('T')[0],
     dateTo: dateTo.toISOString().split('T')[0]
@@ -41,7 +79,7 @@ function getDefaultDateRange() {
 function formatTransactionType(type) {
   const typeMap = {
     'DEPOSIT': 'Deposit',
-    'WITHDRAWAL': 'Withdrawal', 
+    'WITHDRAWAL': 'Withdrawal',
     'INTERNAL_TRANSFER_SENT': 'Withdrawal',
     'INTERNAL_TRANSFER_RECEIVED': 'Deposit',
     'SWAP': 'Swap'
@@ -113,14 +151,8 @@ function formatDate(date) {
 router.post('/token-specific', async (req, res) => {
   try {
     const userId = req.user?.id;
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: 'Unauthorized'
-      });
-    }
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    // Simple validation with defaults
     const body = req.body || {};
     const {
       currency,
@@ -133,70 +165,39 @@ router.post('/token-specific', async (req, res) => {
     } = body;
 
     if (!currency) {
-      return res.status(400).json({
-        success: false,
-        message: 'Currency is required'
-      });
+      return res.status(400).json({ success: false, message: 'Currency is required' });
     }
 
-    // Get date range
     const defaultRange = getDefaultDateRange();
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
 
-    // Build filter
-    const filter = {
-      userId: userId,
-      currency: currency.toUpperCase()
-    };
-
-    // Add date range filter
+    const filter = { userId: userId, currency: currency.toUpperCase() };
     Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
 
     if (type) {
       switch (type.toUpperCase()) {
-        case 'DEPOSIT':
-          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] };
-          break;
-        case 'WITHDRAWAL':
-          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] };
-          break;
-        case 'SWAP':
-          filter.type = 'SWAP';
-          break;
+        case 'DEPOSIT': filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] }; break;
+        case 'WITHDRAWAL': filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] }; break;
+        case 'SWAP': filter.type = 'SWAP'; break;
       }
     }
-    
     if (status) {
       switch (status.toLowerCase()) {
-        case 'successful':
-          filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] };
-          break;
-        case 'failed':
-          filter.status = { $in: ['FAILED', 'REJECTED'] };
-          break;
-        case 'pending':
-          filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] };
-          break;
+        case 'successful': filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] }; break;
+        case 'failed': filter.status = { $in: ['FAILED', 'REJECTED'] }; break;
+        case 'pending': filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] }; break;
       }
     }
 
-    // Pagination
     const skip = (page - 1) * limit;
-    const sort = {};
-    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    // Get transactions
     const [transactions, totalCount] = await Promise.all([
-      Transaction.find(filter)
-        .sort(sort)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
+      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)).lean(),
       Transaction.countDocuments(filter)
     ]);
 
-    // Format transactions
     const formattedTokenTransactions = transactions.map(tx => {
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
       const createdAtISO = new Date(tx.createdAt).toISOString();
@@ -205,17 +206,9 @@ router.post('/token-specific', async (req, res) => {
         type: formatTransactionType(tx.type),
         status: formatStatus(tx.status),
         amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
-        date: formatDate(tx.createdAt),          // human-readable, Lagos time
-        createdAt: createdAtISO,                 // raw ISO for client-side TZ formatting/sorting
-        details: {
-          transactionId: tx.transactionId || tx._id,
-          currency: tx.currency,
-          network: tx.network,
-          address: tx.address,
-          hash: tx.hash,
-          fee: tx.fee,
-          narration: tx.narration
-        }
+        date: formatDate(tx.createdAt),      // human-readable, Lagos time
+        createdAt: createdAtISO,             // raw ISO for client-side TZ formatting/sorting
+        details: shapeTokenDetails(tx)       // <— updated
       };
     });
 
@@ -230,24 +223,16 @@ router.post('/token-specific', async (req, res) => {
           totalCount,
           limit: parseInt(limit)
         },
-        dateRange: {
-          dateFrom,
-          dateTo
-        }
+        dateRange: { dateFrom, dateTo }
       }
     });
-
   } catch (error) {
     logger.error('Error fetching token-specific transactions', {
       userId: req.user?.id,
       currency: req.body?.currency,
       error: error.message
     });
-
-    return res.status(500).json({
-      success: false,
-      message: 'Server error'
-    });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
@@ -255,14 +240,8 @@ router.post('/token-specific', async (req, res) => {
 router.post('/all-tokens', async (req, res) => {
   try {
     const userId = req.user?.id;
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: 'Unauthorized'
-      });
-    }
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    // Simple validation with defaults
     const body = req.body || {};
     const {
       type,
@@ -273,61 +252,36 @@ router.post('/all-tokens', async (req, res) => {
       sortOrder = 'desc'
     } = body;
 
-    // Get date range
     const defaultRange = getDefaultDateRange();
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
 
-    // Build filter
     const filter = { userId: userId };
-    
-    // Add date range filter
     Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
 
     if (type) {
       switch (type.toUpperCase()) {
-        case 'DEPOSIT':
-          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] };
-          break;
-        case 'WITHDRAWAL':
-          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] };
-          break;
-        case 'SWAP':
-          filter.type = 'SWAP';
-          break;
+        case 'DEPOSIT': filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] }; break;
+        case 'WITHDRAWAL': filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] }; break;
+        case 'SWAP': filter.type = 'SWAP'; break;
       }
     }
-    
     if (status) {
       switch (status.toLowerCase()) {
-        case 'successful':
-          filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] };
-          break;
-        case 'failed':
-          filter.status = { $in: ['FAILED', 'REJECTED'] };
-          break;
-        case 'pending':
-          filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] };
-          break;
+        case 'successful': filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] }; break;
+        case 'failed': filter.status = { $in: ['FAILED', 'REJECTED'] }; break;
+        case 'pending': filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] }; break;
       }
     }
 
-    // Pagination
     const skip = (page - 1) * limit;
-    const sort = {};
-    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    // Get transactions
     const [transactions, totalCount] = await Promise.all([
-      Transaction.find(filter)
-        .sort(sort)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
+      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)).lean(),
       Transaction.countDocuments(filter)
     ]);
 
-    // Format transactions
     const formattedAllTokens = transactions.map(tx => {
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
       const createdAtISO = new Date(tx.createdAt).toISOString();
@@ -338,15 +292,7 @@ router.post('/all-tokens', async (req, res) => {
         amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
         date: formatDate(tx.createdAt),      // Lagos
         createdAt: createdAtISO,             // ISO
-        details: {
-          transactionId: tx.transactionId || tx._id,
-          currency: tx.currency,
-          network: tx.network,
-          address: tx.address,
-          hash: tx.hash,
-          fee: tx.fee,
-          narration: tx.narration
-        }
+        details: shapeTokenDetails(tx)       // <— updated
       };
     });
 
@@ -361,23 +307,15 @@ router.post('/all-tokens', async (req, res) => {
           totalCount,
           limit: parseInt(limit)
         },
-        dateRange: {
-          dateFrom,
-          dateTo
-        }
+        dateRange: { dateFrom, dateTo }
       }
     });
-
   } catch (error) {
     logger.error('Error fetching all token transactions', {
       userId: req.user?.id,
       error: error.message
     });
-
-    return res.status(500).json({
-      success: false,
-      message: 'Server error'
-    });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
@@ -385,14 +323,8 @@ router.post('/all-tokens', async (req, res) => {
 router.post('/all-utilities', async (req, res) => {
   try {
     const userId = req.user?.id;
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: 'Unauthorized'
-      });
-    }
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    // Simple validation with defaults
     const body = req.body || {};
     const {
       utilityType,
@@ -403,53 +335,31 @@ router.post('/all-utilities', async (req, res) => {
       sortOrder = 'desc'
     } = body;
 
-    // Get date range
     const defaultRange = getDefaultDateRange();
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
 
-    // Build filter
     const filter = { userId: userId };
-    
-    // Add date range filter
     Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
 
-    // Add utility type filter if specified
-    if (utilityType) {
-      filter.billType = utilityType.toLowerCase();
-    }
+    if (utilityType) filter.billType = utilityType.toLowerCase();
 
-    // Map status to bill transaction statuses
     if (status) {
       switch (status.toLowerCase()) {
-        case 'successful':
-          filter.status = 'completed-api';
-          break;
-        case 'failed':
-          filter.status = 'failed';
-          break;
-        case 'pending':
-          filter.status = { $in: ['initiated-api', 'processing-api'] };
-          break;
+        case 'successful': filter.status = 'completed-api'; break;
+        case 'failed': filter.status = 'failed'; break;
+        case 'pending': filter.status = { $in: ['initiated-api', 'processing-api'] }; break;
       }
     }
 
-    // Pagination
     const skip = (page - 1) * limit;
-    const sort = {};
-    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    // Get transactions
     const [transactions, totalCount] = await Promise.all([
-      BillTransaction.find(filter)
-        .sort(sort)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
+      BillTransaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)).lean(),
       BillTransaction.countDocuments(filter)
     ]);
 
-    // Format transactions
     const formattedUtilities = transactions.map(tx => {
       const amount = tx.amountNGNB || tx.amountNaira;
       const createdAtISO = new Date(tx.createdAt).toISOString();
@@ -469,7 +379,8 @@ router.post('/all-utilities', async (req, res) => {
           network: tx.network,
           customerInfo: tx.customerInfo?.phone || tx.customerPhone,
           billType: tx.billType,
-          paymentCurrency: tx.paymentCurrency
+          paymentCurrency: tx.paymentCurrency,
+          category: 'utility'
         }
       };
     });
@@ -485,23 +396,15 @@ router.post('/all-utilities', async (req, res) => {
           totalCount,
           limit: parseInt(limit)
         },
-        dateRange: {
-          dateFrom,
-          dateTo
-        }
+        dateRange: { dateFrom, dateTo }
       }
     });
-
   } catch (error) {
     logger.error('Error fetching all utility transactions', {
       userId: req.user?.id,
       error: error.message
     });
-
-    return res.status(500).json({
-      success: false,
-      message: 'Server error'
-    });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
@@ -509,14 +412,8 @@ router.post('/all-utilities', async (req, res) => {
 router.post('/complete-history', async (req, res) => {
   try {
     const userId = req.user?.id;
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: 'Unauthorized'
-      });
-    }
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    // Simple validation with defaults
     const body = req.body || {};
     const {
       transactionType = 'all',
@@ -527,7 +424,6 @@ router.post('/complete-history', async (req, res) => {
       sortOrder = 'desc'
     } = body;
 
-    // Get date range
     const defaultRange = getDefaultDateRange();
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
@@ -535,14 +431,10 @@ router.post('/complete-history', async (req, res) => {
     let allTransactions = [];
     let totalCount = 0;
 
-    // Build date range filter
     const dateRangeFilter = buildDateRangeFilter(dateFrom, dateTo);
-
-    // Build queries for both transaction types
     const tokenFilter = { userId: userId, ...dateRangeFilter };
-    const billFilter = { userId: userId, ...dateRangeFilter };
+    const billFilter  = { userId: userId, ...dateRangeFilter };
 
-    // Apply status filters
     if (status) {
       switch (status.toLowerCase()) {
         case 'successful':
@@ -560,52 +452,36 @@ router.post('/complete-history', async (req, res) => {
       }
     }
 
-    // Fetch token transactions
     if (transactionType === 'all' || transactionType === 'token') {
       const [tokenTxs, tokenCount] = await Promise.all([
         Transaction.find(tokenFilter).lean(),
         Transaction.countDocuments(tokenFilter)
       ]);
-
       const formattedTokens = tokenTxs.map(tx => {
         const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
         const createdAtISO = new Date(tx.createdAt).toISOString();
-
         return {
           id: tx._id,
           type: formatTransactionType(tx.type),
           status: formatStatus(tx.status),
           amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
           date: formatDate(tx.createdAt),   // Lagos
-          createdAt: createdAtISO,          // ISO for sorting & client formatting
-          details: {
-            transactionId: tx.transactionId || tx._id,
-            category: 'token',
-            currency: tx.currency,
-            network: tx.network,
-            address: tx.address,
-            hash: tx.hash,
-            fee: tx.fee,
-            narration: tx.narration
-          }
+          createdAt: createdAtISO,          // ISO
+          details: shapeTokenDetails(tx)    // <— updated (has category: 'token')
         };
       });
-
       allTransactions = [...allTransactions, ...formattedTokens];
       totalCount += tokenCount;
     }
 
-    // Fetch utility transactions
     if (transactionType === 'all' || transactionType === 'utility') {
       const [billTxs, billCount] = await Promise.all([
         BillTransaction.find(billFilter).lean(),
         BillTransaction.countDocuments(billFilter)
       ]);
-
       const formattedBills = billTxs.map(tx => {
         const amount = tx.amountNGNB || tx.amountNaira;
         const createdAtISO = new Date(tx.createdAt).toISOString();
-
         return {
           id: tx._id,
           type: formatBillType(tx.billType),
@@ -623,25 +499,18 @@ router.post('/complete-history', async (req, res) => {
           }
         };
       });
-
       allTransactions = [...allTransactions, ...formattedBills];
       totalCount += billCount;
     }
 
-    // Sort transactions (by ISO createdAt)
     allTransactions.sort((a, b) => {
-      if (sortOrder === 'asc') {
-        return new Date(a.createdAt) - new Date(b.createdAt);
-      } else {
-        return new Date(b.createdAt) - new Date(a.createdAt);
-      }
+      return sortOrder === 'asc'
+        ? new Date(a.createdAt) - new Date(b.createdAt)
+        : new Date(b.createdAt) - new Date(a.createdAt);
     });
 
-    // Apply pagination
     const skip = (page - 1) * limit;
     const paginatedTransactions = allTransactions.slice(skip, skip + limit);
-
-    // NOTE: keep createdAt so client can format to local TZ; do not delete.
 
     return res.status(200).json({
       success: true,
@@ -654,23 +523,15 @@ router.post('/complete-history', async (req, res) => {
           totalCount,
           limit: parseInt(limit)
         },
-        dateRange: {
-          dateFrom,
-          dateTo
-        }
+        dateRange: { dateFrom, dateTo }
       }
     });
-
   } catch (error) {
     logger.error('Error fetching complete transaction history', {
       userId: req.user?.id,
       error: error.message
     });
-
-    return res.status(500).json({
-      success: false,
-      message: 'Server error'
-    });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
