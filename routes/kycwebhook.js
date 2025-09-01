@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 
 const User = require('../models/user');
-const KYC = require('../models/KYC');
+const KYC = require('../models/kyc');
 const logger = require('../utils/logger');
 
 // Optional: verify Smile signature using their server SDK
