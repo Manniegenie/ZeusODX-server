@@ -182,6 +182,7 @@ const giftcardRatesRoutes = require("./routes/giftcardrates");
 const admingiftcardRoutes = require('./adminRoutes/giftcard');
 const giftcardRoutes = require("./routes/giftcard");
 const giftcardcountryRoutes = require("./routes/giftcardcountry");
+const kycwebhookRoutes = require('./routes/kycwebhook');
 
 
 
@@ -250,6 +251,7 @@ app.use("/delete-account", authenticateToken, DeleteAccountRoutes);
 app.use("/giftcard", authenticateToken, giftcardRoutes);
 app.use("/giftcardrates", authenticateToken, giftcardRatesRoutes);
 app.use("/giftcardcountry", authenticateToken, giftcardcountryRoutes);
+app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 
 
 // Health Check
