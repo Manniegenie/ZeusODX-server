@@ -5,7 +5,7 @@ const SALT_WORK_FACTOR = 10;
 
 const userSchema = new mongoose.Schema({
   // Authentication
-  username: { type: String }, 
+  username: { type: String },
   isUsernameCustom: { type: Boolean, default: false },
   email: { type: String, required: true, unique: true },
   emailVerified: { type: Boolean, default: false },
@@ -31,19 +31,19 @@ const userSchema = new mongoose.Schema({
   avatarUrl: { type: String, default: null },
   avatarLastUpdated: { type: Date, default: null },
 
-  // Bank Accounts (Limited to 10 per user) - UPDATED with bankCode
+  // Bank Accounts (Limited to 10 per user) - includes bankCode
   bankAccounts: {
     type: [{
       accountName: { type: String, required: true },
       bankName: { type: String, required: true },
-      bankCode: { type: String, required: true }, // NEW: Bank sort code/UUID
+      bankCode: { type: String, required: true },
       accountNumber: { type: String, required: true },
       addedAt: { type: Date, default: Date.now },
       isVerified: { type: Boolean, default: false },
       isActive: { type: Boolean, default: true }
     }],
     validate: {
-      validator: function(accounts) {
+      validator: function (accounts) {
         return accounts.length <= 10;
       },
       message: 'Maximum of 10 bank accounts allowed per user'
@@ -51,19 +51,23 @@ const userSchema = new mongoose.Schema({
     default: []
   },
 
-  // KYC Levels
-  kycLevel: { type: Number, default: 0, min: 0, max: 3, enum: [0,1,2,3] },
-  kycStatus: { type: String, default: 'not_verified', enum: ['not_verified','pending','approved','rejected','under_review'] },
+  // KYC Levels (Bramp-aligned structure)
+  kycLevel: { type: Number, default: 0, min: 0, max: 3, enum: [0, 1, 2, 3] },
+  kycStatus: {
+    type: String,
+    default: 'not_verified',
+    enum: ['not_verified', 'pending', 'approved', 'rejected', 'under_review']
+  },
   kyc: {
     level1: {
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted','pending','approved','rejected'] },
+      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
       rejectionReason: { type: String, default: null }
     },
     level2: {
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted','pending','approved','rejected'] },
+      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
@@ -72,7 +76,7 @@ const userSchema = new mongoose.Schema({
       documentNumber: { type: String, default: null }
     },
     level3: {
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted','pending','approved','rejected'] },
+      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
@@ -89,7 +93,7 @@ const userSchema = new mongoose.Schema({
   lastFailedLogin: { type: Date },
   lastLoginEmailSent: { type: Date, default: null },
 
-  // Wallets - DOGE_DOGE REMOVED
+  // Wallets
   wallets: {
     BTC_BTC: { address: String, network: String, walletReferenceId: String },
     ETH_ETH: { address: String, network: String, walletReferenceId: String },
@@ -106,7 +110,7 @@ const userSchema = new mongoose.Schema({
     NGNZ: { address: String, network: String, walletReferenceId: String },
   },
 
-  // Balances - DOGE BALANCES REMOVED
+  // Balances
   solBalance: { type: Number, default: 0, min: 0 },
   solPendingBalance: { type: Number, default: 0, min: 0 },
   btcBalance: { type: Number, default: 0, min: 0 },
@@ -166,10 +170,10 @@ userSchema.set('toJSON', {
   },
 });
 
-// Pre-save: Hash sensitive fields + balance tracking - DOGE REMOVED
+// Pre-save: Hash sensitive fields + balance tracking
 userSchema.pre('save', async function (next) {
   try {
-    const fieldsToHash = ['password','passwordpin','transactionpin','securitypin'];
+    const fieldsToHash = ['password', 'passwordpin', 'transactionpin', 'securitypin'];
     for (const field of fieldsToHash) {
       if (this.isModified(field) && this[field]) {
         const salt = await bcrypt.genSalt(SALT_WORK_FACTOR);
@@ -177,8 +181,8 @@ userSchema.pre('save', async function (next) {
       }
     }
     const balanceFields = [
-      'solBalance','btcBalance','usdtBalance','usdcBalance','ethBalance',
-      'bnbBalance','maticBalance','avaxBalance','ngnzBalance' // DOGE REMOVED
+      'solBalance', 'btcBalance', 'usdtBalance', 'usdcBalance', 'ethBalance',
+      'bnbBalance', 'maticBalance', 'avaxBalance', 'ngnzBalance'
     ];
     if (balanceFields.some(f => this.isModified(f))) {
       this.lastBalanceUpdate = new Date();
@@ -206,16 +210,14 @@ userSchema.methods.incLoginAttempts = async function () {
 };
 userSchema.methods.resetLoginAttempts = async function () { return this.updateOne({ $unset: { loginAttempts: 1, lockUntil: 1 } }); };
 
-// Email Methods - CRITICAL: This method is called in your signin route!
-userSchema.methods.shouldSendLoginEmail = function() {
+// Email Methods
+userSchema.methods.shouldSendLoginEmail = function () {
   if (!this.lastLoginEmailSent) return true;
-  
   const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
   return this.lastLoginEmailSent < fifteenMinutesAgo;
 };
 
-// Email verification method - UPDATED to include pinChangeOtpVerified
-userSchema.methods.markEmailAsVerified = function() {
+userSchema.methods.markEmailAsVerified = function () {
   this.emailVerified = true;
   this.pinChangeOtp = null;
   this.pinChangeOtpCreatedAt = null;
@@ -224,8 +226,7 @@ userSchema.methods.markEmailAsVerified = function() {
   return this.save();
 };
 
-// Generate OTP for email verification (reuses pin change OTP fields)
-userSchema.methods.generateEmailVerificationOTP = function() {
+userSchema.methods.generateEmailVerificationOTP = function () {
   function generateOTP(length = 6) {
     const digits = '0123456789';
     let otp = '';
@@ -237,30 +238,27 @@ userSchema.methods.generateEmailVerificationOTP = function() {
 
   const otp = generateOTP();
   const createdAt = new Date();
-  const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000); // 10 minutes
-  
+  const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000);
+
   this.pinChangeOtp = otp;
   this.pinChangeOtpCreatedAt = createdAt;
   this.pinChangeOtpExpiresAt = expiresAt;
-  this.pinChangeOtpVerified = false; // Reset verification status
-  
+  this.pinChangeOtpVerified = false;
+
   return otp;
 };
 
-// Check if email verification OTP is valid
-userSchema.methods.isEmailVerificationOTPValid = function(otp) {
-  return this.pinChangeOtp === otp && 
-         this.pinChangeOtpExpiresAt && 
-         this.pinChangeOtpExpiresAt > new Date();
+userSchema.methods.isEmailVerificationOTPValid = function (otp) {
+  return this.pinChangeOtp === otp &&
+    this.pinChangeOtpExpiresAt &&
+    this.pinChangeOtpExpiresAt > new Date();
 };
 
-// Check if email verification OTP has expired
-userSchema.methods.hasEmailVerificationOTPExpired = function() {
+userSchema.methods.hasEmailVerificationOTPExpired = function () {
   return !this.pinChangeOtpExpiresAt || new Date() > this.pinChangeOtpExpiresAt;
 };
 
-// NEW METHOD: Clear all pin change OTP fields
-userSchema.methods.clearPinChangeOtp = function() {
+userSchema.methods.clearPinChangeOtp = function () {
   this.pinChangeOtp = null;
   this.pinChangeOtpCreatedAt = null;
   this.pinChangeOtpExpiresAt = null;
@@ -268,29 +266,24 @@ userSchema.methods.clearPinChangeOtp = function() {
   return this.save();
 };
 
-// Bank Account Methods - UPDATED to include bankCode
-userSchema.methods.addBankAccount = function(accountData) {
+// Bank Account Methods (with bankCode)
+userSchema.methods.addBankAccount = function (accountData) {
   if (this.bankAccounts.length >= 10) {
     throw new Error('Maximum of 10 bank accounts allowed per user');
   }
-  
-  // Check for required fields
   if (!accountData.bankCode) {
     throw new Error('Bank code is required');
   }
-  
   const existingAccount = this.bankAccounts.find(
     account => account.accountNumber === accountData.accountNumber && account.isActive
   );
-  
   if (existingAccount) {
     throw new Error('Bank account with this account number already exists');
   }
-  
   this.bankAccounts.push({
     accountName: accountData.accountName,
     bankName: accountData.bankName,
-    bankCode: accountData.bankCode, // NEW: Include bank code
+    bankCode: accountData.bankCode,
     accountNumber: accountData.accountNumber,
     addedAt: new Date(),
     isVerified: false,
@@ -299,68 +292,72 @@ userSchema.methods.addBankAccount = function(accountData) {
   return this.save();
 };
 
-userSchema.methods.removeBankAccount = function(accountId) {
+userSchema.methods.removeBankAccount = function (accountId) {
   this.bankAccounts.id(accountId).remove();
   return this.save();
 };
 
-userSchema.methods.getActiveBankAccounts = function() {
+userSchema.methods.getActiveBankAccounts = function () {
   return this.bankAccounts.filter(account => account.isActive);
 };
 
-userSchema.methods.getBankAccountsCount = function() {
+userSchema.methods.getBankAccountsCount = function () {
   return this.bankAccounts.filter(account => account.isActive).length;
 };
 
-userSchema.methods.canAddBankAccount = function() {
+userSchema.methods.canAddBankAccount = function () {
   return this.getBankAccountsCount() < 10;
 };
 
-// KYC Limits Methods - Separate limits for different transaction types
-userSchema.methods.getKycLimits = function() {
+// KYC Limits (Bramp-aligned keys) + compatibility alias
+userSchema.methods.getKycLimits = function () {
   const limits = {
-    0: { 
-      ngnz: { daily: 0, monthly: 0 },
-      crypto: { daily: 0, monthly: 0 }, // USD equivalent
+    0: {
+      ngnb: { daily: 0, monthly: 0 },
+      crypto: { daily: 0, monthly: 0 },
       utilities: { daily: 0, monthly: 0 },
-      description: 'No verification' 
+      description: 'No verification'
     },
-    1: { 
-      ngnz: { daily: 0, monthly: 0 },
-      crypto: { daily: 0, monthly: 0 }, // USD equivalent
+    1: {
+      ngnb: { daily: 0, monthly: 0 },
+      crypto: { daily: 0, monthly: 0 },
       utilities: { daily: 50000, monthly: 200000 },
-      description: 'Basic verification' 
+      description: 'Basic verification'
     },
-    2: { 
-      ngnz: { daily: 25000000, monthly: 200000000 },
-      crypto: { daily: 2000000, monthly: 2000000 }, // USD equivalent
+    2: {
+      ngnb: { daily: 25000000, monthly: 200000000 },
+      crypto: { daily: 2000000, monthly: 2000000 },
       utilities: { daily: 500000, monthly: 2000000 },
-      description: 'Identity verified' 
+      description: 'Identity verified'
     },
-    3: { 
-      ngnz: { daily: 50000000, monthly: 500000000 },
-      crypto: { daily: 5000000, monthly: 5000000 }, // USD equivalent
+    3: {
+      ngnb: { daily: 50000000, monthly: 500000000 },
+      crypto: { daily: 5000000, monthly: 5000000 },
       utilities: { daily: 500000, monthly: 2000000 },
-      description: 'Enhanced verification' 
+      description: 'Enhanced verification'
     }
   };
   return limits[this.kycLevel] || limits[0];
 };
 
-// Get specific limit type
-userSchema.methods.getNgnzLimits = function() {
+userSchema.methods.getNgnbLimits = function () {
   const limits = this.getKycLimits();
-  return limits.ngnz;
+  return limits.ngnb;
 };
 
-userSchema.methods.getCryptoLimits = function() {
+userSchema.methods.getCryptoLimits = function () {
   const limits = this.getKycLimits();
   return limits.crypto;
 };
 
-userSchema.methods.getUtilityLimits = function() {
+userSchema.methods.getUtilityLimits = function () {
   const limits = this.getKycLimits();
   return limits.utilities;
+};
+
+// Compatibility alias if other parts of ZeusODX still call NGNZ limits
+userSchema.methods.getNgnzLimits = function () {
+  return this.getNgnbLimits();
 };
 
 // Get or create KYC record
