@@ -362,7 +362,7 @@ userSchema.methods.getNgnzLimits = function () {
 
 // Get or create KYC record
 userSchema.methods.getOrCreateKyc = async function () {
-  const KYC = require('./KYC');
+  const KYC = require('./kyc');
   let kycDoc = await KYC.findOne({ userId: this._id });
   if (!kycDoc) kycDoc = await KYC.create({ userId: this._id });
   return kycDoc;
