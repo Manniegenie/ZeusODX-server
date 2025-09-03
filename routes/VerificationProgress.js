@@ -15,9 +15,9 @@ router.get('/status', async (req, res) => {
       });
     }
 
-    // Build detailed progress for each track
+    // Build detailed progress for each track with granular steps
     const fiat = buildFiatProgress(user);
-    const kyc  = buildKycProgress(user);
+    const kyc = buildKycProgress(user);
 
     // Percent helper
     const toPercent = (completed, total) =>
@@ -28,19 +28,15 @@ router.get('/status', async (req, res) => {
         totalSteps: fiat.total,
         completedSteps: fiat.completedCount,
         percentage: toPercent(fiat.completedCount, fiat.total),
-
-        // NEW: detailed step objects + easy list of completed IDs
-        steps: fiat.steps,                 // [{ id, label, completed, completedAt }]
-        completed: fiat.completedIds       // ['bank_account', 'bvn']
+        steps: fiat.steps,
+        completed: fiat.completedIds
       },
       kycVerification: {
         totalSteps: kyc.total,
         completedSteps: kyc.completedCount,
         percentage: toPercent(kyc.completedCount, kyc.total),
-
-        // NEW: detailed step objects + easy list of completed IDs
-        steps: kyc.steps,                  // [{ id, label, completed, completedAt, status }]
-        completed: kyc.completedIds        // ['level1', 'level2', ...]
+        steps: kyc.steps,
+        completed: kyc.completedIds
       }
     });
 
@@ -66,7 +62,6 @@ function buildFiatProgress(user) {
       id: 'bank_account',
       label: 'Add bank account',
       completed: activeBankAccounts.length > 0,
-      // Use the first active account's addedAt as completion timestamp if available
       completedAt: activeBankAccounts.length > 0
         ? activeBankAccounts[0]?.addedAt || null
         : null,
@@ -75,8 +70,7 @@ function buildFiatProgress(user) {
       id: 'bvn',
       label: 'BVN verification',
       completed: !!user.bvnVerified,
-      // If you store a BVN approval timestamp, place it here instead of null
-      completedAt: null,
+      completedAt: user.bvnVerifiedAt || null,
     }
   ];
 
@@ -90,37 +84,47 @@ function buildFiatProgress(user) {
 }
 
 /**
- * KYC progress = 3 steps (approved statuses only count as completed):
- *  - level1 approved
- *  - level2 approved
- *  - level3 approved
+ * KYC progress = GRANULAR STEPS (not just 3 levels):
+ *  - email: Email verification 
+ *  - identity: Identity verification (part of level2)
+ *  - address: Address verification (level3)
+ * 
+ * Mapping:
+ * - Level 1: Auto-approved (not shown to user)
+ * - Level 2: Email + Identity verification
+ * - Level 3: Address verification
  */
 function buildKycProgress(user) {
   const lvl1 = user.kyc?.level1 || {};
   const lvl2 = user.kyc?.level2 || {};
   const lvl3 = user.kyc?.level3 || {};
 
+  // Check individual components within level2
+  const emailVerified = user.emailVerified || false;
+  const identityVerified = checkIdentityVerification(user, lvl2);
+  const addressVerified = lvl3.status === 'approved';
+
   const steps = [
     {
-      id: 'level1',
-      label: 'KYC Level 1',
-      status: lvl1.status || 'not_submitted',
-      completed: lvl1.status === 'approved',
-      completedAt: lvl1.approvedAt || null
+      id: 'email',
+      label: 'Email Verification',
+      completed: emailVerified,
+      completedAt: user.emailVerifiedAt || null,
+      status: emailVerified ? 'approved' : 'not_submitted'
     },
     {
-      id: 'level2',
-      label: 'KYC Level 2',
-      status: lvl2.status || 'not_submitted',
-      completed: lvl2.status === 'approved',
-      completedAt: lvl2.approvedAt || null
+      id: 'identity',
+      label: 'Identity Verification',
+      completed: identityVerified,
+      completedAt: lvl2.approvedAt || null,
+      status: getIdentityVerificationStatus(user, lvl2)
     },
     {
-      id: 'level3',
-      label: 'KYC Level 3',
-      status: lvl3.status || 'not_submitted',
-      completed: lvl3.status === 'approved',
-      completedAt: lvl3.approvedAt || null
+      id: 'address',
+      label: 'Address Verification', 
+      completed: addressVerified,
+      completedAt: lvl3.approvedAt || null,
+      status: lvl3.status || 'not_submitted'
     }
   ];
 
@@ -131,6 +135,46 @@ function buildKycProgress(user) {
     completedIds,
     steps
   };
+}
+
+/**
+ * Helper: Check if identity verification is complete
+ * This might depend on your specific implementation - adjust as needed
+ */
+function checkIdentityVerification(user, lvl2) {
+  // Option 1: Identity is complete if level2 is approved AND email is verified
+  if (lvl2.status === 'approved' && user.emailVerified) {
+    return true;
+  }
+
+  // Option 2: Check for specific identity documents/selfie
+  // Adjust based on how you store identity verification data
+  const hasIdentityDocs = user.kyc?.identityDocuments?.length > 0;
+  const hasSelfie = user.kyc?.selfiePhoto != null;
+  
+  // Return true if both documents and selfie are provided and approved
+  return hasIdentityDocs && hasSelfie && lvl2.status === 'approved';
+}
+
+/**
+ * Helper: Get identity verification status
+ */
+function getIdentityVerificationStatus(user, lvl2) {
+  // If level2 is approved, identity is approved
+  if (lvl2.status === 'approved') return 'approved';
+  
+  // If level2 is submitted/pending, identity is pending
+  if (lvl2.status === 'pending' || lvl2.status === 'submitted') return 'pending';
+  
+  // Check if user has started identity verification
+  const hasIdentityDocs = user.kyc?.identityDocuments?.length > 0;
+  const hasSelfie = user.kyc?.selfiePhoto != null;
+  
+  if (hasIdentityDocs || hasSelfie) {
+    return 'submitted';
+  }
+  
+  return 'not_submitted';
 }
 
 module.exports = router;
