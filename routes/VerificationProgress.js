@@ -15,9 +15,14 @@ router.get('/status', async (req, res) => {
       });
     }
 
-    // Build detailed progress for each track with granular steps
+    // Build detailed progress for each track
     const fiat = buildFiatProgress(user);
     const kyc = buildKycProgress(user);
+
+    // Calculate overall progress across all steps
+    const totalSteps = fiat.total + kyc.total;
+    const completedSteps = fiat.completedCount + kyc.completedCount;
+    const overallPercentage = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
     // Percent helper
     const toPercent = (completed, total) =>
@@ -37,6 +42,12 @@ router.get('/status', async (req, res) => {
         percentage: toPercent(kyc.completedCount, kyc.total),
         steps: kyc.steps,
         completed: kyc.completedIds
+      },
+      // Overall progress across all verification types
+      overallProgress: {
+        totalSteps: totalSteps,
+        completedSteps: completedSteps,
+        percentage: overallPercentage
       }
     });
 
@@ -51,13 +62,19 @@ router.get('/status', async (req, res) => {
 
 /**
  * Fiat progress = 2 steps:
- *  - bank_account: any active bank account added
  *  - bvn: BVN verified
+ *  - bank_account: Bank account added
  */
 function buildFiatProgress(user) {
   const activeBankAccounts = user.getActiveBankAccounts?.() || [];
 
   const steps = [
+    {
+      id: 'bvn',
+      label: 'BVN verification',
+      completed: !!user.bvnVerified,
+      completedAt: user.bvnVerifiedAt || null,
+    },
     {
       id: 'bank_account',
       label: 'Add bank account',
@@ -65,12 +82,6 @@ function buildFiatProgress(user) {
       completedAt: activeBankAccounts.length > 0
         ? activeBankAccounts[0]?.addedAt || null
         : null,
-    },
-    {
-      id: 'bvn',
-      label: 'BVN verification',
-      completed: !!user.bvnVerified,
-      completedAt: user.bvnVerifiedAt || null,
     }
   ];
 
@@ -84,24 +95,20 @@ function buildFiatProgress(user) {
 }
 
 /**
- * KYC progress = GRANULAR STEPS (not just 3 levels):
- *  - email: Email verification 
- *  - identity: Identity verification (part of level2)
- *  - address: Address verification (level3)
- * 
- * Mapping:
- * - Level 1: Auto-approved (not shown to user)
- * - Level 2: Email + Identity verification
- * - Level 3: Address verification
+ * KYC progress = 3 steps (KYC1 is auto-approved, not shown):
+ *  - email: Email verification (part of KYC2)
+ *  - identity: Identity verification (part of KYC2) 
+ *  - address: Address verification (KYC3 only)
  */
 function buildKycProgress(user) {
-  const lvl1 = user.kyc?.level1 || {};
   const lvl2 = user.kyc?.level2 || {};
   const lvl3 = user.kyc?.level3 || {};
 
-  // Check individual components within level2
+  // KYC2 components: Email + Identity
   const emailVerified = user.emailVerified || false;
   const identityVerified = checkIdentityVerification(user, lvl2);
+  
+  // KYC3 component: Address only
   const addressVerified = lvl3.status === 'approved';
 
   const steps = [
@@ -139,42 +146,18 @@ function buildKycProgress(user) {
 
 /**
  * Helper: Check if identity verification is complete
- * This might depend on your specific implementation - adjust as needed
  */
 function checkIdentityVerification(user, lvl2) {
-  // Option 1: Identity is complete if level2 is approved AND email is verified
-  if (lvl2.status === 'approved' && user.emailVerified) {
-    return true;
-  }
-
-  // Option 2: Check for specific identity documents/selfie
-  // Adjust based on how you store identity verification data
-  const hasIdentityDocs = user.kyc?.identityDocuments?.length > 0;
-  const hasSelfie = user.kyc?.selfiePhoto != null;
-  
-  // Return true if both documents and selfie are provided and approved
-  return hasIdentityDocs && hasSelfie && lvl2.status === 'approved';
+  // Identity is complete if level2 is approved
+  return lvl2.status === 'approved';
 }
 
 /**
  * Helper: Get identity verification status
  */
 function getIdentityVerificationStatus(user, lvl2) {
-  // If level2 is approved, identity is approved
-  if (lvl2.status === 'approved') return 'approved';
-  
-  // If level2 is submitted/pending, identity is pending
-  if (lvl2.status === 'pending' || lvl2.status === 'submitted') return 'pending';
-  
-  // Check if user has started identity verification
-  const hasIdentityDocs = user.kyc?.identityDocuments?.length > 0;
-  const hasSelfie = user.kyc?.selfiePhoto != null;
-  
-  if (hasIdentityDocs || hasSelfie) {
-    return 'submitted';
-  }
-  
-  return 'not_submitted';
+  // Return the level2 status directly since identity = level2
+  return lvl2.status || 'not_submitted';
 }
 
 module.exports = router;
