@@ -15,25 +15,32 @@ router.get('/status', async (req, res) => {
       });
     }
 
-    const fiatTotal = 2;
-    const kycTotal = 3;
+    // Build detailed progress for each track
+    const fiat = buildFiatProgress(user);
+    const kyc  = buildKycProgress(user);
 
-    const fiatSteps = calculateFiatSteps(user);
-    const kycSteps = calculateKycSteps(user);
-
+    // Percent helper
     const toPercent = (completed, total) =>
-      Math.round((completed / total) * 100);
+      total > 0 ? Math.round((completed / total) * 100) : 0;
 
     return res.status(200).json({
       fiatVerification: {
-        totalSteps: fiatTotal,
-        completedSteps: fiatSteps,
-        percentage: toPercent(fiatSteps, fiatTotal)
+        totalSteps: fiat.total,
+        completedSteps: fiat.completedCount,
+        percentage: toPercent(fiat.completedCount, fiat.total),
+
+        // NEW: detailed step objects + easy list of completed IDs
+        steps: fiat.steps,                 // [{ id, label, completed, completedAt }]
+        completed: fiat.completedIds       // ['bank_account', 'bvn']
       },
       kycVerification: {
-        totalSteps: kycTotal,
-        completedSteps: kycSteps,
-        percentage: toPercent(kycSteps, kycTotal)
+        totalSteps: kyc.total,
+        completedSteps: kyc.completedCount,
+        percentage: toPercent(kyc.completedCount, kyc.total),
+
+        // NEW: detailed step objects + easy list of completed IDs
+        steps: kyc.steps,                  // [{ id, label, completed, completedAt, status }]
+        completed: kyc.completedIds        // ['level1', 'level2', ...]
       }
     });
 
@@ -46,31 +53,84 @@ router.get('/status', async (req, res) => {
   }
 });
 
-function calculateFiatSteps(user) {
-  let completedSteps = 0;
-
+/**
+ * Fiat progress = 2 steps:
+ *  - bank_account: any active bank account added
+ *  - bvn: BVN verified
+ */
+function buildFiatProgress(user) {
   const activeBankAccounts = user.getActiveBankAccounts?.() || [];
-  if (activeBankAccounts.length > 0) completedSteps++;
 
-  if (user.bvnVerified) completedSteps++;
+  const steps = [
+    {
+      id: 'bank_account',
+      label: 'Add bank account',
+      completed: activeBankAccounts.length > 0,
+      // Use the first active account's addedAt as completion timestamp if available
+      completedAt: activeBankAccounts.length > 0
+        ? activeBankAccounts[0]?.addedAt || null
+        : null,
+    },
+    {
+      id: 'bvn',
+      label: 'BVN verification',
+      completed: !!user.bvnVerified,
+      // If you store a BVN approval timestamp, place it here instead of null
+      completedAt: null,
+    }
+  ];
 
-  return completedSteps;
+  const completedIds = steps.filter(s => s.completed).map(s => s.id);
+  return {
+    total: steps.length,
+    completedCount: completedIds.length,
+    completedIds,
+    steps
+  };
 }
 
-function calculateKycSteps(user) {
-  let completedSteps = 0;
+/**
+ * KYC progress = 3 steps (approved statuses only count as completed):
+ *  - level1 approved
+ *  - level2 approved
+ *  - level3 approved
+ */
+function buildKycProgress(user) {
+  const lvl1 = user.kyc?.level1 || {};
+  const lvl2 = user.kyc?.level2 || {};
+  const lvl3 = user.kyc?.level3 || {};
 
-  if (user.kyc?.level1?.status === 'approved') {
-    completedSteps++;
-    if (user.kyc?.level2?.status === 'approved') {
-      completedSteps++;
-      if (user.kyc?.level3?.status === 'approved') {
-        completedSteps++;
-      }
+  const steps = [
+    {
+      id: 'level1',
+      label: 'KYC Level 1',
+      status: lvl1.status || 'not_submitted',
+      completed: lvl1.status === 'approved',
+      completedAt: lvl1.approvedAt || null
+    },
+    {
+      id: 'level2',
+      label: 'KYC Level 2',
+      status: lvl2.status || 'not_submitted',
+      completed: lvl2.status === 'approved',
+      completedAt: lvl2.approvedAt || null
+    },
+    {
+      id: 'level3',
+      label: 'KYC Level 3',
+      status: lvl3.status || 'not_submitted',
+      completed: lvl3.status === 'approved',
+      completedAt: lvl3.approvedAt || null
     }
-  }
+  ];
 
-  return completedSteps;
+  const completedIds = steps.filter(s => s.completed).map(s => s.id);
+  return {
+    total: steps.length,
+    completedCount: completedIds.length,
+    completedIds,
+    steps
+  };
 }
 
 module.exports = router;
