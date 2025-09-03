@@ -183,6 +183,7 @@ const giftcardRoutes = require("./routes/giftcard");
 const giftcardcountryRoutes = require("./routes/giftcardcountry");
 const kycwebhookRoutes = require('./routes/kycwebhook');
 const VerificationProgressRoutes = require('./routes/VerificationProgress');
+const EnhancedKYCRoutes = require('./routes/EnhancedKYC');
 
 
 
@@ -252,6 +253,7 @@ app.use("/giftcardrates", authenticateToken, giftcardRatesRoutes);
 app.use("/giftcardcountry", authenticateToken, giftcardcountryRoutes);
 app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 app.use("/verification", authenticateToken, VerificationProgressRoutes);
+app.use("/enhanced-kyc", authenticateToken, EnhancedKYCRoutes);
 
 
 

@@ -61,7 +61,7 @@ const buildPartnerParams = (label = 'kyc') => ({
  * Body: { bvn: string, firstName?, lastName?, dob?, phoneNumber? }
  * Auth: requires req.user.id
  */
-router.post('/kyc/bvn/verify', async (req, res) => {
+router.post('/bvn', async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
@@ -165,7 +165,7 @@ router.post('/kyc/bvn/verify', async (req, res) => {
  *       Use the IDApi (no images). The exact id_type & fields can vary by country/product enablement.
  *       Default here assumes 'ADDRESS' id_type; adjust to your Smile config (e.g., 'DIGITAL_ADDRESS').
  */
-router.post('/kyc/address/verify-digital', async (req, res) => {
+router.post('/address', async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
