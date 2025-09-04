@@ -1,31 +1,42 @@
 // services/nairaWithdrawal.js
 const axios = require('axios');
 const crypto = require('crypto');
-const ChatbotTransaction = require('../models/ChatbotTransaction');
 const logger = require('../utils/logger');
 
 let config = {};
-try { config = require('../routes/config'); } catch (_) { config = {}; }
+try { 
+  config = require('../routes/config'); 
+} catch (_) { 
+  config = {}; 
+}
 
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 
-const baseURL =
-  (config.obiex && String(config.obiex.baseURL || '').replace(/\/+$/, '')) ||
+const baseURL = (config.obiex && String(config.obiex.baseURL || '').replace(/\/+$/, '')) ||
   String(process.env.OBIEX_BASE_URL || '').replace(/\/+$/, '');
 
-const obiex = axios.create({ baseURL, timeout: 30000 });
+const obiex = axios.create({ 
+  baseURL, 
+  timeout: 30000 
+});
+
 obiex.interceptors.request.use(attachObiexAuth);
 
-// ---------- helpers ----------
+// ---------- Helper Functions ----------
+
 function uuid() {
   return (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString('hex');
 }
-function maskAcct(acct) {
+
+function maskAccountNumber(acct) {
   if (!acct) return '';
   const s = String(acct).replace(/\s+/g, '');
   return s.length <= 4 ? s : `${s.slice(0, 2)}****${s.slice(-2)}`;
 }
-function cleanStr(v) { return (v ?? '').toString().trim(); }
+
+function cleanStr(v) { 
+  return (v ?? '').toString().trim(); 
+}
 
 function sanitizeDestination(d = {}) {
   return {
@@ -33,37 +44,49 @@ function sanitizeDestination(d = {}) {
     accountName: cleanStr(d.accountName),
     bankName: cleanStr(d.bankName),
     bankCode: cleanStr(d.bankCode),
-    // Optional:
+    // Optional fields
     pagaBankCode: d.pagaBankCode ? cleanStr(d.pagaBankCode) : undefined,
     merchantCode: d.merchantCode ? cleanStr(d.merchantCode) : undefined,
   };
 }
 
 /**
- * For Obiex /wallets/ext/debit/fiat:
- *   - currency MUST be a fiat-like ledger code (here: "NGNX")
- *   - amount MUST be an amount in that currency
+ * Sanitize and prepare the payload for Obiex fiat debit
+ * Currency should be NGNX for Obiex (NGNZ maps to NGNX)
  */
 function sanitizeFiatPayload(body = {}) {
   const destination = sanitizeDestination(body.destination || {});
   const amount = Number(body.amount);
-  const currency = cleanStr(body.currency || 'NGNX').toUpperCase(); // default to NGNX
-  const narration =
-    cleanStr(body.narration) ||
-    `NGNX payout to ${destination.accountName || 'beneficiary'} (${maskAcct(destination.accountNumber)})`;
+  const currency = cleanStr(body.currency || 'NGNX').toUpperCase();
+  const narration = cleanStr(body.narration) || 
+    `NGNX withdrawal to ${destination.accountName || 'beneficiary'} (${maskAccountNumber(destination.accountNumber)})`;
 
   return { destination, amount, currency, narration };
 }
 
 function validateFiatPayload(clean) {
-  const errs = [];
-  if (!clean.destination.accountNumber) errs.push('destination.accountNumber is required');
-  if (!clean.destination.accountName) errs.push('destination.accountName is required');
-  if (!clean.destination.bankName) errs.push('destination.bankName is required');
-  if (!clean.destination.bankCode) errs.push('destination.bankCode is required');
-  if (!clean.amount || isNaN(clean.amount) || clean.amount <= 0) errs.push('amount must be a positive number');
-  if (!clean.currency) errs.push('currency is required');
-  return errs;
+  const errors = [];
+  
+  if (!clean.destination.accountNumber) {
+    errors.push('destination.accountNumber is required');
+  }
+  if (!clean.destination.accountName) {
+    errors.push('destination.accountName is required');
+  }
+  if (!clean.destination.bankName) {
+    errors.push('destination.bankName is required');
+  }
+  if (!clean.destination.bankCode) {
+    errors.push('destination.bankCode is required');
+  }
+  if (!clean.amount || isNaN(clean.amount) || clean.amount <= 0) {
+    errors.push('amount must be a positive number');
+  }
+  if (!clean.currency) {
+    errors.push('currency is required');
+  }
+  
+  return errors;
 }
 
 function pickRequestId(headers = {}) {
@@ -76,83 +99,67 @@ function pickRequestId(headers = {}) {
   );
 }
 
-// ---------- main service ----------
+// ---------- Main Service Function ----------
+
 /**
- * Debit NGNX via Obiex (bank payout routed by provider).
- *
- * Pass:
- *   amount   => NGNX amount (1:1 with NGN)
- *   currency => "NGNX"
+ * Debit NGNX via Obiex for bank withdrawal
+ * 
+ * @param {Object} payload - Withdrawal payload
+ * @param {Object} payload.destination - Bank details
+ * @param {string} payload.destination.accountNumber - Account number
+ * @param {string} payload.destination.accountName - Account name
+ * @param {string} payload.destination.bankName - Bank name
+ * @param {string} payload.destination.bankCode - Bank code
+ * @param {number} payload.amount - Amount in NGNX (1:1 with NGN)
+ * @param {string} payload.currency - Currency code (should be NGNX)
+ * @param {string} [payload.narration] - Transaction narration
+ * 
+ * @param {Object} opts - Options
+ * @param {string} [opts.userId] - User ID for tracking
+ * @param {string} [opts.idempotencyKey] - Idempotency key
+ * 
+ * @returns {Promise<Object>} Result object
  */
 async function debitNaira(payload, opts = {}) {
+  // Validate Obiex configuration
   validateObiexConfig();
 
   const clean = sanitizeFiatPayload(payload);
   const errors = validateFiatPayload(clean);
+  
   if (errors.length) {
-    return { success: false, statusCode: 400, message: errors.join('; ') };
+    return { 
+      success: false, 
+      statusCode: 400, 
+      message: errors.join('; ') 
+    };
   }
 
-  const idempotencyKey =
-    opts.idempotencyKey ||
-    `fiat-${clean.currency}:${opts.userId || 'anon'}:${maskAcct(clean.destination.accountNumber)}:${clean.amount}:${Date.now()}:${uuid()}`;
-
-  const { chatbotPaymentId, userId } = opts;
-
-  // Pre-write: REQUESTED
-  if (chatbotPaymentId) {
-    try {
-      await ChatbotTransaction.findOneAndUpdate(
-        { paymentId: chatbotPaymentId, ...(userId ? { userId } : {}) },
-        {
-          $set: {
-            payoutStatus: 'REQUESTED',
-            payoutSuccess: false,
-            payoutRequestedAt: new Date(),
-            payoutCurrency: clean.currency,           // "NGNX"
-            payoutAmount: Number(clean.amount),       // NGNX amount
-            payoutNarration: clean.narration,
-            payout: {
-              bankName: clean.destination.bankName,
-              bankCode: clean.destination.bankCode,
-              accountNumber: clean.destination.accountNumber,
-              accountName: clean.destination.accountName,
-              ...(clean.destination.pagaBankCode ? { pagaBankCode: clean.destination.pagaBankCode } : {}),
-              ...(clean.destination.merchantCode ? { merchantCode: clean.destination.merchantCode } : {}),
-              capturedAt: new Date(),
-            },
-            'payoutResult.provider': 'OBIEX',
-            'payoutResult.idempotencyKey': idempotencyKey,
-          },
-        },
-        { new: true }
-      );
-    } catch (e) {
-      logger.warn('Failed to pre-mark ChatbotTransaction payout REQUESTED', {
-        e: e.message, paymentId: chatbotPaymentId, userId,
-      });
-    }
-  }
+  const idempotencyKey = opts.idempotencyKey ||
+    `ngnx-withdrawal-${opts.userId || 'anon'}-${maskAccountNumber(clean.destination.accountNumber)}-${clean.amount}-${Date.now()}-${uuid()}`;
 
   const payloadPreview = {
     destination: {
-      accountNumber: maskAcct(clean.destination.accountNumber),
+      accountNumber: maskAccountNumber(clean.destination.accountNumber),
       accountName: clean.destination.accountName,
       bankName: clean.destination.bankName,
       bankCode: clean.destination.bankCode,
       ...(clean.destination.pagaBankCode ? { pagaBankCode: clean.destination.pagaBankCode } : {}),
       ...(clean.destination.merchantCode ? { merchantCode: clean.destination.merchantCode } : {}),
     },
-    amount: clean.amount,            // NGNX
-    currency: clean.currency,        // "NGNX"
+    amount: clean.amount,
+    currency: clean.currency, // NGNX
     narration: clean.narration,
     idempotencyKey,
   };
 
   try {
-    logger.info('Initiating NGNX debit via Obiex', payloadPreview);
+    logger.info('Initiating NGNX bank withdrawal via Obiex', {
+      ...payloadPreview,
+      userId: opts.userId
+    });
 
-    const res = await obiex.post('/wallets/ext/debit/fiat', clean, {
+    const response = await obiex.post('/wallets/ext/debit/fiat', clean, {
       headers: {
         'Idempotency-Key': idempotencyKey,
         'Accept': 'application/json',
@@ -161,100 +168,62 @@ async function debitNaira(payload, opts = {}) {
       maxBodyLength: Infinity,
     });
 
-    const d = res?.data?.data || res?.data || {};
-    const out = {
-      id: d.id || d.transactionId || null,
-      reference: d.reference || d.ref || null,
-      status: d.status || d.payout?.status || 'PENDING',
-      payout: d.payout || null,
-      raw: d,
+    const data = response?.data?.data || response?.data || {};
+    const result = {
+      id: data.id || data.transactionId || null,
+      reference: data.reference || data.ref || null,
+      status: data.status || data.payout?.status || 'PENDING',
+      payout: data.payout || null,
+      raw: data,
     };
 
-    logger.info('Obiex NGNX debit success', {
-      obiexId: out.id,
-      reference: out.reference,
-      status: out.status,
-      requestId: pickRequestId(res?.headers || {}),
+    logger.info('Obiex NGNX withdrawal successful', {
+      obiexId: result.id,
+      reference: result.reference,
+      status: result.status,
+      userId: opts.userId,
+      requestId: pickRequestId(response?.headers || {}),
     });
 
-    if (chatbotPaymentId) {
-      try {
-        await ChatbotTransaction.findOneAndUpdate(
-          { paymentId: chatbotPaymentId, ...(userId ? { userId } : {}) },
-          {
-            $set: {
-              payoutStatus: 'SUCCESS',
-              payoutSuccess: true,
-              payoutCompletedAt: new Date(),
-              'payoutResult.obiexId': out.id,
-              'payoutResult.obiexReference': out.reference,
-              'payoutResult.obiexStatus': out.status,
-            },
-          },
-          { new: true }
-        );
-      } catch (e) {
-        logger.warn('Failed to mark ChatbotTransaction payout SUCCESS', {
-          e: e.message, paymentId: chatbotPaymentId, userId,
-        });
-      }
-    }
+    return { 
+      success: true, 
+      data: result, 
+      idempotencyKey 
+    };
 
-    return { success: true, data: out, idempotencyKey };
-  } catch (err) {
-    // RAW provider error logging (no normalization)
-    const httpStatus = err.response?.status || 500;
-    const httpStatusText = err.response?.statusText || null;
-    const providerHeaders = err.response?.headers || {};
-    const providerBody = err.response?.data; // RAW
+  } catch (error) {
+    // Extract error details
+    const httpStatus = error.response?.status || 500;
+    const httpStatusText = error.response?.statusText || null;
+    const providerHeaders = error.response?.headers || {};
+    const providerBody = error.response?.data;
     const requestId = pickRequestId(providerHeaders);
-    const providerCode = Object.prototype.hasOwnProperty.call(providerBody || {}, 'code')
-      ? providerBody.code
+    
+    // Extract provider-specific error info
+    const providerCode = (providerBody && typeof providerBody === 'object' && providerBody.code) 
+      ? providerBody.code 
       : null;
-    const providerMessage = Object.prototype.hasOwnProperty.call(providerBody || {}, 'message')
+    const providerMessage = (providerBody && typeof providerBody === 'object' && providerBody.message)
       ? providerBody.message
       : null;
 
-    logger.error('Obiex NGNX debit failed', {
-      axiosErrorCode: err.code || null,
+    logger.error('Obiex NGNX withdrawal failed', {
+      axiosErrorCode: error.code || null,
       httpStatus,
       httpStatusText,
+      userId: opts.userId,
       payloadPreview,
-      providerBody,     // RAW body as-is
-      providerCode,     // RAW code if present
-      providerHeaders,
+      providerBody,
+      providerCode,
+      providerMessage,
       requestId,
+      errorMessage: error.message
     });
-
-    if (chatbotPaymentId) {
-      try {
-        await ChatbotTransaction.findOneAndUpdate(
-          { paymentId: chatbotPaymentId, ...(userId ? { userId } : {}) },
-          {
-            $set: {
-              payoutStatus: 'FAILED',
-              payoutSuccess: false,
-              payoutCompletedAt: new Date(),
-              'payoutResult.httpStatus': httpStatus,
-              'payoutResult.obiexStatus': 'FAILED',
-              'payoutResult.errorCode': providerCode,
-              'payoutResult.errorMessage': providerMessage || err.message || null,
-              'payoutResult.providerRaw': providerBody || null,
-              'payoutResult.requestId': requestId || null,
-            },
-          }
-        );
-      } catch (e) {
-        logger.warn('Failed to mark ChatbotTransaction payout FAILED', {
-          e: e.message, paymentId: chatbotPaymentId, userId,
-        });
-      }
-    }
 
     return {
       success: false,
       statusCode: httpStatus,
-      message: providerMessage || err.message || 'Withdrawal service temporarily unavailable',
+      message: providerMessage || error.message || 'Withdrawal service temporarily unavailable',
       providerCode,
       providerRaw: providerBody,
       requestId,
@@ -262,7 +231,64 @@ async function debitNaira(payload, opts = {}) {
   }
 }
 
+/**
+ * Get withdrawal status from Obiex (if needed for future implementation)
+ * 
+ * @param {string} transactionId - Obiex transaction ID
+ * @returns {Promise<Object>} Status result
+ */
+async function getWithdrawalStatus(transactionId) {
+  try {
+    validateObiexConfig();
+
+    logger.info('Checking withdrawal status', { transactionId });
+
+    const response = await obiex.get(`/transactions/${transactionId}`, {
+      headers: {
+        'Accept': 'application/json',
+      }
+    });
+
+    const data = response?.data?.data || response?.data || {};
+    
+    logger.info('Withdrawal status retrieved', { 
+      transactionId, 
+      status: data.status 
+    });
+
+    return {
+      success: true,
+      data: {
+        id: data.id,
+        reference: data.reference,
+        status: data.status,
+        amount: data.amount,
+        currency: data.currency,
+        raw: data
+      }
+    };
+
+  } catch (error) {
+    const httpStatus = error.response?.status || 500;
+    const providerBody = error.response?.data;
+    
+    logger.error('Failed to get withdrawal status', {
+      transactionId,
+      httpStatus,
+      providerBody,
+      errorMessage: error.message
+    });
+
+    return {
+      success: false,
+      statusCode: httpStatus,
+      message: error.message || 'Failed to retrieve withdrawal status'
+    };
+  }
+}
+
 module.exports = {
-  debitNaira,       // keep export name for compatibility
+  debitNaira,
+  getWithdrawalStatus,
   obiexClient: obiex,
 };
