@@ -1,6 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 const { debitNaira } = require('../services/nairaWithdrawal');
+const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
@@ -65,7 +67,20 @@ function maskAccountNumber(accountNumber) {
 }
 
 /**
- * Validate withdrawal request data
+ * Compare password pin with user's hashed password pin
+ */
+async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
+  if (!candidatePasswordPin || !hashedPasswordPin) return false;
+  try {
+    return await bcrypt.compare(candidatePasswordPin, hashedPasswordPin);
+  } catch (error) {
+    logger.error('Password pin comparison failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Validate withdrawal request data including authentication
  */
 function validateWithdrawalRequest(data) {
   const errors = [];
@@ -91,24 +106,39 @@ function validateWithdrawalRequest(data) {
   if (data.amount && data.amount > 1000000) {
     errors.push('Maximum withdrawal amount is ₦1,000,000');
   }
+
+  // 2FA validation
+  if (!data.twoFactorCode?.trim()) {
+    errors.push('Two-factor authentication code is required');
+  }
+
+  // Password PIN validation
+  if (!data.passwordpin?.trim()) {
+    errors.push('Password PIN is required');
+  } else {
+    const passwordpin = String(data.passwordpin).trim();
+    if (!/^\d{6}$/.test(passwordpin)) {
+      errors.push('Password PIN must be exactly 6 numbers');
+    }
+  }
   
   return errors;
 }
 
 /**
- * Get cached user balance
+ * Get cached user data with authentication fields
  */
-async function getCachedUserBalance(userId) {
-  const cacheKey = `user_balance_${userId}`;
+async function getCachedUser(userId) {
+  const cacheKey = `user_${userId}`;
   const cached = userCache.get(cacheKey);
   
   if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
     return cached.user;
   }
   
-  const user = await User.findById(userId)
-    .select('_id ngnzBalance lastBalanceUpdate')
-    .lean();
+  const user = await User.findById(userId).select(
+    '_id ngnzBalance lastBalanceUpdate twoFASecret is2FAEnabled passwordpin'
+  ).lean(); // Include authentication fields
   
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
@@ -122,7 +152,7 @@ async function getCachedUserBalance(userId) {
  * Validate user has sufficient NGNZ balance
  */
 async function validateUserBalance(userId, amount) {
-  const user = await getCachedUserBalance(userId);
+  const user = await getCachedUser(userId);
   if (!user) {
     return { success: false, message: 'User not found' };
   }
@@ -177,7 +207,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     }
 
     // Clear user cache
-    userCache.delete(`user_balance_${userId}`);
+    userCache.delete(`user_${userId}`);
 
     // 2. Create withdrawal transaction record
     const withdrawalTransaction = new Transaction({
@@ -197,7 +227,10 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         destinationAccountName: destination.accountName,
         bankCode: destination.bankCode,
         correlationId,
-        obiexCurrency: 'NGNX' // Note: NGNZ maps to NGNX for Obiex
+        obiexCurrency: 'NGNX', // Note: NGNZ maps to NGNX for Obiex
+        twofa_validated: true,
+        passwordpin_validated: true,
+        is_ngnz_withdrawal: true
       }
     });
 
@@ -631,7 +664,7 @@ async function processObiexWithdrawal(userId, withdrawalData, withdrawalReferenc
   }
 }
 
-// NGNZ WITHDRAWAL ENDPOINT
+// NGNZ WITHDRAWAL ENDPOINT WITH 2FA AND PIN AUTHENTICATION
 router.post('/withdraw', async (req, res) => {
   const correlationId = generateCorrelationId();
   const systemContext = getSystemContext(req);
@@ -639,7 +672,15 @@ router.post('/withdraw', async (req, res) => {
   
   try {
     const userId = req.user.id;
-    const { amount, destination, narration } = req.body;
+    const { amount, destination, narration, twoFactorCode, passwordpin } = req.body;
+    
+    logger.info(`NGNZ withdrawal request from user ${userId}:`, {
+      amount,
+      destinationBank: destination?.bankName,
+      destinationAccount: destination?.accountNumber ? maskAccountNumber(destination.accountNumber) : null,
+      twoFactorCode: '[REDACTED]',
+      passwordpin: '[REDACTED]'
+    });
     
     // Create audit for withdrawal request
     await createAuditEntry({
@@ -655,7 +696,9 @@ router.post('/withdraw', async (req, res) => {
           ...destination,
           accountNumber: maskAccountNumber(destination.accountNumber)
         } : null,
-        narration
+        narration,
+        has2FA: !!twoFactorCode,
+        hasPIN: !!passwordpin
       },
       relatedEntities: {
         correlationId
@@ -667,8 +710,8 @@ router.post('/withdraw', async (req, res) => {
       tags: ['withdrawal', 'ngnz', 'request']
     });
 
-    // Validate request data
-    const validationErrors = validateWithdrawalRequest({ amount, destination });
+    // Validate request data (including authentication fields)
+    const validationErrors = validateWithdrawalRequest({ amount, destination, twoFactorCode, passwordpin });
     if (validationErrors.length > 0) {
       await createAuditEntry({
         userId,
@@ -701,6 +744,138 @@ router.post('/withdraw', async (req, res) => {
         errors: validationErrors
       });
     }
+
+    // Get user data with authentication fields
+    const user = await getCachedUser(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Validate 2FA setup and code
+    if (!user.twoFASecret || !user.is2FAEnabled) {
+      await createAuditEntry({
+        userId,
+        eventType: 'USER_ACTION',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'NGNZ Withdrawal 2FA Not Setup',
+        description: 'NGNZ withdrawal failed - 2FA not setup or not enabled',
+        errorDetails: {
+          message: 'Two-factor authentication is not set up or not enabled',
+          code: '2FA_NOT_SETUP'
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['withdrawal', 'ngnz', '2fa', 'not-setup']
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: 'Two-factor authentication is not set up or not enabled. Please enable 2FA first.'
+      });
+    }
+
+    if (!validateTwoFactorAuth(user, twoFactorCode)) {
+      logger.warn('2FA validation failed for NGNZ withdrawal', { 
+        userId, errorType: 'INVALID_2FA'
+      });
+
+      await createAuditEntry({
+        userId,
+        eventType: 'USER_ACTION',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'NGNZ Withdrawal Invalid 2FA',
+        description: 'NGNZ withdrawal failed - invalid 2FA code',
+        errorDetails: {
+          message: 'Invalid two-factor authentication code',
+          code: 'INVALID_2FA_CODE'
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        riskLevel: 'MEDIUM',
+        flagged: true,
+        flagReason: 'Invalid 2FA attempt for withdrawal',
+        tags: ['withdrawal', 'ngnz', '2fa', 'invalid']
+      });
+
+      return res.status(401).json({
+        success: false,
+        error: 'INVALID_2FA_CODE',
+        message: 'Invalid two-factor authentication code'
+      });
+    }
+
+    logger.info('2FA validation successful for NGNZ withdrawal', { userId });
+
+    // Validate password PIN setup and code
+    if (!user.passwordpin) {
+      await createAuditEntry({
+        userId,
+        eventType: 'USER_ACTION',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'NGNZ Withdrawal PIN Not Setup',
+        description: 'NGNZ withdrawal failed - password PIN not setup',
+        errorDetails: {
+          message: 'Password PIN is not set up for your account',
+          code: 'PIN_NOT_SETUP'
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['withdrawal', 'ngnz', 'pin', 'not-setup']
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: 'Password PIN is not set up for your account. Please set up your password PIN first.'
+      });
+    }
+
+    const isPasswordPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
+    if (!isPasswordPinValid) {
+      logger.warn('Password PIN validation failed for NGNZ withdrawal', { 
+        userId, errorType: 'INVALID_PASSWORDPIN'
+      });
+
+      await createAuditEntry({
+        userId,
+        eventType: 'USER_ACTION',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'NGNZ Withdrawal Invalid PIN',
+        description: 'NGNZ withdrawal failed - invalid password PIN',
+        errorDetails: {
+          message: 'Invalid password PIN',
+          code: 'INVALID_PASSWORDPIN'
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        riskLevel: 'MEDIUM',
+        flagged: true,
+        flagReason: 'Invalid PIN attempt for withdrawal',
+        tags: ['withdrawal', 'ngnz', 'pin', 'invalid']
+      });
+
+      return res.status(401).json({
+        success: false,
+        error: 'INVALID_PASSWORDPIN',
+        message: 'Invalid password PIN'
+      });
+    }
+
+    logger.info('Password PIN validation successful for NGNZ withdrawal', { userId });
 
     // Validate user balance
     const balanceValidation = await validateUserBalance(userId, amount);
@@ -798,7 +973,7 @@ router.post('/withdraw', async (req, res) => {
           endTime,
           duration: endTime - startTime
         },
-        tags: ['withdrawal', 'ngnz', 'success', 'completed']
+        tags: ['withdrawal', 'ngnz', 'success', 'completed', '2fa-verified', 'pin-verified']
       });
 
       return res.json({
@@ -822,7 +997,11 @@ router.post('/withdraw', async (req, res) => {
             status: obiexResult.data?.status
           },
           balanceAfter: withdrawalResult.user.ngnzBalance,
-          processedAt: new Date().toISOString()
+          processedAt: new Date().toISOString(),
+          authValidation: {
+            twoFactorValidated: true,
+            passwordPinValidated: true
+          }
         }
       });
     } else {
@@ -861,7 +1040,7 @@ router.post('/withdraw', async (req, res) => {
         riskLevel: 'HIGH',
         flagged: true,
         flagReason: 'NGNZ withdrawal processing failed',
-        tags: ['withdrawal', 'ngnz', 'failed', 'processing-error']
+        tags: ['withdrawal', 'ngnz', 'failed', 'processing-error', '2fa-verified', 'pin-verified']
       });
 
       return res.status(502).json({
@@ -901,7 +1080,11 @@ router.post('/withdraw', async (req, res) => {
         code: 'SYSTEM_ERROR',
         stack: err.stack
       },
-      requestData: req.body,
+      requestData: {
+        ...req.body,
+        twoFactorCode: '[REDACTED]',
+        passwordpin: '[REDACTED]'
+      },
       relatedEntities: {
         correlationId
       },
@@ -997,6 +1180,10 @@ router.get('/status/:withdrawalId', async (req, res) => {
           reference: transaction.metadata.obiexReference,
           status: transaction.metadata.obiexStatus
         } : null,
+        authValidation: {
+          twoFactorValidated: transaction.metadata?.twofa_validated || false,
+          passwordPinValidated: transaction.metadata?.passwordpin_validated || false
+        },
         createdAt: transaction.createdAt,
         completedAt: transaction.completedAt,
         narration: transaction.narration
