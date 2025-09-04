@@ -26,7 +26,7 @@ const transactionSchema = new mongoose.Schema({
   },
   network: { type: String },
   narration: { type: String },
-  source: { type: String, enum: ['CRYPTO_WALLET', 'BANK', 'INTERNAL', 'GIFTCARD'], default: 'CRYPTO_WALLET' },
+  source: { type: String, enum: ['CRYPTO_WALLET', 'BANK', 'INTERNAL', 'GIFTCARD', 'NGNZ_WITHDRAWAL'], default: 'CRYPTO_WALLET' },
   hash: { type: String },
   transactionId: { type: String }, // Generic transaction ID - no index here
   obiexTransactionId: { type: String }, // Specific Obiex transaction ID - no index here
