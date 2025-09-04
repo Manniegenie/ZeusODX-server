@@ -1,19 +1,564 @@
-// routes/ngnzSwap.js
-
 const express = require('express');
 const mongoose = require('mongoose');
-const onrampService  = require('../services/onramppriceservice');
+const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { getPricesWithCache } = require('../services/portfolio');
+const { swapCryptoToNGNX, getCurrencyIdByCode, createQuote, acceptQuote } = require('../services/obiexSwap');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
+const TransactionAudit = require('../models/transactionAudit');
 const logger = require('../utils/logger');
 
 const router = express.Router();
+
+// Optimized caching
 const ngnzQuoteCache = new Map();
+const userCache = new Map();
+const priceCache = new Map();
+const CACHE_TTL = 30000; // 30 seconds
+const PRICE_CACHE_TTL = 5000; // 5 seconds for prices
+
+/**
+ * Create audit entry with error handling
+ */
+async function createAuditEntry(auditData) {
+  try {
+    await TransactionAudit.createAudit(auditData);
+  } catch (error) {
+    logger.error('Failed to create audit entry', {
+      error: error.message,
+      auditData: { ...auditData, requestData: '[REDACTED]', responseData: '[REDACTED]' }
+    });
+  }
+}
+
+/**
+ * Generate correlation ID for tracking related operations
+ */
+function generateCorrelationId() {
+  return `NGNZ_CORR_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Get system context from request
+ */
+function getSystemContext(req) {
+  return {
+    ipAddress: req.ip || req.connection?.remoteAddress || 'unknown',
+    userAgent: req.get('User-Agent') || 'unknown',
+    sessionId: req.sessionID || 'unknown',
+    apiVersion: req.get('API-Version') || '1.0',
+    platform: req.get('Platform') || 'unknown',
+    environment: process.env.NODE_ENV || 'production'
+  };
+}
+
+/**
+ * Execute Obiex NGNZ swap in background (non-blocking) with comprehensive auditing
+ * Note: NGNZ in our system maps to NGNX in Obiex
+ */
+async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlationId, systemContext) {
+  const auditStartTime = new Date();
+  
+  try {
+    const { sourceCurrency, targetCurrency, amount, flow } = quote;
+    
+    // Convert NGNZ to NGNX for Obiex operations
+    const obiexSourceCurrency = sourceCurrency === 'NGNZ' ? 'NGNX' : sourceCurrency;
+    const obiexTargetCurrency = targetCurrency === 'NGNZ' ? 'NGNX' : targetCurrency;
+    
+    // Create initial audit entry
+    await createAuditEntry({
+      userId,
+      eventType: 'OBIEX_SWAP_INITIATED',
+      status: 'PENDING',
+      source: 'BACKGROUND_JOB',
+      action: 'Initiate Background Obiex NGNZ Swap',
+      description: `Starting Obiex NGNZ ${flow}: ${amount} ${sourceCurrency} to ${targetCurrency} (Obiex: ${obiexSourceCurrency} to ${obiexTargetCurrency})`,
+      swapDetails: {
+        swapId,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount: amount,
+        provider: 'OBIEX',
+        swapType: flow === 'ONRAMP' ? 'NGNX_TO_CRYPTO' : 'CRYPTO_TO_NGNX',
+        flow
+      },
+      obiexDetails: {
+        obiexSourceCurrency,
+        obiexTargetCurrency,
+        obiexOperationType: flow === 'ONRAMP' ? 'NGNX_TO_CRYPTO' : 'CRYPTO_TO_NGNX'
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime: auditStartTime
+      },
+      tags: ['background', 'obiex', 'ngnz-swap', flow.toLowerCase()]
+    });
+    
+    // Execute appropriate Obiex operation based on flow
+    if (flow === 'OFFRAMP') {
+      // Crypto to NGNX (user: crypto to NGNZ, obiex: crypto to NGNX)
+      logger.info('Executing Obiex crypto-to-NGNX swap in background for NGNZ offramp', {
+        userId,
+        swapId,
+        sourceCurrency: obiexSourceCurrency,
+        targetCurrency: obiexTargetCurrency,
+        amount,
+        correlationId
+      });
+      
+      const obiexResult = await swapCryptoToNGNX({
+        sourceCode: obiexSourceCurrency,
+        amount: amount
+      });
+      
+      const auditEndTime = new Date();
+      
+      if (obiexResult.success) {
+        logger.info('Obiex crypto-to-NGNX swap completed successfully for NGNZ offramp', {
+          userId,
+          swapId,
+          correlationId,
+          obiexData: obiexResult.data
+        });
+        
+        // Create success audit entry
+        await createAuditEntry({
+          userId,
+          eventType: 'OBIEX_SWAP_COMPLETED',
+          status: 'SUCCESS',
+          source: 'OBIEX_API',
+          action: 'Complete NGNZ Offramp Swap',
+          description: `Successfully completed Obiex crypto-to-NGNX swap for NGNZ offramp`,
+          swapDetails: {
+            swapId,
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount: amount,
+            provider: 'OBIEX',
+            swapType: 'CRYPTO_TO_NGNX',
+            flow: 'OFFRAMP'
+          },
+          obiexDetails: {
+            obiexTransactionId: obiexResult.data?.id || obiexResult.data?.reference,
+            obiexStatus: obiexResult.data?.status || 'COMPLETED',
+            obiexResponse: obiexResult.data,
+            obiexOperationType: 'CRYPTO_TO_NGNX',
+            obiexSourceCurrency,
+            obiexTargetCurrency
+          },
+          relatedEntities: {
+            correlationId
+          },
+          responseData: obiexResult.data,
+          systemContext,
+          timing: {
+            startTime: auditStartTime,
+            endTime: auditEndTime,
+            duration: auditEndTime - auditStartTime
+          },
+          tags: ['background', 'obiex', 'ngnz-swap', 'offramp', 'success']
+        });
+        
+        // Create transaction record
+        await createObiexNGNZTransactionRecord(userId, swapId, obiexResult, 'OFFRAMP', correlationId);
+      } else {
+        logger.error('Obiex crypto-to-NGNX swap failed for NGNZ offramp', {
+          userId,
+          swapId,
+          correlationId,
+          error: obiexResult.error,
+          statusCode: obiexResult.statusCode
+        });
+        
+        // Create failure audit entry
+        await createAuditEntry({
+          userId,
+          eventType: 'OBIEX_SWAP_FAILED',
+          status: 'FAILED',
+          source: 'OBIEX_API',
+          action: 'Failed NGNZ Offramp Swap',
+          description: `Obiex crypto-to-NGNX swap failed for NGNZ offramp: ${obiexResult.error?.message || 'Unknown error'}`,
+          errorDetails: {
+            message: obiexResult.error?.message || 'Unknown error',
+            code: obiexResult.error?.code || 'OBIEX_NGNZ_ERROR',
+            httpStatus: obiexResult.statusCode,
+            providerError: obiexResult.error
+          },
+          swapDetails: {
+            swapId,
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount: amount,
+            provider: 'OBIEX',
+            swapType: 'CRYPTO_TO_NGNX',
+            flow: 'OFFRAMP'
+          },
+          obiexDetails: {
+            obiexSourceCurrency,
+            obiexTargetCurrency,
+            obiexOperationType: 'CRYPTO_TO_NGNX'
+          },
+          relatedEntities: {
+            correlationId
+          },
+          responseData: obiexResult,
+          systemContext,
+          timing: {
+            startTime: auditStartTime,
+            endTime: auditEndTime,
+            duration: auditEndTime - auditStartTime
+          },
+          riskLevel: 'MEDIUM',
+          flagged: true,
+          flagReason: 'Obiex NGNZ offramp swap operation failed',
+          tags: ['background', 'obiex', 'ngnz-swap', 'offramp', 'failed', 'error']
+        });
+      }
+    } else {
+      // ONRAMP: NGNX to crypto (user: NGNZ to crypto, obiex: NGNX to crypto)
+      logger.info('Executing Obiex NGNX-to-crypto swap in background for NGNZ onramp', {
+        userId,
+        swapId,
+        sourceCurrency: obiexSourceCurrency,
+        targetCurrency: obiexTargetCurrency,
+        amount,
+        correlationId
+      });
+      
+      await executeObiexNGNXCryptoSwap(userId, swapId, obiexSourceCurrency, obiexTargetCurrency, amount, correlationId, systemContext, auditStartTime, 'ONRAMP');
+    }
+    
+  } catch (error) {
+    const auditEndTime = new Date();
+    
+    logger.error('Background Obiex NGNZ swap execution failed', {
+      userId,
+      swapId,
+      correlationId,
+      flow: quote.flow,
+      error: error.message,
+      stack: error.stack
+    });
+    
+    // Create error audit entry
+    await createAuditEntry({
+      userId,
+      eventType: 'OBIEX_SWAP_FAILED',
+      status: 'FAILED',
+      source: 'BACKGROUND_JOB',
+      action: 'Background Obiex NGNZ Swap Error',
+      description: `Background Obiex NGNZ swap failed with error: ${error.message}`,
+      errorDetails: {
+        message: error.message,
+        code: 'BACKGROUND_NGNZ_SWAP_ERROR',
+        stack: error.stack
+      },
+      swapDetails: {
+        swapId,
+        sourceCurrency: quote.sourceCurrency,
+        targetCurrency: quote.targetCurrency,
+        sourceAmount: quote.amount,
+        provider: 'OBIEX',
+        swapType: quote.flow || 'UNKNOWN',
+        flow: quote.flow
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime: auditStartTime,
+        endTime: auditEndTime,
+        duration: auditEndTime - auditStartTime
+      },
+      riskLevel: 'HIGH',
+      flagged: true,
+      flagReason: 'Critical error in background Obiex NGNZ swap',
+      tags: ['background', 'obiex', 'ngnz-swap', 'critical-error']
+    });
+  }
+}
+
+/**
+ * Execute NGNX-to-crypto swap via Obiex (background process) with auditing
+ */
+async function executeObiexNGNXCryptoSwap(userId, swapId, sourceCurrency, targetCurrency, amount, correlationId, systemContext, startTime, flow) {
+  try {
+    // Get currency IDs for Obiex (sourceCurrency should be NGNX here)
+    const sourceId = await getCurrencyIdByCode(sourceCurrency);
+    const targetId = await getCurrencyIdByCode(targetCurrency);
+    
+    // Create and accept quote for the swap
+    const quoteResult = await createQuote({
+      sourceId,
+      targetId,
+      amount,
+      side: 'SELL' // Selling NGNX for crypto
+    });
+    
+    if (!quoteResult.success) {
+      throw new Error(`Obiex NGNX quote creation failed: ${JSON.stringify(quoteResult.error)}`);
+    }
+    
+    const acceptResult = await acceptQuote(quoteResult.quoteId);
+    const auditEndTime = new Date();
+    
+    if (acceptResult.success) {
+      logger.info('Obiex NGNX-to-crypto swap completed successfully for NGNZ onramp', {
+        userId,
+        swapId,
+        sourceCurrency,
+        targetCurrency,
+        amount,
+        correlationId,
+        quoteId: quoteResult.quoteId,
+        obiexData: acceptResult.data
+      });
+      
+      // Create success audit entry
+      await createAuditEntry({
+        userId,
+        eventType: 'OBIEX_SWAP_COMPLETED',
+        status: 'SUCCESS',
+        source: 'OBIEX_API',
+        action: 'Complete NGNZ Onramp Swap',
+        description: `Successfully completed Obiex NGNX-to-crypto swap for NGNZ onramp`,
+        swapDetails: {
+          swapId,
+          sourceCurrency: 'NGNZ', // User perspective
+          targetCurrency,
+          sourceAmount: amount,
+          provider: 'OBIEX',
+          swapType: 'NGNX_TO_CRYPTO',
+          flow: 'ONRAMP'
+        },
+        obiexDetails: {
+          obiexTransactionId: acceptResult.data?.id || acceptResult.data?.reference,
+          obiexQuoteId: quoteResult.quoteId,
+          obiexStatus: acceptResult.data?.status || 'COMPLETED',
+          obiexResponse: acceptResult.data,
+          obiexOperationType: 'QUOTE_ACCEPT',
+          obiexSourceCurrency: sourceCurrency,
+          obiexTargetCurrency: targetCurrency
+        },
+        relatedEntities: {
+          correlationId
+        },
+        requestData: { sourceId, targetId, amount, side: 'SELL' },
+        responseData: acceptResult.data,
+        systemContext,
+        timing: {
+          startTime,
+          endTime: auditEndTime,
+          duration: auditEndTime - startTime
+        },
+        tags: ['background', 'obiex', 'ngnz-swap', 'onramp', 'success']
+      });
+      
+      // Create a record of the Obiex transaction
+      await createObiexNGNZTransactionRecord(userId, swapId, {
+        quoteId: quoteResult.quoteId,
+        quoteData: quoteResult.data,
+        acceptData: acceptResult.data
+      }, 'ONRAMP', correlationId);
+      
+    } else {
+      throw new Error(`Obiex NGNX quote acceptance failed: ${JSON.stringify(acceptResult.error)}`);
+    }
+    
+  } catch (error) {
+    const auditEndTime = new Date();
+    
+    logger.error('Obiex NGNX-to-crypto swap failed for NGNZ onramp', {
+      userId,
+      swapId,
+      sourceCurrency,
+      targetCurrency,
+      amount,
+      correlationId,
+      error: error.message
+    });
+    
+    // Create failure audit entry
+    await createAuditEntry({
+      userId,
+      eventType: 'OBIEX_SWAP_FAILED',
+      status: 'FAILED',
+      source: 'OBIEX_API',
+      action: 'Failed NGNZ Onramp Swap',
+      description: `Obiex NGNX-to-crypto swap failed for NGNZ onramp: ${error.message}`,
+      errorDetails: {
+        message: error.message,
+        code: 'OBIEX_NGNX_CRYPTO_ERROR',
+        stack: error.stack
+      },
+      swapDetails: {
+        swapId,
+        sourceCurrency: 'NGNZ', // User perspective
+        targetCurrency,
+        sourceAmount: amount,
+        provider: 'OBIEX',
+        swapType: 'NGNX_TO_CRYPTO',
+        flow: 'ONRAMP'
+      },
+      obiexDetails: {
+        obiexSourceCurrency: sourceCurrency,
+        obiexTargetCurrency: targetCurrency,
+        obiexOperationType: 'QUOTE_ACCEPT'
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime: auditEndTime,
+        duration: auditEndTime - startTime
+      },
+      riskLevel: 'MEDIUM',
+      flagged: true,
+      flagReason: 'Obiex NGNZ onramp swap operation failed',
+      tags: ['background', 'obiex', 'ngnz-swap', 'onramp', 'failed']
+    });
+  }
+}
+
+/**
+ * Create a transaction record for Obiex NGNZ operations with auditing
+ */
+async function createObiexNGNZTransactionRecord(userId, swapId, obiexResult, flow, correlationId) {
+  try {
+    const obiexTransaction = new Transaction({
+      userId,
+      type: 'OBIEX_SWAP',
+      currency: 'MIXED', // Since it involves multiple currencies
+      amount: 0, // This is a tracking transaction
+      status: 'SUCCESSFUL',
+      source: 'OBIEX',
+      reference: `OBIEX_NGNZ_${swapId}`,
+      obiexTransactionId: obiexResult.quoteId || obiexResult.data?.id || `OBIEX_NGNZ_${Date.now()}`,
+      narration: `Obiex background NGNZ ${flow} swap`,
+      completedAt: new Date(),
+      metadata: {
+        originalSwapId: swapId,
+        obiexSwapType: `NGNZ_${flow}`,
+        obiexResult: obiexResult,
+        isBackgroundOperation: true,
+        flow: flow,
+        correlationId
+      }
+    });
+    
+    await obiexTransaction.save();
+    
+    logger.info('Obiex NGNZ transaction record created', {
+      userId,
+      swapId,
+      flow,
+      correlationId,
+      obiexTransactionId: obiexTransaction._id
+    });
+    
+    // Create audit for transaction record creation
+    await createAuditEntry({
+      userId,
+      transactionId: obiexTransaction._id,
+      eventType: 'TRANSACTION_CREATED',
+      status: 'SUCCESS',
+      source: 'BACKGROUND_JOB',
+      action: 'Create Obiex NGNZ Transaction Record',
+      description: `Created Obiex NGNZ transaction record for ${flow} swap ${swapId}`,
+      relatedEntities: {
+        correlationId
+      },
+      metadata: {
+        transactionType: 'OBIEX_SWAP',
+        originalSwapId: swapId,
+        obiexSwapType: `NGNZ_${flow}`,
+        flow
+      },
+      tags: ['transaction', 'obiex', 'ngnz', 'record-creation']
+    });
+    
+  } catch (error) {
+    logger.error('Failed to create Obiex NGNZ transaction record', {
+      userId,
+      swapId,
+      flow,
+      correlationId,
+      error: error.message
+    });
+    
+    // Create audit for transaction record failure
+    await createAuditEntry({
+      userId,
+      eventType: 'TRANSACTION_CREATED',
+      status: 'FAILED',
+      source: 'BACKGROUND_JOB',
+      action: 'Failed Obiex NGNZ Transaction Record',
+      description: `Failed to create Obiex NGNZ transaction record: ${error.message}`,
+      errorDetails: {
+        message: error.message,
+        code: 'NGNZ_TRANSACTION_RECORD_ERROR',
+        stack: error.stack
+      },
+      relatedEntities: {
+        correlationId
+      },
+      metadata: {
+        originalSwapId: swapId,
+        flow
+      },
+      riskLevel: 'LOW',
+      tags: ['transaction', 'obiex', 'ngnz', 'record-creation', 'failed']
+    });
+  }
+}
+
+/**
+ * Optimized user balance retrieval with caching
+ */
+async function getCachedUserBalance(userId, currencies = []) {
+  const cacheKey = `user_balance_${userId}`;
+  const cached = userCache.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    return cached.user;
+  }
+  
+  // Build select fields dynamically
+  const selectFields = ['_id', 'lastBalanceUpdate', 'portfolioLastUpdated'];
+  if (currencies.length > 0) {
+    currencies.forEach(currency => {
+      selectFields.push(`${currency.toLowerCase()}Balance`);
+    });
+  } else {
+    // Common NGNZ swap currencies
+    const commonCurrencies = ['ngnz', 'btc', 'eth', 'sol', 'usdt', 'usdc', 'avax', 'bnb', 'matic'];
+    commonCurrencies.forEach(currency => {
+      selectFields.push(`${currency}Balance`);
+    });
+  }
+  
+  const user = await User.findById(userId)
+    .select(selectFields.join(' '))
+    .lean();
+  
+  if (user) {
+    userCache.set(cacheKey, { user, timestamp: Date.now() });
+    setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
+  }
+  
+  return user;
+}
 
 async function validateUserBalance(userId, currency, amount) {
-  const user = await User.findById(userId);
+  const user = await getCachedUserBalance(userId, [currency]);
   if (!user) return { success: false, message: 'User not found' };
   const field = `${currency.toLowerCase()}Balance`;
   const avail = user[field] || 0;
@@ -51,11 +596,12 @@ async function validateNGNZSwap(from, to) {
 }
 
 /**
- * Execute NGNZ swap with atomic balance updates and transaction creation
+ * Execute NGNZ swap with atomic balance updates, transaction creation, and comprehensive auditing
  */
-async function executeNGNZSwap(userId, quote) {
+async function executeNGNZSwap(userId, quote, correlationId, systemContext) {
   const session = await mongoose.startSession();
   session.startTransaction();
+  const startTime = new Date();
   
   try {
     const { sourceCurrency, targetCurrency, amount, amountReceived, flow, type } = quote;
@@ -66,6 +612,9 @@ async function executeNGNZSwap(userId, quote) {
     
     // Generate swap reference
     const swapReference = `NGNZ_SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Get current balances for audit trail
+    const userBefore = await User.findById(userId).select(`${fromKey} ${toKey}`).lean();
     
     // 1. Update balances atomically with balance validation
     const updatedUser = await User.findOneAndUpdate(
@@ -94,6 +643,9 @@ async function executeNGNZSwap(userId, quote) {
       throw new Error(`Balance update failed - insufficient ${sourceCurrency} balance or user not found`);
     }
 
+    // Clear user cache
+    userCache.delete(`user_balance_${userId}`);
+
     // 2. Create outgoing transaction (debit)
     const swapOutTransaction = new Transaction({
       userId,
@@ -115,7 +667,8 @@ async function executeNGNZSwap(userId, quote) {
         fromCurrency: sourceCurrency,
         toCurrency: targetCurrency,
         fromAmount: amount,
-        toAmount: amountReceived
+        toAmount: amountReceived,
+        correlationId
       }
     });
 
@@ -140,7 +693,8 @@ async function executeNGNZSwap(userId, quote) {
         fromCurrency: sourceCurrency,
         toCurrency: targetCurrency,
         fromAmount: amount,
-        toAmount: amountReceived
+        toAmount: amountReceived,
+        correlationId
       }
     });
 
@@ -151,10 +705,13 @@ async function executeNGNZSwap(userId, quote) {
     // 5. Commit everything
     await session.commitTransaction();
     session.endSession();
+    
+    const endTime = new Date();
 
     logger.info('NGNZ swap executed successfully', {
       userId,
       swapReference,
+      correlationId,
       flow,
       sourceCurrency,
       targetCurrency,
@@ -165,6 +722,134 @@ async function executeNGNZSwap(userId, quote) {
       outTransactionId: swapOutTransaction._id,
       inTransactionId: swapInTransaction._id
     });
+
+    // Create comprehensive audit entries
+    await Promise.all([
+      // Balance update audit
+      createAuditEntry({
+        userId,
+        eventType: 'BALANCE_UPDATED',
+        status: 'SUCCESS',
+        source: 'INTERNAL_SWAP',
+        action: 'Update User Balances',
+        description: `Updated balances for NGNZ ${flow}: ${sourceCurrency} and ${targetCurrency}`,
+        beforeState: {
+          [fromKey]: userBefore[fromKey],
+          [toKey]: userBefore[toKey]
+        },
+        afterState: {
+          [fromKey]: updatedUser[fromKey],
+          [toKey]: updatedUser[toKey]
+        },
+        financialImpact: {
+          currency: sourceCurrency,
+          amount: -amount,
+          balanceBefore: userBefore[fromKey],
+          balanceAfter: updatedUser[fromKey]
+        },
+        swapDetails: {
+          swapId: swapReference,
+          sourceCurrency,
+          targetCurrency,
+          sourceAmount: amount,
+          targetAmount: amountReceived,
+          provider: 'INTERNAL_NGNZ',
+          swapType: flow,
+          flow
+        },
+        relatedEntities: {
+          correlationId,
+          relatedTransactionIds: [swapOutTransaction._id, swapInTransaction._id]
+        },
+        systemContext,
+        timing: {
+          startTime,
+          endTime,
+          duration: endTime - startTime
+        },
+        tags: ['balance-update', 'ngnz-swap', flow.toLowerCase(), 'internal']
+      }),
+      
+      // Swap completion audit
+      createAuditEntry({
+        userId,
+        eventType: 'SWAP_COMPLETED',
+        status: 'SUCCESS',
+        source: 'INTERNAL_SWAP',
+        action: 'Complete NGNZ Swap',
+        description: `Successfully completed internal NGNZ ${flow} swap`,
+        swapDetails: {
+          swapId: swapReference,
+          sourceCurrency,
+          targetCurrency,
+          sourceAmount: amount,
+          targetAmount: amountReceived,
+          provider: 'INTERNAL_NGNZ',
+          swapType: flow,
+          flow
+        },
+        relatedEntities: {
+          correlationId,
+          relatedTransactionIds: [swapOutTransaction._id, swapInTransaction._id]
+        },
+        systemContext,
+        timing: {
+          startTime,
+          endTime,
+          duration: endTime - startTime
+        },
+        tags: ['swap', 'ngnz-swap', flow.toLowerCase(), 'completed', 'success']
+      }),
+      
+      // Transaction creation audits
+      createAuditEntry({
+        userId,
+        transactionId: swapOutTransaction._id,
+        eventType: 'TRANSACTION_CREATED',
+        status: 'SUCCESS',
+        source: 'INTERNAL_SWAP',
+        action: 'Create Outgoing NGNZ Transaction',
+        description: `Created outgoing transaction for NGNZ ${flow}`,
+        financialImpact: {
+          currency: sourceCurrency,
+          amount: -amount,
+          balanceBefore: userBefore[fromKey],
+          balanceAfter: updatedUser[fromKey]
+        },
+        swapDetails: {
+          flow
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['transaction', 'ngnz-swap', flow.toLowerCase(), 'outgoing']
+      }),
+      
+      createAuditEntry({
+        userId,
+        transactionId: swapInTransaction._id,
+        eventType: 'TRANSACTION_CREATED',
+        status: 'SUCCESS',
+        source: 'INTERNAL_SWAP',
+        action: 'Create Incoming NGNZ Transaction',
+        description: `Created incoming transaction for NGNZ ${flow}`,
+        financialImpact: {
+          currency: targetCurrency,
+          amount: amountReceived,
+          balanceBefore: userBefore[toKey],
+          balanceAfter: updatedUser[toKey]
+        },
+        swapDetails: {
+          flow
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['transaction', 'ngnz-swap', flow.toLowerCase(), 'incoming']
+      })
+    ]);
 
     return {
       user: updatedUser,
@@ -177,23 +862,106 @@ async function executeNGNZSwap(userId, quote) {
     await session.abortTransaction();
     session.endSession();
     
+    const endTime = new Date();
+    
     logger.error('NGNZ swap execution failed', {
       error: err.message,
       stack: err.stack,
       userId,
+      correlationId,
       quote
+    });
+    
+    // Create failure audit entry
+    await createAuditEntry({
+      userId,
+      eventType: 'SWAP_FAILED',
+      status: 'FAILED',
+      source: 'INTERNAL_SWAP',
+      action: 'Failed NGNZ Swap',
+      description: `Internal NGNZ swap failed: ${err.message}`,
+      errorDetails: {
+        message: err.message,
+        code: 'INTERNAL_NGNZ_SWAP_ERROR',
+        stack: err.stack
+      },
+      swapDetails: {
+        sourceCurrency: quote.sourceCurrency,
+        targetCurrency: quote.targetCurrency,
+        sourceAmount: quote.amount,
+        provider: 'INTERNAL_NGNZ',
+        swapType: quote.flow,
+        flow: quote.flow
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
+      riskLevel: 'HIGH',
+      flagged: true,
+      flagReason: 'Internal NGNZ swap execution failed',
+      tags: ['swap', 'ngnz-swap', 'failed', 'critical-error']
     });
     
     throw err;
   }
 }
 
+// MAINTAINING ORIGINAL QUOTE ENDPOINT STRUCTURE BUT OPTIMIZED WITH AUDITING
 router.post('/quote', async (req, res) => {
+  const correlationId = generateCorrelationId();
+  const systemContext = getSystemContext(req);
+  const startTime = new Date();
+  
   try {
     const { from, to, amount, side } = req.body;
+    const userId = req.user?.id;
     
-    // Validation
+    // Create audit for quote request
+    await createAuditEntry({
+      userId,
+      eventType: 'QUOTE_CREATED',
+      status: 'PENDING',
+      source: 'API_ENDPOINT',
+      action: 'Create NGNZ Swap Quote',
+      description: `NGNZ quote request: ${amount} ${from} to ${to}`,
+      requestData: { from, to, amount, side },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime
+      },
+      tags: ['quote', 'ngnz-swap', 'request']
+    });
+    
+    // Validation - MAINTAINING ORIGINAL ERROR MESSAGES
     if (!from || !to || !amount || !side) {
+      await createAuditEntry({
+        userId,
+        eventType: 'QUOTE_CREATED',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'Failed NGNZ Quote Validation',
+        description: 'NGNZ quote request failed validation - missing required fields',
+        errorDetails: {
+          message: 'Missing required fields: from, to, amount, side',
+          code: 'VALIDATION_ERROR'
+        },
+        requestData: { from, to, amount, side },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['quote', 'ngnz-swap', 'validation', 'failed']
+      });
+      
       return res.status(400).json({ 
         success: false, 
         message: 'Missing required fields: from, to, amount, side' 
@@ -201,6 +969,25 @@ router.post('/quote', async (req, res) => {
     }
     
     if (typeof amount !== 'number' || amount <= 0) {
+      await createAuditEntry({
+        userId,
+        eventType: 'QUOTE_CREATED',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'Failed NGNZ Quote Validation',
+        description: 'NGNZ quote request failed validation - invalid amount',
+        errorDetails: {
+          message: 'Invalid amount. Must be a positive number.',
+          code: 'INVALID_AMOUNT'
+        },
+        requestData: { from, to, amount, side },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['quote', 'ngnz-swap', 'validation', 'failed']
+      });
+      
       return res.status(400).json({ 
         success: false, 
         message: 'Invalid amount. Must be a positive number.' 
@@ -208,6 +995,25 @@ router.post('/quote', async (req, res) => {
     }
     
     if (!['BUY', 'SELL'].includes(side)) {
+      await createAuditEntry({
+        userId,
+        eventType: 'QUOTE_CREATED',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'Failed NGNZ Quote Validation',
+        description: 'NGNZ quote request failed validation - invalid side',
+        errorDetails: {
+          message: 'Invalid side. Must be BUY or SELL.',
+          code: 'INVALID_SIDE'
+        },
+        requestData: { from, to, amount, side },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['quote', 'ngnz-swap', 'validation', 'failed']
+      });
+      
       return res.status(400).json({ 
         success: false, 
         message: 'Invalid side. Must be BUY or SELL.' 
@@ -217,6 +1023,25 @@ router.post('/quote', async (req, res) => {
     // Validate NGNZ swap
     const validation = await validateNGNZSwap(from, to);
     if (!validation.success) {
+      await createAuditEntry({
+        userId,
+        eventType: 'QUOTE_CREATED',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'Failed NGNZ Swap Validation',
+        description: 'NGNZ swap validation failed - invalid currency pair',
+        errorDetails: {
+          message: validation.message,
+          code: 'INVALID_NGNZ_PAIR'
+        },
+        requestData: { from, to, amount, side },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['quote', 'ngnz-swap', 'validation', 'failed']
+      });
+      
       return res.status(400).json(validation);
     }
 
@@ -231,6 +1056,32 @@ router.post('/quote', async (req, res) => {
       
       if (!cryptoPrice) {
         logger.error(`Onramp failed: Price not available for ${targetCurrency}`);
+        
+        await createAuditEntry({
+          userId,
+          eventType: 'QUOTE_CREATED',
+          status: 'FAILED',
+          source: 'API_ENDPOINT',
+          action: 'Failed NGNZ Onramp Price Fetch',
+          description: `Price unavailable for NGNZ onramp target currency ${targetCurrency}`,
+          errorDetails: {
+            message: `Price not available for ${targetCurrency}`,
+            code: 'PRICE_UNAVAILABLE'
+          },
+          swapDetails: {
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount: amount,
+            flow: 'ONRAMP'
+          },
+          relatedEntities: {
+            correlationId
+          },
+          systemContext,
+          riskLevel: 'LOW',
+          tags: ['quote', 'ngnz-swap', 'onramp', 'price-error']
+        });
+        
         return res.status(400).json({
           success: false,
           message: `Price not available for ${targetCurrency}`
@@ -253,6 +1104,32 @@ router.post('/quote', async (req, res) => {
       
       if (!cryptoPrice) {
         logger.error(`Offramp failed: Price not available for ${sourceCurrency}`);
+        
+        await createAuditEntry({
+          userId,
+          eventType: 'QUOTE_CREATED',
+          status: 'FAILED',
+          source: 'API_ENDPOINT',
+          action: 'Failed NGNZ Offramp Price Fetch',
+          description: `Price unavailable for NGNZ offramp source currency ${sourceCurrency}`,
+          errorDetails: {
+            message: `Price not available for ${sourceCurrency}`,
+            code: 'PRICE_UNAVAILABLE'
+          },
+          swapDetails: {
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount: amount,
+            flow: 'OFFRAMP'
+          },
+          relatedEntities: {
+            correlationId
+          },
+          systemContext,
+          riskLevel: 'LOW',
+          tags: ['quote', 'ngnz-swap', 'offramp', 'price-error']
+        });
+        
         return res.status(400).json({
           success: false,
           message: `Price not available for ${sourceCurrency}`
@@ -298,7 +1175,8 @@ router.post('/quote', async (req, res) => {
       provider,
       type: swapType,
       flow,
-      expiresAt
+      expiresAt,
+      correlationId // Add correlation ID to payload
     };
 
     logger.info(`${flow} quote created`, {
@@ -307,10 +1185,47 @@ router.post('/quote', async (req, res) => {
       sourceUSD: sourceAmountUSD.toFixed(6),
       targetUSD: targetAmountUSD.toFixed(6),
       rate,
-      cryptoPrice
+      cryptoPrice,
+      correlationId
     });
 
+    // OPTIMIZED CACHING WITH AUTO-CLEANUP
     ngnzQuoteCache.set(id, payload);
+    setTimeout(() => ngnzQuoteCache.delete(id), 30000);
+    
+    const endTime = new Date();
+
+    // Create successful quote audit
+    await createAuditEntry({
+      userId,
+      eventType: 'QUOTE_CREATED',
+      status: 'SUCCESS',
+      source: 'API_ENDPOINT',
+      action: 'Create NGNZ Swap Quote',
+      description: `Successfully created NGNZ ${flow} quote for ${amount} ${sourceCurrency} to ${targetCurrency}`,
+      requestData: { from, to, amount, side },
+      responseData: payload,
+      swapDetails: {
+        quoteId: id,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount: amount,
+        targetAmount: receiveAmount,
+        provider,
+        swapType,
+        flow
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
+      tags: ['quote', 'ngnz-swap', flow.toLowerCase(), 'created', 'success']
+    });
 
     return res.json({
       success: true,
@@ -319,7 +1234,39 @@ router.post('/quote', async (req, res) => {
     });
 
   } catch (err) {
-    logger.error('POST /ngnz-swap/quote error', { error: err.stack });
+    const endTime = new Date();
+    
+    logger.error('POST /ngnz-swap/quote error', { error: err.stack, correlationId });
+    
+    // Create error audit entry
+    await createAuditEntry({
+      userId: req.user?.id,
+      eventType: 'QUOTE_CREATED',
+      status: 'FAILED',
+      source: 'API_ENDPOINT',
+      action: 'Failed NGNZ Quote Creation',
+      description: `NGNZ quote creation failed with error: ${err.message}`,
+      errorDetails: {
+        message: err.message,
+        code: 'NGNZ_QUOTE_CREATION_ERROR',
+        stack: err.stack
+      },
+      requestData: req.body,
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
+      riskLevel: 'MEDIUM',
+      flagged: true,
+      flagReason: 'NGNZ quote creation system error',
+      tags: ['quote', 'ngnz-swap', 'creation', 'system-error']
+    });
+    
     return res.status(500).json({ 
       success: false, 
       message: 'Internal server error' 
@@ -327,13 +1274,65 @@ router.post('/quote', async (req, res) => {
   }
 });
 
+// ENHANCED NGNZ SWAP EXECUTION ENDPOINT WITH OBIEX INTEGRATION AND COMPREHENSIVE AUDITING
 router.post('/quote/:quoteId', async (req, res) => {
+  const systemContext = getSystemContext(req);
+  const startTime = new Date();
+  
   try {
     const { quoteId } = req.params;
     const userId = req.user.id;
     const quote = ngnzQuoteCache.get(quoteId);
+    
+    // Use existing correlation ID from quote or generate new one
+    const correlationId = quote?.correlationId || generateCorrelationId();
 
+    // Create audit for quote acceptance attempt
+    await createAuditEntry({
+      userId,
+      eventType: 'QUOTE_ACCEPTED',
+      status: 'PENDING',
+      source: 'API_ENDPOINT',
+      action: 'Accept NGNZ Swap Quote',
+      description: `Attempting to accept NGNZ quote ${quoteId}`,
+      swapDetails: {
+        quoteId,
+        flow: quote?.flow
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime
+      },
+      tags: ['quote', 'ngnz-swap', 'acceptance', 'pending']
+    });
+
+    // MAINTAINING ORIGINAL ERROR HANDLING
     if (!quote) {
+      await createAuditEntry({
+        userId,
+        eventType: 'QUOTE_ACCEPTED',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'NGNZ Quote Not Found',
+        description: `NGNZ quote ${quoteId} not found or expired`,
+        errorDetails: {
+          message: 'Quote not found or expired',
+          code: 'QUOTE_NOT_FOUND'
+        },
+        swapDetails: {
+          quoteId
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        riskLevel: 'LOW',
+        tags: ['quote', 'ngnz-swap', 'not-found']
+      });
+      
       return res.status(404).json({ 
         success: false, 
         message: 'Quote not found or expired' 
@@ -342,6 +1341,30 @@ router.post('/quote/:quoteId', async (req, res) => {
 
     if (new Date() > new Date(quote.expiresAt)) {
       ngnzQuoteCache.delete(quoteId);
+      
+      await createAuditEntry({
+        userId,
+        eventType: 'QUOTE_EXPIRED',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'NGNZ Quote Expired',
+        description: `NGNZ quote ${quoteId} has expired`,
+        errorDetails: {
+          message: 'Quote has expired',
+          code: 'QUOTE_EXPIRED'
+        },
+        swapDetails: {
+          quoteId,
+          expiresAt: quote.expiresAt,
+          flow: quote.flow
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['quote', 'ngnz-swap', 'expired']
+      });
+      
       return res.status(410).json({ 
         success: false, 
         message: 'Quote has expired' 
@@ -351,6 +1374,37 @@ router.post('/quote/:quoteId', async (req, res) => {
     // Validate user balance
     const validation = await validateUserBalance(userId, quote.sourceCurrency, quote.amount);
     if (!validation.success) {
+      await createAuditEntry({
+        userId,
+        eventType: 'BALANCE_SYNC',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'Insufficient Balance for NGNZ Swap',
+        description: `Insufficient balance for NGNZ ${quote.flow}: ${validation.message}`,
+        errorDetails: {
+          message: validation.message,
+          code: 'INSUFFICIENT_BALANCE'
+        },
+        financialImpact: {
+          currency: quote.sourceCurrency,
+          amount: quote.amount,
+          balanceBefore: validation.availableBalance
+        },
+        swapDetails: {
+          quoteId,
+          sourceCurrency: quote.sourceCurrency,
+          requiredAmount: quote.amount,
+          availableAmount: validation.availableBalance,
+          flow: quote.flow
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        riskLevel: 'LOW',
+        tags: ['balance', 'ngnz-swap', 'insufficient', 'validation']
+      });
+      
       return res.status(400).json({
         success: false,
         message: validation.message,
@@ -361,22 +1415,64 @@ router.post('/quote/:quoteId', async (req, res) => {
       });
     }
 
-    // Execute swap directly (like your webhook does)
-    const swapResult = await executeNGNZSwap(userId, quote);
+    // Execute NGNZ swap directly
+    const swapResult = await executeNGNZSwap(userId, quote, correlationId, systemContext);
 
-    logger.info('NGNZ swap completed', { 
+    // *** NEW: Execute Obiex NGNZ swap in background ***
+    // This runs asynchronously and won't block the response
+    setImmediate(() => {
+      executeObiexNGNZSwapBackground(userId, quote, swapResult.swapId, correlationId, systemContext);
+    });
+
+    logger.info('NGNZ swap completed, Obiex NGNZ swap initiated in background', { 
       userId, 
       quoteId, 
+      correlationId,
       swapId: swapResult.swapId,
       flow: quote.flow
     });
 
     // Clean up quote from cache
     ngnzQuoteCache.delete(quoteId);
+    
+    const endTime = new Date();
+
+    // Create successful quote acceptance audit
+    await createAuditEntry({
+      userId,
+      eventType: 'QUOTE_ACCEPTED',
+      status: 'SUCCESS',
+      source: 'API_ENDPOINT',
+      action: 'Accept NGNZ Swap Quote',
+      description: `Successfully accepted and executed NGNZ ${quote.flow} quote ${quoteId}`,
+      swapDetails: {
+        quoteId,
+        swapId: swapResult.swapId,
+        sourceCurrency: quote.sourceCurrency,
+        targetCurrency: quote.targetCurrency,
+        sourceAmount: quote.amount,
+        targetAmount: quote.amountReceived,
+        provider: quote.provider,
+        swapType: quote.type,
+        flow: quote.flow
+      },
+      relatedEntities: {
+        correlationId,
+        relatedTransactionIds: [swapResult.swapOutTransaction._id, swapResult.swapInTransaction._id]
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
+      tags: ['quote', 'ngnz-swap', quote.flow.toLowerCase(), 'accepted', 'success', 'obiex-initiated']
+    });
 
     const responsePayload = {
       swapId: swapResult.swapId,
       quoteId,
+      correlationId, // Include correlation ID in response
       status: 'SUCCESSFUL',
       flow: quote.flow,
       swapDetails: {
@@ -398,20 +1494,61 @@ router.post('/quote/:quoteId', async (req, res) => {
       newBalances: {
         [quote.sourceCurrency.toLowerCase()]: swapResult.user[`${quote.sourceCurrency.toLowerCase()}Balance`],
         [quote.targetCurrency.toLowerCase()]: swapResult.user[`${quote.targetCurrency.toLowerCase()}Balance`]
+      },
+      // NEW: Indicate that Obiex NGNZ swap is running in background
+      obiexSwapInitiated: true,
+      audit: {
+        correlationId,
+        trackingEnabled: true
       }
     };
 
     return res.json({
       success: true,
-      message: `NGNZ ${quote.flow.toLowerCase()} completed successfully`,
+      message: `NGNZ ${quote.flow.toLowerCase()} completed successfully, Obiex swap initiated in background`,
       data: { data: responsePayload, ...responsePayload }
     });
 
   } catch (err) {
+    const endTime = new Date();
+    const correlationId = generateCorrelationId();
+    
     logger.error('POST /ngnz-swap/quote/:quoteId error', { 
       error: err.stack,
       userId: req.user?.id,
-      quoteId: req.params?.quoteId
+      quoteId: req.params?.quoteId,
+      correlationId
+    });
+    
+    // Create comprehensive error audit
+    await createAuditEntry({
+      userId: req.user?.id,
+      eventType: 'SWAP_FAILED',
+      status: 'FAILED',
+      source: 'API_ENDPOINT',
+      action: 'Failed NGNZ Swap Execution',
+      description: `NGNZ swap execution failed: ${err.message}`,
+      errorDetails: {
+        message: err.message,
+        code: 'NGNZ_SWAP_EXECUTION_ERROR',
+        stack: err.stack
+      },
+      swapDetails: {
+        quoteId: req.params?.quoteId
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
+      riskLevel: 'HIGH',
+      flagged: true,
+      flagReason: 'Critical NGNZ swap execution failure',
+      tags: ['swap', 'ngnz-swap', 'execution', 'critical-error', 'api-endpoint']
     });
     
     return res.status(500).json({ 
@@ -421,8 +1558,10 @@ router.post('/quote/:quoteId', async (req, res) => {
   }
 });
 
-// Get supported currencies for NGNZ swaps
+// MAINTAINING ORIGINAL SUPPORTED CURRENCIES ENDPOINT WITH AUDITING
 router.get('/supported-currencies', (req, res) => {
+  const systemContext = getSystemContext(req);
+  
   try {
     const supportedCurrencies = [
       { code: 'BTC', name: 'Bitcoin', type: 'cryptocurrency' },
@@ -436,6 +1575,21 @@ router.get('/supported-currencies', (req, res) => {
       { code: 'NGNZ', name: 'Nigerian Naira Digital', type: 'fiat' }
     ];
 
+    // Simple audit for supported currencies request
+    setImmediate(async () => {
+      await createAuditEntry({
+        userId: req.user?.id,
+        eventType: 'USER_ACTION',
+        status: 'SUCCESS',
+        source: 'API_ENDPOINT',
+        action: 'Fetch NGNZ Supported Currencies',
+        description: 'Retrieved supported currencies for NGNZ swaps',
+        responseData: { currencyCount: supportedCurrencies.length },
+        systemContext,
+        tags: ['currencies', 'ngnz-swap', 'fetch', 'info']
+      });
+    });
+
     res.json({
       success: true,
       message: 'Supported currencies for NGNZ swaps retrieved successfully',
@@ -444,11 +1598,57 @@ router.get('/supported-currencies', (req, res) => {
     });
   } catch (err) {
     logger.error('GET /ngnz-swap/supported-currencies error', { error: err.stack });
+    
+    // Error audit for supported currencies request
+    setImmediate(async () => {
+      await createAuditEntry({
+        userId: req.user?.id,
+        eventType: 'SYSTEM_ERROR',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'Failed NGNZ Currencies Fetch',
+        description: `Failed to fetch NGNZ supported currencies: ${err.message}`,
+        errorDetails: {
+          message: err.message,
+          code: 'NGNZ_CURRENCIES_FETCH_ERROR',
+          stack: err.stack
+        },
+        systemContext,
+        tags: ['currencies', 'ngnz-swap', 'fetch', 'error']
+      });
+    });
+    
     return res.status(500).json({ 
       success: false, 
       message: 'Internal server error' 
     });
   }
 });
+
+// Clean up caches periodically to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  
+  // Clean expired NGNZ quotes
+  for (const [key, quote] of ngnzQuoteCache.entries()) {
+    if (now > new Date(quote.expiresAt).getTime()) {
+      ngnzQuoteCache.delete(key);
+    }
+  }
+  
+  // Clean old user cache entries
+  for (const [key, entry] of userCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      userCache.delete(key);
+    }
+  }
+  
+  // Clean old price cache entries
+  for (const [key, entry] of priceCache.entries()) {
+    if (now - entry.timestamp > PRICE_CACHE_TTL) {
+      priceCache.delete(key);
+    }
+  }
+}, 60000); // Clean every minute
 
 module.exports = router;
