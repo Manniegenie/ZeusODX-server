@@ -3,10 +3,10 @@ const mongoose = require('mongoose');
 const onrampService = require('../services/onramppriceservice');
 const offrampService = require('../services/offramppriceservice');
 const { getPricesWithCache } = require('../services/portfolio');
-const { swapCryptoToNGNX, getCurrencyIdByCode, createQuote, acceptQuote } = require('../services/obiexSwap');
+const { swapCryptoToNGNX, getCurrencyIdByCode, createQuote, acceptQuote } = require('../services/ObiexSwap');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
-const TransactionAudit = require('../models/transactionAudit');
+const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 
 const router = express.Router();
