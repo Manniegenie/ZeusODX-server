@@ -71,6 +71,17 @@ function maskAccountNumber(accountNumber) {
 }
 
 /**
+ * Hash account number (store hash only, not raw)
+ */
+function hashAccountNumber(accountNumber) {
+  try {
+    return crypto.createHash('sha256').update(String(accountNumber || '')).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Compare password pin with user's hashed password pin
  */
 async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
@@ -160,7 +171,7 @@ async function getCachedUserAuth(userId) {
 
 /**
  * Execute NGNZ withdrawal with atomic balance updates and comprehensive auditing
- * Now deducts full amount but sends (amount - fee) to Obiex
+ * Deducts full amount; sends (amount - fee) to provider.
  */
 async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, systemContext) {
   const session = await mongoose.startSession();
@@ -204,6 +215,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     userCache.delete(`user_auth_${userId}`);
 
     // 2. Create withdrawal transaction record
+    const last4 = String(destination.accountNumber || '').slice(-4);
     const withdrawalTransaction = new Transaction({
       userId,
       type: 'WITHDRAWAL',
@@ -214,6 +226,34 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       reference: withdrawalReference,
       obiexTransactionId: withdrawalReference,
       narration: narration || `NGNZ withdrawal to ${destination.bankName} (includes ₦${feeAmount} fee)`,
+
+      // NEW: first-class NGNZ fields
+      isNGNZWithdrawal: true,
+      bankAmount: amountToObiex,        // POSITIVE amount that will hit bank
+      withdrawalFee: feeAmount,         // POSITIVE fee retained
+      payoutCurrency: 'NGN',
+      ngnzWithdrawal: {
+        withdrawalReference,
+        requestedAmount: totalDeducted,
+        withdrawalFee: feeAmount,
+        amountSentToBank: amountToObiex,
+        payoutCurrency: 'NGN',
+        destination: {
+          bankName: destination.bankName,
+          bankCode: destination.bankCode,
+          pagaBankCode: destination.pagaBankCode,
+          merchantCode: destination.merchantCode,
+          accountName: destination.accountName,
+          accountNumberMasked: maskAccountNumber(destination.accountNumber),
+          accountNumberLast4: last4,
+          accountNumberHash: hashAccountNumber(destination.accountNumber),
+        },
+        provider: 'OBIEX',
+        idempotencyKey: `ngnz-wd-${withdrawalReference}`,
+        preparedAt: new Date(),
+      },
+
+      // Keep metadata for backwards compatibility
       metadata: {
         withdrawalType: 'NGNZ_TO_BANK',
         destinationBank: destination.bankName,
@@ -400,7 +440,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
 
 /**
  * Process Obiex withdrawal (NGNZ → NGNX conversion)
- * Now sends reduced amount (original amount minus fee) to Obiex
+ * Sends reduced amount (original amount minus fee) to Obiex.
  */
 async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, withdrawalReference, transactionId, correlationId, systemContext) {
   const startTime = new Date();
@@ -480,7 +520,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     const endTime = new Date();
 
     if (obiexResult.success) {
-      // Update transaction status to SUCCESS
+      // Update transaction status to SUCCESS + enrich subdoc
       await Transaction.findByIdAndUpdate(
         transactionId,
         {
@@ -490,7 +530,14 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
             'metadata.obiexId': obiexResult.data?.id,
             'metadata.obiexReference': obiexResult.data?.reference,
             'metadata.obiexStatus': obiexResult.data?.status,
-            'metadata.actualAmountSent': amountToObiex
+            'metadata.actualAmountSent': amountToObiex,
+
+            'ngnzWithdrawal.sentAt': new Date(),
+            'ngnzWithdrawal.completedAt': new Date(),
+            'ngnzWithdrawal.provider': 'OBIEX',
+            'ngnzWithdrawal.obiex.id': obiexResult.data?.id,
+            'ngnzWithdrawal.obiex.reference': obiexResult.data?.reference,
+            'ngnzWithdrawal.obiex.status': obiexResult.data?.status
           }
         }
       );
@@ -553,7 +600,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
       return { success: true, data: obiexResult.data, amountSent: amountToObiex, feeDeducted: feeAmount };
 
     } else {
-      // Update transaction status to FAILED
+      // Update transaction status to FAILED + subdoc failure fields
       await Transaction.findByIdAndUpdate(
         transactionId,
         {
@@ -561,7 +608,10 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
             status: 'FAILED',
             completedAt: new Date(),
             'metadata.obiexError': obiexResult.message,
-            'metadata.obiexStatusCode': obiexResult.statusCode
+            'metadata.obiexStatusCode': obiexResult.statusCode,
+
+            'ngnzWithdrawal.failedAt': new Date(),
+            'ngnzWithdrawal.failureReason': obiexResult.message || 'UNKNOWN_ERROR'
           }
         }
       );
@@ -641,14 +691,17 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
       amountToObiex
     });
 
-    // Update transaction status to FAILED
+    // Update transaction status to FAILED + subdoc failure fields
     await Transaction.findByIdAndUpdate(
       transactionId,
       {
         $set: {
           status: 'FAILED',
           completedAt: new Date(),
-          'metadata.systemError': error.message
+          'metadata.systemError': error.message,
+
+          'ngnzWithdrawal.failedAt': new Date(),
+          'ngnzWithdrawal.failureReason': error.message || 'SYSTEM_ERROR'
         }
       }
     );
@@ -1236,6 +1289,23 @@ router.get('/status/:withdrawalId', async (req, res) => {
       });
     }
 
+    // Prefer new fields; fall back to legacy metadata
+    const totalAmount = Math.abs(transaction.amount);
+    const fee =
+      transaction.withdrawalFee ??
+      transaction.ngnzWithdrawal?.withdrawalFee ??
+      transaction.metadata?.withdrawalFee ??
+      NGNZ_WITHDRAWAL_FEE;
+
+    const amountSentToBank =
+      transaction.bankAmount ??
+      transaction.ngnzWithdrawal?.amountSentToBank ??
+      transaction.metadata?.amountSentToObiex ??
+      Math.max(totalAmount - fee, 0);
+
+    const dest = transaction.ngnzWithdrawal?.destination || {};
+    const obiex = transaction.ngnzWithdrawal?.obiex || {};
+
     // Simple audit for status check
     setImmediate(async () => {
       await createAuditEntry({
@@ -1257,25 +1327,25 @@ router.get('/status/:withdrawalId', async (req, res) => {
         withdrawalId,
         transactionId: transaction._id,
         status: transaction.status,
-        totalAmount: Math.abs(transaction.amount), // Convert back to positive for display
-        amountSentToBank: transaction.metadata?.amountSentToObiex || (Math.abs(transaction.amount) - NGNZ_WITHDRAWAL_FEE),
+        totalAmount, // positive
+        amountSentToBank,
         withdrawalFee: {
-          amount: transaction.metadata?.withdrawalFee || NGNZ_WITHDRAWAL_FEE,
-          currency: 'NGN',
+          amount: fee,
+          currency: transaction.payoutCurrency || transaction.ngnzWithdrawal?.payoutCurrency || 'NGN',
           description: 'Withdrawal processing fee',
-          applied: transaction.metadata?.feeApplied || true
+          applied: true
         },
         currency: transaction.currency,
         destination: {
-          bankName: transaction.metadata?.destinationBank,
-          accountName: transaction.metadata?.destinationAccountName,
-          accountNumber: transaction.metadata?.destinationAccount // Already masked
+          bankName: dest.bankName ?? transaction.metadata?.destinationBank,
+          accountName: dest.accountName ?? transaction.metadata?.destinationAccountName,
+          accountNumber: dest.accountNumberMasked ?? transaction.metadata?.destinationAccount // Already masked
         },
-        obiex: transaction.metadata?.obiexId ? {
-          transactionId: transaction.metadata.obiexId,
-          reference: transaction.metadata.obiexReference,
-          status: transaction.metadata.obiexStatus,
-          amountSent: transaction.metadata.actualAmountSent || transaction.metadata.amountSentToObiex
+        obiex: (obiex.id || transaction.metadata?.obiexId) ? {
+          transactionId: obiex.id ?? transaction.metadata?.obiexId,
+          reference: obiex.reference ?? transaction.metadata?.obiexReference,
+          status: obiex.status ?? transaction.metadata?.obiexStatus,
+          amountSent: transaction.metadata?.actualAmountSent ?? amountSentToBank
         } : null,
         authValidation: {
           twoFactorValidated: transaction.metadata?.twofa_validated || false,
