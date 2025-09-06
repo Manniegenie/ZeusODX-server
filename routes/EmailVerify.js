@@ -6,13 +6,6 @@ const User = require("../models/user");
 const { sendEmailVerificationOTP } = require("../services/EmailService");
 const logger = require("../utils/logger");
 
-function generateOTP(length = 6) {
-  const digits = '0123456789';
-  let otp = '';
-  for (let i = 0; i < length; i++) otp += digits[Math.floor(Math.random() * digits.length)];
-  return otp;
-}
-
 router.post("/initiate", async (req, res) => {
   try {
     const userId = req.user.id;
@@ -103,6 +96,99 @@ router.post("/initiate", async (req, res) => {
   } catch (error) {
     logger.error("Email verification initiate error", { userId: req.user?.id, error: error.message });
     return res.status(500).json({ message: "Server error while initiating email verification" });
+  }
+});
+
+router.post("/verify", async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { otp, email } = req.body;
+
+    // Validate required fields
+    if (!otp) {
+      return res.status(400).json({ message: "Verification code is required" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      logger.warn("User not found for email verification verify", { userId });
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Check if OTP exists
+    if (!user.pinChangeOtp) {
+      return res.status(400).json({ 
+        message: "No verification code found. Please request a new verification code." 
+      });
+    }
+
+    // Check if OTP has expired
+    const now = new Date();
+    if (!user.pinChangeOtpExpiresAt || now > user.pinChangeOtpExpiresAt) {
+      // Clear expired OTP
+      user.pinChangeOtp = null;
+      user.pinChangeOtpCreatedAt = null;
+      user.pinChangeOtpExpiresAt = null;
+      user.pinChangeOtpVerified = false;
+      await user.save();
+
+      return res.status(400).json({ 
+        message: "Verification code has expired. Please request a new verification code." 
+      });
+    }
+
+    // Verify OTP
+    if (user.pinChangeOtp !== otp.toString()) {
+      logger.warn("Invalid OTP provided for email verification", { 
+        userId, 
+        email: user.email.slice(0, 3) + "****" 
+      });
+      return res.status(400).json({ message: "Invalid verification code" });
+    }
+
+    // Optional: If email parameter is provided, validate it matches user's email
+    if (email && email !== user.email) {
+      return res.status(400).json({ 
+        message: "Email mismatch. Please use the email address associated with this verification code." 
+      });
+    }
+
+    // Mark email as verified
+    user.emailVerified = true;
+    user.pinChangeOtpVerified = true;
+    
+    // Update KYC level 2 email verification if applicable
+    if (user.kyc && user.kyc.level2) {
+      user.kyc.level2.emailVerified = true;
+    }
+
+    // Clear OTP fields after successful verification
+    user.pinChangeOtp = null;
+    user.pinChangeOtpCreatedAt = null;
+    user.pinChangeOtpExpiresAt = null;
+
+    await user.save();
+
+    logger.info("Email verification completed successfully", {
+      userId,
+      email: user.email.slice(0, 3) + "****"
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Email address verified successfully",
+      emailVerified: true,
+      verifiedEmail: user.email
+    });
+
+  } catch (error) {
+    logger.error("Email verification verify error", { 
+      userId: req.user?.id, 
+      error: error.message 
+    });
+    return res.status(500).json({ 
+      message: "Server error while verifying email. Please try again." 
+    });
   }
 });
 
