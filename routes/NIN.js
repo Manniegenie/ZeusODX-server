@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
-const SmileIDNINService = require('../services/SmileIDNINService');
+const SmileIDNINService = require('../services/SmileIDService');
 const EmailVerificationService = require('../services/VerifiedEmail');
 const logger = require('../utils/logger');
 
