@@ -152,6 +152,8 @@ router.post('/password-pin', async (req, res) => {
       kyc: {
         level1: {
           status: 'approved',
+          phoneVerified: true,        // NEW: Mark phone as verified
+          verifiedAt: now,           // NEW: Record verification time
           submittedAt: now,
           approvedAt: now,
           rejectedAt: null,
@@ -159,12 +161,14 @@ router.post('/password-pin', async (req, res) => {
         },
         level2: {
           status: 'not_submitted',
+          emailVerified: false,      // NEW: Email not yet verified
+          documentSubmitted: false,  // NEW: Document not yet submitted
+          documentType: null,
+          documentNumber: null,
           submittedAt: null,
           approvedAt: null,
           rejectedAt: null,
-          rejectionReason: null,
-          documentType: null,
-          documentNumber: null
+          rejectionReason: null
         },
         level3: {
           status: 'not_submitted',
@@ -259,10 +263,11 @@ router.post('/password-pin', async (req, res) => {
       throw saveError; // Re-throw if not handled
     }
 
-    logger.info('User created successfully with password PIN and generated username', {
+    logger.info('User created successfully with password PIN, phone verification, and KYC Level 1', {
       userId: newUser._id,
       email: newUser.email,
       username: generatedUsername,
+      phoneVerified: true,
       pinLength: newPin.length,
       source: 'password-pin',
       kycLevel: newUser.kycLevel
@@ -284,7 +289,7 @@ router.post('/password-pin', async (req, res) => {
 
     // Respond immediately to frontend
     res.status(201).json({
-      message: 'Account created successfully with password PIN and KYC Level 1. Wallet addresses will be generated when you request deposit addresses.',
+      message: 'Account created successfully with password PIN, phone verification, and KYC Level 1. Wallet addresses will be generated when you request deposit addresses.',
       user: {
         id: newUser._id,
         email: newUser.email,

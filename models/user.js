@@ -51,7 +51,7 @@ const userSchema = new mongoose.Schema({
     default: []
   },
 
-  // KYC Levels (Bramp-aligned structure)
+  // KYC Levels (Updated structure)
   kycLevel: { type: Number, default: 0, min: 0, max: 3, enum: [0, 1, 2, 3] },
   kycStatus: {
     type: String,
@@ -60,22 +60,26 @@ const userSchema = new mongoose.Schema({
   },
   kyc: {
     level1: {
+      // Phone verification - automatic on signup
       status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
+      phoneVerified: { type: Boolean, default: false },
+      verifiedAt: { type: Date, default: null },
+      rejectionReason: { type: String, default: null }
+    },
+    level2: {
+      // Email + Document verification
+      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
+      emailVerified: { type: Boolean, default: false },
+      documentSubmitted: { type: Boolean, default: false },
+      documentType: { type: String, default: null },
+      documentNumber: { type: String, default: null },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
       rejectionReason: { type: String, default: null }
     },
-    level2: {
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
-      submittedAt: { type: Date, default: null },
-      approvedAt: { type: Date, default: null },
-      rejectedAt: { type: Date, default: null },
-      rejectionReason: { type: String, default: null },
-      documentType: { type: String, default: null },
-      documentNumber: { type: String, default: null }
-    },
     level3: {
+      // Enhanced verification
       status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
       submittedAt: { type: Date, default: null },
       approvedAt: { type: Date, default: null },
@@ -107,7 +111,7 @@ const userSchema = new mongoose.Schema({
     BNB_BSC: { address: String, network: String, walletReferenceId: String },
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
     AVAX_BSC: { address: String, network: String, walletReferenceId: String },
-    NGNZ: { address: String, network: String, walletReferenceId: String },
+    NGNZ: { address: String, network: String, walletReferenceId: String }
   },
 
   // Balances
@@ -140,7 +144,7 @@ const userSchema = new mongoose.Schema({
 
   // Refresh tokens
   refreshTokens: [
-    { token: String, createdAt: { type: Date, default: Date.now } },
+    { token: String, createdAt: { type: Date, default: Date.now } }
   ]
 }, { timestamps: true });
 
@@ -167,7 +171,7 @@ userSchema.set('toJSON', {
     delete ret.twoFASecret;
     delete ret.__v;
     return ret;
-  },
+  }
 });
 
 // Pre-save: Hash sensitive fields + balance tracking
@@ -219,11 +223,17 @@ userSchema.methods.shouldSendLoginEmail = function () {
 
 userSchema.methods.markEmailAsVerified = function () {
   this.emailVerified = true;
+  this.kyc.level2.emailVerified = true;
   this.pinChangeOtp = null;
   this.pinChangeOtpCreatedAt = null;
   this.pinChangeOtpExpiresAt = null;
   this.pinChangeOtpVerified = false;
   return this.save();
+};
+
+// NEW: Email verification check method
+userSchema.methods.isEmailVerified = function () {
+  return this.emailVerified === true;
 };
 
 userSchema.methods.generateEmailVerificationOTP = function () {
@@ -309,26 +319,26 @@ userSchema.methods.canAddBankAccount = function () {
   return this.getBankAccountsCount() < 10;
 };
 
-// KYC Limits (Bramp-aligned keys) + compatibility alias
+// KYC Limits (Updated structure)
 userSchema.methods.getKycLimits = function () {
   const limits = {
     0: {
       ngnb: { daily: 0, monthly: 0 },
       crypto: { daily: 0, monthly: 0 },
       utilities: { daily: 0, monthly: 0 },
-      description: 'No verification'
+      description: 'No verification - No transactions allowed'
     },
     1: {
-      ngnb: { daily: 0, monthly: 0 },
-      crypto: { daily: 0, monthly: 0 },
-      utilities: { daily: 50000, monthly: 200000 },
-      description: 'Basic verification'
+      ngnb: { daily: 0, monthly: 0 }, // No NGN transactions allowed
+      crypto: { daily: 0, monthly: 0 }, // No crypto transactions allowed
+      utilities: { daily: 50000, monthly: 200000 }, // Only utilities allowed
+      description: 'Phone verification (automatic on signup)'
     },
     2: {
       ngnb: { daily: 25000000, monthly: 200000000 },
       crypto: { daily: 2000000, monthly: 2000000 },
       utilities: { daily: 500000, monthly: 2000000 },
-      description: 'Identity verified'
+      description: 'Email verification + Document required'
     },
     3: {
       ngnb: { daily: 50000000, monthly: 500000000 },
@@ -368,15 +378,36 @@ userSchema.methods.getOrCreateKyc = async function () {
   return kycDoc;
 };
 
-// Auto-upgrade to KYC 2
+// Auto-upgrade to KYC 2 (now requires email + document)
 userSchema.methods.autoUpgradeKYC = async function () {
-  if (this.kycLevel < 2) {
-    this.kycLevel = 2;
+  // Auto-upgrade to Level 1 on phone verification
+  if (this.kycLevel < 1 && this.phonenumber) {
+    this.kycLevel = 1;
+    this.kyc.level1.status = 'approved';
+    this.kyc.level1.phoneVerified = true;
+    this.kyc.level1.verifiedAt = new Date();
     this.kycStatus = 'approved';
     await this.save();
     return true;
   }
+  
+  // Auto-upgrade to Level 2 if email verified and document submitted
+  if (this.kycLevel < 2 && this.emailVerified && this.kyc.level2.documentSubmitted) {
+    this.kycLevel = 2;
+    this.kyc.level2.status = 'approved';
+    this.kyc.level2.emailVerified = true;
+    this.kyc.level2.approvedAt = new Date();
+    this.kycStatus = 'approved';
+    await this.save();
+    return true;
+  }
+  
   return false;
+};
+
+// Phone verification check method
+userSchema.methods.isPhoneVerified = function () {
+  return this.kyc && this.kyc.level1 && this.kyc.level1.phoneVerified === true;
 };
 
 module.exports = mongoose.model('User', userSchema);
