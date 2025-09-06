@@ -8,7 +8,7 @@ const logger = require('../utils/logger');
 const smileService = new SmileIDNINService();
 
 // POST: /api/kyc/verify-nin - Submit NIN for verification
-router.post('/verify-nin', authenticateToken, async (req, res) => {
+router.post('/verify-nin', async (req, res) => {
   try {
     const userId = req.user.id;
     const {
