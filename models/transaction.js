@@ -156,7 +156,7 @@ const transactionSchema = new mongoose.Schema({
 
 /** ========= Indexes ========= **/
 
-// Existing
+// Existing indexes
 transactionSchema.index({ transactionId: 1 }, { sparse: true });
 transactionSchema.index({ obiexTransactionId: 1 }, { unique: true, sparse: true });
 transactionSchema.index({ reference: 1 }, { sparse: true });
@@ -173,13 +173,15 @@ transactionSchema.index({ giftCardId: 1 });
 transactionSchema.index({ userId: 1, type: 1, cardType: 1, status: 1 });
 transactionSchema.index({ cardType: 1, country: 1, status: 1 });
 
-// New: NGNZ withdrawal–focused
+// New: NGNZ withdrawal–focused (removed duplicates)
 transactionSchema.index({ isNGNZWithdrawal: 1, status: 1, createdAt: -1 });
-transactionSchema.index({ bankAmount: 1, status: 1 }); // quick reporting on amounts sent to bank
-transactionSchema.index({ 'ngnzWithdrawal.withdrawalReference': 1 }, { sparse: true });
-transactionSchema.index({ 'ngnzWithdrawal.destination.bankCode': 1 }, { sparse: true });
-transactionSchema.index({ 'ngnzWithdrawal.obiex.reference': 1 }, { sparse: true });
-transactionSchema.index({ 'ngnzWithdrawal.obiex.id': 1 }, { sparse: true });
+transactionSchema.index({ bankAmount: 1, status: 1 });
+
+// Note: The following indexes are already created by the field definitions above:
+// - ngnzWithdrawal.withdrawalReference (via index: true, sparse: true)
+// - ngnzWithdrawal.obiex.reference (via index: true, sparse: true)  
+// - ngnzWithdrawal.obiex.id (via index: true, sparse: true)
+// - ngnzWithdrawal.destination.accountNumberHash (via index: true, sparse: true)
 
 /** ========= Hooks & Statics ========= **/
 
