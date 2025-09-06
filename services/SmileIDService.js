@@ -140,7 +140,11 @@ class SmileIDNINService {
         jobId: uniqueJobId,
         ninMasked: nin.slice(0, 3) + '********',
         apiUrl: this.apiURL,
-        isProduction: this.isProduction
+        isProduction: this.isProduction,
+        partnerId: this.partnerId,
+        timestamp: timestamp,
+        hasApiKey: !!this.apiKey,
+        signatureLength: signature?.length
       });
 
       // Make API request to Smile ID (using asynchronous endpoint)
@@ -151,7 +155,12 @@ class SmileIDNINService {
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'User-Agent': 'ZeusODX-NIN-Service/1.0'
+            'User-Agent': 'ZeusODX-NIN-Service/1.0',
+            // Authentication headers - this is the key fix
+            'SmileApiKey': this.apiKey,
+            'signature': signature,
+            'timestamp': timestamp,
+            'partner_id': this.partnerId
           },
           timeout: 30000, // 30 seconds timeout
           validateStatus: (status) => status < 500 // Don't throw on 4xx errors
@@ -200,7 +209,7 @@ class SmileIDNINService {
         if (error.code === 'ECONNABORTED') {
           throw new Error('NIN verification request timed out. Please try again.');
         }
-        if (error.response?.status === 401) {
+        if (error.response?.status === 401 || error.response?.status === 403) {
           throw new Error('Authentication failed with Smile ID. Please check credentials.');
         }
         if (error.response?.status === 400) {
