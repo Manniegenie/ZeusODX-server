@@ -213,8 +213,8 @@ const transactionAuditSchema = new mongoose.Schema({
       ref: 'TransactionAudit'
     }],
     correlationId: {
-      type: String,
-      index: true
+      type: String
+      // Removed: index: true (to fix duplicate index warning)
     }
   },
   
