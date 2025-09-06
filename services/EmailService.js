@@ -70,6 +70,28 @@ async function sendLoginEmail(to, name, device, location, time) {
   });
 }
 
+async function sendEmailVerificationOTP(to, name, otp, expiryMinutes = 10) {
+  const params = {
+    username: String(name || 'User'),
+    otp: String(otp),
+    expiryMinutes: String(expiryMinutes),
+    expiryTime: new Date(Date.now() + expiryMinutes * 60 * 1000).toLocaleString()
+  };
+
+  console.log('Email verification OTP params:', {
+    username: params.username,
+    otp: params.otp.slice(0, 2) + '****',
+    expiryMinutes: params.expiryMinutes
+  });
+
+  return sendEmail({
+    to,
+    name,
+    templateId: parseInt(process.env.BREVO_TEMPLATE_EMAIL_VERIFICATION),
+    params
+  });
+}
+
 async function sendDepositEmail(to, name, amount, currency, reference) {
   return sendEmail({
     to,
@@ -139,6 +161,26 @@ async function sendKycEmail(to, name, status, comments) {
   });
 }
 
+async function sendNINVerificationEmail(to, name, status, kycLevel, rejectionReason = null) {
+  const params = {
+    username: String(name || 'User'),
+    status: String(status),
+    kycLevel: String(kycLevel || 0)
+  };
+
+  // Add rejection reason if status is rejected
+  if (status === 'rejected' && rejectionReason) {
+    params.rejectionReason = String(rejectionReason);
+  }
+
+  return sendEmail({
+    to,
+    name,
+    templateId: parseInt(process.env.BREVO_TEMPLATE_NIN_VERIFICATION),
+    params
+  });
+}
+
 async function sendSignupEmail(to, name) {
   return sendEmail({
     to,
@@ -157,5 +199,7 @@ module.exports = {
   sendGiftcardEmail,
   sendKycEmail,
   sendLoginEmail,
-  sendSignupEmail
+  sendSignupEmail,
+  sendEmailVerificationOTP,
+  sendNINVerificationEmail
 };

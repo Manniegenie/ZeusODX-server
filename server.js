@@ -186,6 +186,7 @@ const VerificationProgressRoutes = require('./routes/VerificationProgress');
 const EnhancedKYCRoutes = require('./routes/EnhancedKYC');
 const NGNZWithdrawal = require('./routes/NGNZWithdrawal');
 const NINRoutes = require('./routes/NIN');
+const EmailVerifyRoutes = require('./routes/EmailVerify')
 
 
 
@@ -258,6 +259,7 @@ app.use("/verification", authenticateToken, VerificationProgressRoutes);
 app.use("/enhanced-kyc", authenticateToken, EnhancedKYCRoutes);
 app.use("/ngnz-withdrawal", authenticateToken, NGNZWithdrawal);
 app.use("/nin", authenticateToken, NINRoutes);
+app.use("/email", authenticateToken, EmailVerifyRoutes)
 
 
 
