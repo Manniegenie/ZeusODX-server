@@ -1,58 +1,128 @@
 const mongoose = require('mongoose');
 
+/** ========= Subdocs for NGNZ bank withdrawals ========= **/
+
+// Bank destination info (mask/hash the account number in your route before saving)
+const BankDestinationSchema = new mongoose.Schema({
+  bankName: { type: String, trim: true },
+  bankCode: { type: String, trim: true },
+  pagaBankCode: { type: String, trim: true },
+  merchantCode: { type: String, trim: true },
+  accountName: { type: String, trim: true },
+
+  // Store only safe variants here; use a vault if you need the raw value elsewhere
+  accountNumberMasked: { type: String, trim: true },   // e.g. "12****34"
+  accountNumberLast4:  { type: String, trim: true },   // e.g. "1234"
+  accountNumberHash:   { type: String, index: true, sparse: true }, // sha256 or similar
+}, { _id: false });
+
+// NGNZ withdrawal details
+const NGNZWithdrawalSchema = new mongoose.Schema({
+  // usually identical to top-level `reference`, kept for clarity
+  withdrawalReference: { type: String, index: true, sparse: true },
+
+  // financials (all POSITIVE numbers here for clarity)
+  requestedAmount:   { type: Number }, // full NGNZ amount deducted from user
+  withdrawalFee:     { type: Number, default: 0 }, // NGN fee you retain
+  amountSentToBank:  { type: Number }, // requestedAmount - withdrawalFee
+  payoutCurrency:    { type: String, default: 'NGN' },
+
+  // destination bank
+  destination: { type: BankDestinationSchema },
+
+  // provider details (Obiex)
+  provider: { type: String, default: 'OBIEX' },
+  idempotencyKey: { type: String },
+  obiex: {
+    id:        { type: String, index: true, sparse: true },
+    reference: { type: String, index: true, sparse: true },
+    status:    { type: String }, // e.g. PENDING | SUCCESS | FAILED
+  },
+
+  // bookkeeping
+  preparedAt:  { type: Date },
+  sentAt:      { type: Date },
+  completedAt: { type: Date },
+  failedAt:    { type: Date },
+  failureReason: { type: String },
+}, { _id: false });
+
+/** ========= Main Transaction schema ========= **/
+
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  type: { 
-    type: String, 
+
+  type: {
+    type: String,
     enum: [
-      'DEPOSIT', 
-      'WITHDRAWAL', 
-      'INTERNAL_TRANSFER_SENT', 
+      'DEPOSIT',
+      'WITHDRAWAL',
+      'INTERNAL_TRANSFER_SENT',
       'INTERNAL_TRANSFER_RECEIVED',
-      'SWAP', // Added SWAP type for swap transactions
-      'GIFTCARD' // Added GIFTCARD type for gift card transactions
-    ], 
-    required: true 
+      'SWAP',
+      'OBIEX_SWAP',
+      'GIFTCARD'
+    ],
+    required: true
   },
+
   currency: { type: String, required: true },
   address: { type: String },
+
+  // Core amounts: for withdrawals, this is NEGATIVE (your existing convention)
   amount: { type: Number, required: true },
+
   fee: { type: Number, default: 0 },
   obiexFee: { type: Number, default: 0 },
+
   status: {
     type: String,
     enum: ['PENDING', 'APPROVED', 'PROCESSING', 'SUCCESSFUL', 'COMPLETED', 'FAILED', 'REJECTED', 'CONFIRMED'],
     required: true,
   },
+
   network: { type: String },
   narration: { type: String },
-  source: { type: String, enum: ['CRYPTO_WALLET', 'BANK', 'INTERNAL', 'GIFTCARD', 'NGNZ_WITHDRAWAL'], default: 'CRYPTO_WALLET' },
+
+  source: {
+    type: String,
+    enum: [
+      'CRYPTO_WALLET',
+      'BANK',
+      'INTERNAL',
+      'GIFTCARD',
+      'NGNZ_WITHDRAWAL',
+      'OBIEX'
+    ],
+    default: 'CRYPTO_WALLET'
+  },
+
   hash: { type: String },
-  transactionId: { type: String }, // Generic transaction ID - no index here
-  obiexTransactionId: { type: String }, // Specific Obiex transaction ID - no index here
-  memo: { type: String }, // For crypto memos/tags
-  metadata: { type: mongoose.Schema.Types.Mixed }, // For additional data
-  reference: { type: String }, // Obiex reference - no index here
-  
-  // Internal transfer specific fields
+  transactionId: { type: String },
+  obiexTransactionId: { type: String },
+  memo: { type: String },
+  metadata: { type: mongoose.Schema.Types.Mixed },
+  reference: { type: String },
+
+  /** ========= Internal transfer ========= **/
   recipientUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   recipientUsername: { type: String },
   senderUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   senderUsername: { type: String },
-  
-  // Swap specific fields
-  fromCurrency: { type: String }, // Source currency for swaps
-  toCurrency: { type: String }, // Target currency for swaps
-  fromAmount: { type: Number }, // Amount being swapped from
-  toAmount: { type: Number }, // Amount being swapped to
-  swapType: { type: String, enum: ['onramp', 'offramp', 'crypto_to_crypto'] }, // Type of swap
-  
-  // Gift card specific fields
+
+  /** ========= Swap ========= **/
+  fromCurrency: { type: String },
+  toCurrency: { type: String },
+  fromAmount: { type: Number },
+  toAmount: { type: Number },
+  swapType: { type: String, enum: ['onramp', 'offramp', 'crypto_to_crypto'] },
+
+  /** ========= Gift card ========= **/
   giftCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'GiftCard' },
-  cardType: { type: String }, // AMAZON, APPLE, etc.
-  cardFormat: { type: String }, // PHYSICAL, E_CODE
-  cardRange: { type: String }, // 25-100, 100-200, etc.
-  country: { type: String }, // US, CANADA, etc.
+  cardType: { type: String },
+  cardFormat: { type: String },
+  cardRange: { type: String },
+  country: { type: String },
   imageUrls: [{ type: String }],
   imagePublicIds: [{ type: String }],
   totalImages: { type: Number, default: 0 },
@@ -63,50 +133,65 @@ const transactionSchema = new mongoose.Schema({
   expectedAmountToReceive: { type: Number },
   expectedSourceCurrency: { type: String },
   expectedTargetCurrency: { type: String },
-  
-  // Additional timestamp fields
+
+  /** ========= NGNZ Withdrawal (new) ========= **/
+  isNGNZWithdrawal: { type: Boolean, default: false, index: true },
+
+  // Convenience top-level fields for quick filters/analytics (duplicates NGNZ subdoc values)
+  // Keep them optional to avoid breaking other types
+  bankAmount: { type: Number },     // == ngnzWithdrawal.amountSentToBank (POSITIVE)
+  withdrawalFee: { type: Number },  // == ngnzWithdrawal.withdrawalFee (POSITIVE)
+  payoutCurrency: { type: String, default: 'NGN' },
+
+  ngnzWithdrawal: { type: NGNZWithdrawalSchema },
+
+  /** ========= Timestamps ========= **/
   completedAt: { type: Date },
   failedAt: { type: Date },
   failureReason: { type: String },
-  
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
 
-// Define indexes only once using schema.index() - this avoids duplicates
-transactionSchema.index({ transactionId: 1 }, { sparse: true }); // Sparse index ignores null/undefined values
-transactionSchema.index({ obiexTransactionId: 1 }, { unique: true, sparse: true }); // Unique but allows nulls
-transactionSchema.index({ reference: 1 }, { sparse: true }); // Sparse index for reference
-transactionSchema.index({ userId: 1, type: 1, status: 1 }); // Compound index for queries
-transactionSchema.index({ userId: 1, createdAt: -1 }); // For user transaction history
-transactionSchema.index({ currency: 1, status: 1 }); // For currency-based queries
+/** ========= Indexes ========= **/
 
-// Additional indexes for internal transfers
-transactionSchema.index({ recipientUserId: 1, type: 1, status: 1 }); // For recipient queries
-transactionSchema.index({ senderUserId: 1, type: 1, status: 1 }); // For sender queries
+// Existing
+transactionSchema.index({ transactionId: 1 }, { sparse: true });
+transactionSchema.index({ obiexTransactionId: 1 }, { unique: true, sparse: true });
+transactionSchema.index({ reference: 1 }, { sparse: true });
+transactionSchema.index({ userId: 1, type: 1, status: 1 });
+transactionSchema.index({ userId: 1, createdAt: -1 });
+transactionSchema.index({ currency: 1, status: 1 });
+transactionSchema.index({ recipientUserId: 1, type: 1, status: 1 });
+transactionSchema.index({ senderUserId: 1, type: 1, status: 1 });
+transactionSchema.index({ userId: 1, type: 1, swapType: 1, status: 1 });
+transactionSchema.index({ fromCurrency: 1, toCurrency: 1, status: 1 });
+transactionSchema.index({ userId: 1, type: 1, fromCurrency: 1, toCurrency: 1 });
+transactionSchema.index({ reference: 1, type: 1 });
+transactionSchema.index({ giftCardId: 1 });
+transactionSchema.index({ userId: 1, type: 1, cardType: 1, status: 1 });
+transactionSchema.index({ cardType: 1, country: 1, status: 1 });
 
-// Additional indexes for swap transactions
-transactionSchema.index({ userId: 1, type: 1, swapType: 1, status: 1 }); // For swap queries
-transactionSchema.index({ fromCurrency: 1, toCurrency: 1, status: 1 }); // For swap pair queries
-transactionSchema.index({ userId: 1, type: 1, fromCurrency: 1, toCurrency: 1 }); // For user swap history
-transactionSchema.index({ reference: 1, type: 1 }); // For finding related transactions by reference and type
+// New: NGNZ withdrawal–focused
+transactionSchema.index({ isNGNZWithdrawal: 1, status: 1, createdAt: -1 });
+transactionSchema.index({ bankAmount: 1, status: 1 }); // quick reporting on amounts sent to bank
+transactionSchema.index({ 'ngnzWithdrawal.withdrawalReference': 1 }, { sparse: true });
+transactionSchema.index({ 'ngnzWithdrawal.destination.bankCode': 1 }, { sparse: true });
+transactionSchema.index({ 'ngnzWithdrawal.obiex.reference': 1 }, { sparse: true });
+transactionSchema.index({ 'ngnzWithdrawal.obiex.id': 1 }, { sparse: true });
 
-// Additional indexes for gift card transactions
-transactionSchema.index({ giftCardId: 1 }); // For finding transaction by gift card
-transactionSchema.index({ userId: 1, type: 1, cardType: 1, status: 1 }); // For gift card queries
-transactionSchema.index({ cardType: 1, country: 1, status: 1 }); // For gift card analytics
+/** ========= Hooks & Statics ========= **/
 
-// Update the updatedAt field on save
-transactionSchema.pre('save', function(next) {
+transactionSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   next();
 });
 
 /**
- * Static method to create swap transaction pairs
- * This method creates two transactions: one debit (outgoing) and one credit (incoming)
+ * Static method to create swap transaction pairs (unchanged)
  */
-transactionSchema.statics.createSwapTransactions = async function({
+transactionSchema.statics.createSwapTransactions = async function ({
   userId,
   quoteId = null,
   sourceCurrency,
@@ -122,18 +207,14 @@ transactionSchema.statics.createSwapTransactions = async function({
   status = 'SUCCESSFUL',
   session = null
 }) {
-  // Generate a unique reference for this swap pair
   const swapReference = `SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  
-  // Normalize swapType to lowercase for consistent database storage
   const normalizedSwapType = swapType?.toLowerCase() || 'crypto_to_crypto';
-  
-  // Create the outgoing transaction (debit)
+
   const swapOutTransaction = new this({
     userId,
     type: 'SWAP',
     currency: sourceCurrency,
-    amount: -sourceAmount, // Negative for outgoing
+    amount: -sourceAmount,
     status,
     source: 'INTERNAL',
     fromCurrency: sourceCurrency,
@@ -156,12 +237,11 @@ transactionSchema.statics.createSwapTransactions = async function({
     }
   });
 
-  // Create the incoming transaction (credit)
   const swapInTransaction = new this({
     userId,
     type: 'SWAP',
     currency: targetCurrency,
-    amount: targetAmount, // Positive for incoming
+    amount: targetAmount,
     status,
     source: 'INTERNAL',
     fromCurrency: sourceCurrency,
@@ -172,7 +252,7 @@ transactionSchema.statics.createSwapTransactions = async function({
     reference: swapReference,
     narration: `Swap ${sourceAmount} ${sourceCurrency} to ${targetAmount} ${targetCurrency}`,
     completedAt: status === 'SUCCESSFUL' ? new Date() : null,
-    fee: 0, // Fee is only applied to the outgoing transaction
+    fee: 0,
     metadata: {
       swapDirection: 'IN',
       exchangeRate,
@@ -184,7 +264,6 @@ transactionSchema.statics.createSwapTransactions = async function({
     }
   });
 
-  // Save both transactions
   const saveOptions = session ? { session } : {};
   await swapOutTransaction.save(saveOptions);
   await swapInTransaction.save(saveOptions);
