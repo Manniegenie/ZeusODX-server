@@ -6,6 +6,13 @@ const User = require("../models/user");
 const { sendEmailVerificationOTP } = require("../services/EmailService");
 const logger = require("../utils/logger");
 
+function generateOTP(length = 6) {
+  const digits = '0123456789';
+  let otp = '';
+  for (let i = 0; i < length; i++) otp += digits[Math.floor(Math.random() * digits.length)];
+  return otp;
+}
+
 router.post("/initiate", async (req, res) => {
   try {
     const userId = req.user.id;
