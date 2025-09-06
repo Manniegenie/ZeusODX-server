@@ -1,4 +1,4 @@
-// ../models/KYC.js
+// models/KYC.js
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
@@ -11,11 +11,11 @@ const KYCSchema = new Schema(
     provider: { type: String, default: 'smile-id', index: true },
     environment: { type: String, enum: ['sandbox', 'production', 'unknown'], default: 'unknown' },
 
-    partnerJobId: { type: String, index: true }, // ok to keep; not a duplicate
+    partnerJobId: { type: String, index: true },
     jobType: { type: String },
 
-    // 🔧 FIX: remove `index: true` here; rely on schema.index below
-    smileJobId: { type: String, sparse: true },
+    // ❌ remove inline index/sparse here
+    smileJobId: { type: String },
 
     jobComplete: { type: Boolean },
     jobSuccess: { type: Boolean },
@@ -49,13 +49,18 @@ const KYCSchema = new Schema(
   { timestamps: true }
 );
 
-// Idempotency/indexing:
-KYCSchema.index({ smileJobId: 1 }, { unique: true, sparse: true });
+// ✅ define indexes only here
+KYCSchema.index(
+  { smileJobId: 1 },
+  // Prefer partial filter to sparse for uniques
+  { unique: true, partialFilterExpression: { smileJobId: { $exists: true, $type: 'string' } } }
+);
+
 KYCSchema.index(
   { userId: 1, partnerJobId: 1 },
   { unique: true, partialFilterExpression: { partnerJobId: { $type: 'string' } } }
 );
+
 KYCSchema.index({ userId: 1, createdAt: -1 });
 
-// Guard export to avoid double compilation in hot-reload/serverless
 module.exports = mongoose.models.KYC || mongoose.model('KYC', KYCSchema);

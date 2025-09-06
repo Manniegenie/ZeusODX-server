@@ -1,3 +1,4 @@
+// models/Transaction.js
 const mongoose = require('mongoose');
 
 /** ========= Subdocs for NGNZ bank withdrawals ========= **/
@@ -13,13 +14,13 @@ const BankDestinationSchema = new mongoose.Schema({
   // Store only safe variants here; use a vault if you need the raw value elsewhere
   accountNumberMasked: { type: String, trim: true },   // e.g. "12****34"
   accountNumberLast4:  { type: String, trim: true },   // e.g. "1234"
-  accountNumberHash:   { type: String, index: true, sparse: true }, // sha256 or similar
+  accountNumberHash:   { type: String },               // index moved below
 }, { _id: false });
 
 // NGNZ withdrawal details
 const NGNZWithdrawalSchema = new mongoose.Schema({
   // usually identical to top-level `reference`, kept for clarity
-  withdrawalReference: { type: String, index: true, sparse: true },
+  withdrawalReference: { type: String }, // index moved below
 
   // financials (all POSITIVE numbers here for clarity)
   requestedAmount:   { type: Number }, // full NGNZ amount deducted from user
@@ -34,8 +35,8 @@ const NGNZWithdrawalSchema = new mongoose.Schema({
   provider: { type: String, default: 'OBIEX' },
   idempotencyKey: { type: String },
   obiex: {
-    id:        { type: String, index: true, sparse: true },
-    reference: { type: String, index: true, sparse: true },
+    id:        { type: String }, // index moved below
+    reference: { type: String }, // index moved below
     status:    { type: String }, // e.g. PENDING | SUCCESS | FAILED
   },
 
@@ -134,11 +135,10 @@ const transactionSchema = new mongoose.Schema({
   expectedSourceCurrency: { type: String },
   expectedTargetCurrency: { type: String },
 
-  /** ========= NGNZ Withdrawal (new) ========= **/
+  /** ========= NGNZ Withdrawal ========= **/
   isNGNZWithdrawal: { type: Boolean, default: false, index: true },
 
   // Convenience top-level fields for quick filters/analytics (duplicates NGNZ subdoc values)
-  // Keep them optional to avoid breaking other types
   bankAmount: { type: Number },     // == ngnzWithdrawal.amountSentToBank (POSITIVE)
   withdrawalFee: { type: Number },  // == ngnzWithdrawal.withdrawalFee (POSITIVE)
   payoutCurrency: { type: String, default: 'NGN' },
@@ -156,9 +156,12 @@ const transactionSchema = new mongoose.Schema({
 
 /** ========= Indexes ========= **/
 
-// Existing indexes
+// Existing / common indexes
 transactionSchema.index({ transactionId: 1 }, { sparse: true });
-transactionSchema.index({ obiexTransactionId: 1 }, { unique: true, sparse: true });
+transactionSchema.index(
+  { obiexTransactionId: 1 },
+  { unique: true, partialFilterExpression: { obiexTransactionId: { $exists: true, $type: 'string' } } }
+);
 transactionSchema.index({ reference: 1 }, { sparse: true });
 transactionSchema.index({ userId: 1, type: 1, status: 1 });
 transactionSchema.index({ userId: 1, createdAt: -1 });
@@ -173,15 +176,15 @@ transactionSchema.index({ giftCardId: 1 });
 transactionSchema.index({ userId: 1, type: 1, cardType: 1, status: 1 });
 transactionSchema.index({ cardType: 1, country: 1, status: 1 });
 
-// New: NGNZ withdrawal–focused (removed duplicates)
+// NGNZ withdrawal–focused
 transactionSchema.index({ isNGNZWithdrawal: 1, status: 1, createdAt: -1 });
 transactionSchema.index({ bankAmount: 1, status: 1 });
 
-// Note: The following indexes are already created by the field definitions above:
-// - ngnzWithdrawal.withdrawalReference (via index: true, sparse: true)
-// - ngnzWithdrawal.obiex.reference (via index: true, sparse: true)  
-// - ngnzWithdrawal.obiex.id (via index: true, sparse: true)
-// - ngnzWithdrawal.destination.accountNumberHash (via index: true, sparse: true)
+// Subdoc indexes moved here to avoid duplicates
+transactionSchema.index({ 'ngnzWithdrawal.withdrawalReference': 1 }, { sparse: true });
+transactionSchema.index({ 'ngnzWithdrawal.obiex.reference': 1 }, { sparse: true });
+transactionSchema.index({ 'ngnzWithdrawal.obiex.id': 1 }, { sparse: true });
+transactionSchema.index({ 'ngnzWithdrawal.destination.accountNumberHash': 1 }, { sparse: true });
 
 /** ========= Hooks & Statics ========= **/
 
@@ -191,7 +194,7 @@ transactionSchema.pre('save', function (next) {
 });
 
 /**
- * Static method to create swap transaction pairs (unchanged)
+ * Static method to create swap transaction pairs
  */
 transactionSchema.statics.createSwapTransactions = async function ({
   userId,
@@ -277,4 +280,4 @@ transactionSchema.statics.createSwapTransactions = async function ({
   };
 };
 
-module.exports = mongoose.model('Transaction', transactionSchema);
+module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);

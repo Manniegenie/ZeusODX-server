@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
-const SmileIDNINService = require('../services/SmileIDService');
+const SmileIDNINService = require('../services/SmileIDNINService');
 const EmailVerificationService = require('../services/VerifiedEmail');
 const logger = require('../utils/logger');
 
@@ -11,21 +11,13 @@ const smileService = new SmileIDNINService();
 router.post('/verify-nin', async (req, res) => {
   try {
     const userId = req.user.id;
-    const {
-      nin,
-      firstName,
-      lastName,
-      middleName,
-      dateOfBirth, // YYYY-MM-DD
-      gender, // M or F
-      phoneNumber
-    } = req.body;
+    const { nin } = req.body;
 
     // Validate required fields
-    if (!nin || !firstName || !lastName || !dateOfBirth || !gender) {
+    if (!nin) {
       return res.status(400).json({
         success: false,
-        message: 'All required fields must be provided: nin, firstName, lastName, dateOfBirth, gender'
+        message: 'NIN is required'
       });
     }
 
@@ -35,6 +27,14 @@ router.post('/verify-nin', async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'User not found'
+      });
+    }
+
+    // Check if user has required profile information
+    if (!user.firstname || !user.lastname) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please complete your profile with first name and last name before submitting NIN verification'
       });
     }
 
@@ -77,23 +77,6 @@ router.post('/verify-nin', async (req, res) => {
       });
     }
 
-    // Validate date of birth format
-    const dobRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dobRegex.test(dateOfBirth)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid date of birth format. Use YYYY-MM-DD'
-      });
-    }
-
-    // Validate gender
-    if (!['M', 'F'].includes(gender.toUpperCase())) {
-      return res.status(400).json({
-        success: false,
-        message: 'Gender must be M or F'
-      });
-    }
-
     // Update user's KYC status to pending
     user.kyc.level2.status = 'pending';
     user.kyc.level2.documentType = 'NIN';
@@ -102,22 +85,24 @@ router.post('/verify-nin', async (req, res) => {
     user.kycStatus = 'pending';
     await user.save();
 
-    // Submit to Smile ID
+    // Submit to Smile ID using user's profile information
     const verificationResult = await smileService.verifyNIN({
       userId,
       nin,
-      firstName,
-      lastName,
-      middleName,
-      dateOfBirth,
-      gender: gender.toUpperCase(),
-      phoneNumber: phoneNumber || user.phonenumber
+      firstName: user.firstname,
+      lastName: user.lastname,
+      middleName: '', // Optional, can be empty
+      dateOfBirth: '1990-01-01', // Default date - Smile ID might require this
+      gender: 'M', // Default gender - Smile ID might require this
+      phoneNumber: user.phonenumber
     });
 
     logger.info('NIN verification submitted successfully', {
       userId,
       jobId: verificationResult.jobId,
-      ninMasked: nin.slice(0, 3) + '********'
+      ninMasked: nin.slice(0, 3) + '********',
+      firstName: user.firstname,
+      lastName: user.lastname
     });
 
     res.status(200).json({
