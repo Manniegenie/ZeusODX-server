@@ -99,7 +99,7 @@ function normalize(body) {
  * Mount this at: app.use('/webhooks', require('./routes/smileid.webhook'))
  * Ensure JSON body size: app.use(express.json({ limit: '2mb' }))
  */
-router.post('/smileid/callback', async (req, res) => {
+router.post('/callback', async (req, res) => {
   const body = req.body || {};
   const norm = normalize(body);
 

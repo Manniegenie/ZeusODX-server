@@ -185,6 +185,7 @@ const kycwebhookRoutes = require('./routes/kycwebhook');
 const VerificationProgressRoutes = require('./routes/VerificationProgress');
 const EnhancedKYCRoutes = require('./routes/EnhancedKYC');
 const NGNZWithdrawal = require('./routes/NGNZWithdrawal');
+const NINRoutes = require('./routes/NIN');
 
 
 
@@ -201,6 +202,7 @@ app.use("/naira", nairaAccountsRoutes);
 // Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
+app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 
 // Admin/Utility Routes
 app.use("/deleteuser", deleteuserRoutes);
@@ -252,10 +254,10 @@ app.use("/delete-account", authenticateToken, DeleteAccountRoutes);
 app.use("/giftcard", authenticateToken, giftcardRoutes);
 app.use("/giftcardrates", authenticateToken, giftcardRatesRoutes);
 app.use("/giftcardcountry", authenticateToken, giftcardcountryRoutes);
-app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 app.use("/verification", authenticateToken, VerificationProgressRoutes);
 app.use("/enhanced-kyc", authenticateToken, EnhancedKYCRoutes);
 app.use("/ngnz-withdrawal", authenticateToken, NGNZWithdrawal);
+app.use("/nin", authenticateToken, NINRoutes);
 
 
 
