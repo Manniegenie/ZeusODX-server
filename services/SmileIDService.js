@@ -83,7 +83,6 @@ class SmileIDNINService {
         partner_params: {
           user_id: userId,
           job_id: uniqueJobId,
-          job_type: 1, // Basic KYC
           verification_type: 'nin_verification'
         },
         first_name: firstName.trim(),
@@ -108,8 +107,12 @@ class SmileIDNINService {
         timestamp: authData.timestamp
       });
 
-      // Generate authentication headers using the auth utility
-      const headers = this.auth.generateAuthHeaders(authData.timestamp);
+      // Use basic headers for Basic KYC (no authentication headers)
+      const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'ZeusODX-SmileID-Service/1.0'
+      };
 
       // Get API endpoints from auth utility
       const endpoints = this.auth.getEndpoints();
