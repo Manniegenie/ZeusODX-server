@@ -51,11 +51,12 @@ class SmileIDAuth {
   }
 
   /**
-   * Generate timestamp in ISO format
-   * @returns {string} ISO timestamp
+   * Generate timestamp in ISO format with milliseconds (required by Smile ID)
+   * @returns {string} ISO timestamp in format "yyyy-MM-dd'T'HH:mm:ss.fffZ"
    */
   generateTimestamp() {
-    return new Date().toISOString();
+    const now = new Date();
+    return now.toISOString(); // This already gives us the correct format: 2024-09-07T09:02:15.887Z
   }
 
   /**

@@ -92,8 +92,10 @@ class SmileIDNINService {
         dob: dateOfBirth, // YYYY-MM-DD format
         gender: gender.toUpperCase(),
         phone_number: phoneNumber?.trim() || '',
-        // Spread authentication data
-        ...authData
+        // Include authentication data in payload (required by Basic KYC API)
+        partner_id: authData.partner_id,
+        signature: authData.signature,
+        timestamp: authData.timestamp
       };
 
       logger.info('SmileIDNINService: Initiating NIN verification', {
