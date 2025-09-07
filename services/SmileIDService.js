@@ -1,61 +1,29 @@
-const crypto = require('crypto');
 const axios = require('axios');
 const User = require('../models/user');
 const logger = require('../utils/logger');
+const SmileIDAuth = require('../utils/SmileIDauth'); // Import the new auth utility
 
 /**
  * Smile ID NIN Verification Service
  * Handles Nigerian National Identification Number verification via Smile ID API
  */
 class SmileIDNINService {
-  constructor() {
-    this.partnerId = process.env.SMILE_ID_PARTNER_ID;
-    this.apiKey = process.env.SMILE_ID_API_KEY;
-    this.callbackUrl = process.env.SMILE_ID_CALLBACK_URL;
-    this.isProduction = process.env.NODE_ENV === 'production';
+  constructor(options = {}) {
+    // Initialize SmileID authentication utility
+    this.auth = new SmileIDAuth(options);
     
-    // API URLs
-    this.sandboxURL = 'https://testapi.smileidentity.com/v1';
-    this.prodURL = 'https://api.smileidentity.com/v1';
-    this.apiURL = this.isProduction ? this.prodURL : this.sandboxURL;
+    // Get configuration from auth utility
+    const config = this.auth.getConfig();
+    this.apiURL = config.apiURL;
+    this.callbackUrl = config.callbackUrl;
+    this.isProduction = config.isProduction;
+    this.partnerId = config.partnerId;
 
-    // Validate required environment variables
-    if (!this.partnerId || !this.apiKey) {
-      logger.error('SmileIDNINService: Missing required environment variables', {
-        hasPartnerId: !!this.partnerId,
-        hasApiKey: !!this.apiKey
-      });
-    }
-  }
-
-  /**
-   * Generate signature for Smile ID API authentication
-   * @param {string} timestamp - ISO timestamp
-   * @param {string} partnerId - Partner ID
-   * @param {string} requestType - Type of request
-   * @returns {string} - Generated signature
-   */
-  generateSignature(timestamp, partnerId, requestType = 'sid_request') {
-    try {
-      const signatureString = `${timestamp}${partnerId}${requestType}`;
-      return crypto
-        .createHmac('sha256', this.apiKey)
-        .update(signatureString)
-        .digest('base64');
-    } catch (error) {
-      logger.error('SmileIDNINService: Error generating signature', {
-        error: error.message
-      });
-      throw new Error('Failed to generate API signature');
-    }
-  }
-
-  /**
-   * Generate timestamp in ISO format
-   * @returns {string} - ISO timestamp
-   */
-  generateTimestamp() {
-    return new Date().toISOString();
+    logger.info('SmileIDNINService: Initialized with auth utility', {
+      environment: config.environment,
+      apiUrl: this.apiURL,
+      hasCallbackUrl: config.hasCallbackUrl
+    });
   }
 
   /**
@@ -100,23 +68,14 @@ class SmileIDNINService {
         throw new Error('Invalid NIN format. NIN must be exactly 11 digits.');
       }
 
-      // Validate environment setup
-      if (!this.partnerId || !this.apiKey) {
-        throw new Error('Smile ID credentials not configured');
-      }
-
-      // Generate authentication data
-      const timestamp = this.generateTimestamp();
-      const signature = this.generateSignature(timestamp, this.partnerId);
+      // Generate authentication data using the auth utility
+      const authData = this.auth.generateAuthData();
       const uniqueJobId = jobId || `nin_${userId}_${Date.now()}`;
 
       // Prepare request payload for Basic KYC
       const payload = {
         source_sdk: 'rest_api',
         source_sdk_version: '1.0.0',
-        partner_id: this.partnerId,
-        signature: signature,
-        timestamp: timestamp,
         country: 'NG', // Nigeria
         id_type: 'NIN_V2', // Using NIN V2 for better reliability
         id_number: nin.trim(),
@@ -132,7 +91,9 @@ class SmileIDNINService {
         last_name: lastName.trim(),
         dob: dateOfBirth, // YYYY-MM-DD format
         gender: gender.toUpperCase(),
-        phone_number: phoneNumber?.trim() || ''
+        phone_number: phoneNumber?.trim() || '',
+        // Spread authentication data
+        ...authData
       };
 
       logger.info('SmileIDNINService: Initiating NIN verification', {
@@ -140,28 +101,23 @@ class SmileIDNINService {
         jobId: uniqueJobId,
         ninMasked: nin.slice(0, 3) + '********',
         apiUrl: this.apiURL,
-        isProduction: this.isProduction,
+        environment: this.isProduction ? 'production' : 'sandbox',
         partnerId: this.partnerId,
-        timestamp: timestamp,
-        hasApiKey: !!this.apiKey,
-        signatureLength: signature?.length
+        timestamp: authData.timestamp
       });
+
+      // Generate authentication headers using the auth utility
+      const headers = this.auth.generateAuthHeaders(authData.timestamp);
+
+      // Get API endpoints from auth utility
+      const endpoints = this.auth.getEndpoints();
 
       // Make API request to Smile ID (using asynchronous endpoint)
       const response = await axios.post(
-        `${this.apiURL}/async_basic_kyc`,
+        endpoints.basicKyc,
         payload,
         {
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'ZeusODX-NIN-Service/1.0',
-            // Authentication headers - this is the key fix
-            'SmileApiKey': this.apiKey,
-            'signature': signature,
-            'timestamp': timestamp,
-            'partner_id': this.partnerId
-          },
+          headers,
           timeout: 30000, // 30 seconds timeout
           validateStatus: (status) => status < 500 // Don't throw on 4xx errors
         }
@@ -254,22 +210,16 @@ class SmileIDNINService {
         resultText: ResultText
       });
 
-      // Optional: Verify signature for additional security
+      // Verify signature for additional security using auth utility
       if (signature && timestamp) {
-        try {
-          const expectedSignature = this.generateSignature(timestamp, this.partnerId, 'sid_response');
-          if (signature !== expectedSignature) {
-            logger.warn('SmileIDNINService: Invalid signature in callback', { 
-              userId, 
-              smileJobId: SmileJobID 
-            });
-          }
-        } catch (sigError) {
-          logger.warn('SmileIDNINService: Could not verify callback signature', {
-            error: sigError.message,
-            userId,
-            smileJobId: SmileJobID
+        const isSignatureValid = this.auth.verifyCallbackSignature(signature, timestamp);
+        if (!isSignatureValid) {
+          logger.warn('SmileIDNINService: Invalid signature in callback', { 
+            userId, 
+            smileJobId: SmileJobID 
           });
+          // You can choose to reject the callback or proceed with a warning
+          // For now, we'll proceed with a warning logged
         }
       }
 
@@ -487,19 +437,37 @@ class SmileIDNINService {
   }
 
   /**
+   * Test authentication using the auth utility
+   * @returns {Object} - Authentication test result
+   */
+  testAuthentication() {
+    return this.auth.testAuthentication();
+  }
+
+  /**
    * Health check for the service
    * @returns {Object} - Service health status
    */
   getHealthStatus() {
+    const authHealth = this.auth.getHealthStatus();
+    
     return {
       service: 'SmileIDNINService',
       status: 'operational',
+      auth_service: authHealth,
       environment: this.isProduction ? 'production' : 'sandbox',
       api_url: this.apiURL,
-      has_credentials: !!(this.partnerId && this.apiKey),
       has_callback_url: !!this.callbackUrl,
       timestamp: new Date().toISOString()
     };
+  }
+
+  /**
+   * Get auth utility instance for advanced operations
+   * @returns {SmileIDAuth} - Auth utility instance
+   */
+  getAuthUtility() {
+    return this.auth;
   }
 }
 
