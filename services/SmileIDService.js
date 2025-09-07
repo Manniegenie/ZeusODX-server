@@ -4,18 +4,13 @@ const User = require('../models/user');
 const logger = require('../utils/logger');
 const SmileIDAuth = require('../utils/SmileIDauth');
 
-/**
- * Smile ID NIN Verification Service (v2 /verify_async)
- * - Uses v2 endpoints from SmileIDauth.getEndpoints()
- * - Basic KYC job_type = 5
- */
 class SmileIDNINService {
   constructor(options = {}) {
     this.auth = new SmileIDAuth(options);
 
     const config = this.auth.getConfig();
-    this.apiURL = config.apiURL;            // base, e.g. https://testapi.smileidentity.com
-    this.callbackUrl = config.callbackUrl;  // your webhook URL
+    this.apiURL = config.apiURL;
+    this.callbackUrl = config.callbackUrl;
     this.isProduction = config.isProduction;
     this.partnerId = config.partnerId;
 
@@ -27,18 +22,30 @@ class SmileIDNINService {
     });
   }
 
-  /**
-   * Validate NIN format (exactly 11 digits)
-   */
+  // --- helpers ---------------------------------------------------
+
   validateNINFormat(nin) {
     if (!nin || typeof nin !== 'string') return false;
     return /^\d{11}$/.test(nin.trim());
   }
 
-  /**
-   * Submit Basic KYC verification with NIN (async)
-   * Expects: userId, nin, firstName, lastName, dateOfBirth (YYYY-MM-DD), gender (M/F)
-   */
+  async setSubmissionLock(userId, locked, extraSet = {}) {
+    try {
+      const update = {
+        $set: {
+          'kyc.level2.submissionLocked': !!locked,
+          ...extraSet
+        }
+      };
+      await User.findByIdAndUpdate(userId, update, { new: true });
+      logger.info('SmileIDNINService: submission lock updated', { userId, locked, extraKeys: Object.keys(extraSet) });
+    } catch (e) {
+      logger.error('SmileIDNINService: failed to update submission lock', { userId, error: e.message });
+    }
+  }
+
+  // --- submit ----------------------------------------------------
+
   async verifyNIN(verificationData) {
     try {
       const {
@@ -53,52 +60,36 @@ class SmileIDNINService {
         jobId = null
       } = verificationData || {};
 
-      // Required checks
       if (!userId || !nin || !firstName || !lastName || !dateOfBirth || !gender) {
         throw new Error('Missing required fields for NIN verification');
       }
-
       if (!this.validateNINFormat(nin)) {
         throw new Error('Invalid NIN format. NIN must be exactly 11 digits.');
       }
 
-      // Auth trio for body
       const authData = this.auth.generateAuthData();
       const uniqueJobId = jobId || `nin_${userId}_${Date.now()}`;
 
-      // Compose payload to match Smile v2 verify_async (Basic KYC)
       const payload = {
         source_sdk: 'rest_api',
         source_sdk_version: '1.0.0',
         partner_id: authData.partner_id,
         signature: authData.signature,
         timestamp: authData.timestamp,
-
         country: 'NG',
         id_type: 'NIN',
         id_number: nin.trim(),
-
-        // Async requires callback_url
         callback_url: this.callbackUrl,
-
-        // Personal info (recommended for NIN)
         first_name: firstName.trim(),
         middle_name: middleName?.trim() || '',
         last_name: lastName.trim(),
-        dob: dateOfBirth, // YYYY-MM-DD
+        dob: dateOfBirth,
         gender: String(gender).toUpperCase(),
         phone_number: phoneNumber?.trim() || '',
-
-        // Legacy mapping still used by Smile: Basic KYC = 5
-        partner_params: {
-          user_id: userId,
-          job_id: uniqueJobId,
-          job_type: 5
-        }
+        partner_params: { user_id: userId, job_id: uniqueJobId, job_type: 5 }
       };
 
-      const headers = this.auth.generateAuthHeaders(); // minimal headers
-
+      const headers = this.auth.generateAuthHeaders();
       const { basicKycAsync } = this.auth.getEndpoints();
       const url = basicKycAsync;
 
@@ -115,24 +106,29 @@ class SmileIDNINService {
       const response = await axios.post(url, payload, {
         headers,
         timeout: 30000,
-        validateStatus: (s) => s < 500 // capture 4xx for our own error messages
+        validateStatus: (s) => s < 500
       });
 
       if (response.status === 200 && response.data) {
-        // Smile can return different keys; normalize a few common ones
         const data = response.data || {};
         const smileJobId =
-          data.SmileJobID ||
-          data.smile_job_id ||
-          data.job_id ||
-          data.SmileJobId ||
-          null;
+          data.SmileJobID || data.smile_job_id || data.job_id || data.SmileJobId || null;
 
         logger.info('SmileIDNINService: Verification submitted', {
           userId,
           jobId: uniqueJobId,
           smileJobId,
           status: response.status
+        });
+
+        // Lock submissions while pending
+        await this.setSubmissionLock(userId, true, {
+          'kyc.level2.status': 'pending',
+          'kyc.level2.documentSubmitted': true,
+          'kyc.level2.documentType': 'NIN',
+          'kyc.level2.submittedAt': new Date(),
+          'kyc.level2.canResubmit': false,
+          'kycStatus': 'pending'
         });
 
         return {
@@ -146,7 +142,6 @@ class SmileIDNINService {
         };
       }
 
-      // Non-200 (but <500) → log and throw
       logger.error('SmileIDNINService: Unexpected response from Smile ID', {
         userId,
         status: response.status,
@@ -165,14 +160,19 @@ class SmileIDNINService {
         responseHeaders: error.response?.headers
       });
 
-      // Better developer-facing messages
+      // On submission failure, make sure we unlock
+      if (verificationData?.userId) {
+        await this.setSubmissionLock(verificationData.userId, false, {
+          'kyc.level2.status': 'not_submitted'
+        });
+      }
+
       if (error.isAxiosError) {
         if (error.code === 'ECONNABORTED') {
           throw new Error('NIN verification request timed out. Please try again.');
         }
         const st = error.response?.status;
         if (st === 401 || st === 403) {
-          // Commonly hit when the PATH/METHOD is wrong; with v2 url fixed this should go away
           throw new Error('Authentication failed with Smile ID. Please check credentials and endpoint.');
         }
         if (st === 400) {
@@ -184,10 +184,8 @@ class SmileIDNINService {
     }
   }
 
-  /**
-   * Process Smile ID webhook callback (async results)
-   * Persist results into the user.kyc structure.
-   */
+  // --- webhook callback -----------------------------------------
+
   async handleVerificationCallback(callbackData) {
     try {
       const {
@@ -204,47 +202,36 @@ class SmileIDNINService {
       const userId = PartnerParams?.user_id;
       const jobId = PartnerParams?.job_id;
 
-      if (!userId) {
-        throw new Error('User ID not found in callback data');
-      }
+      if (!userId) throw new Error('User ID not found in callback data');
 
       // Optional: verify callback signature
       if (signature && timestamp) {
         const ok = this.auth.verifyCallbackSignature(signature, timestamp);
-        if (!ok) {
-          logger.warn('SmileIDNINService: Invalid callback signature', {
-            userId,
-            smileJobId: SmileJobID
-          });
-          // proceed with caution
-        }
+        if (!ok) logger.warn('SmileIDNINService: Invalid callback signature', { userId, smileJobId: SmileJobID });
       }
 
       const user = await User.findById(userId);
       if (!user) throw new Error(`User not found: ${userId}`);
 
-      // Smile codes (commonly used)
-      const VERIFIED = '1012';       // Identity Verified
-      const PARTIAL  = '1013';       // Partial match (manual review)
+      const VERIFIED = '1012';
+      const PARTIAL  = '1013';
       const now = new Date();
 
       logger.info('SmileIDNINService: Callback received', {
-        userId,
-        jobId,
-        smileJobId: SmileJobID,
-        resultCode: ResultCode,
-        resultText: ResultText
+        userId, jobId, smileJobId: SmileJobID, resultCode: ResultCode, resultText: ResultText
       });
 
       if (ResultCode === VERIFIED) {
+        // APPROVED → unlock & block resubmit
         user.kyc.level2.status = 'approved';
         user.kyc.level2.documentSubmitted = true;
         user.kyc.level2.documentType = 'NIN';
         if (id_number) user.kyc.level2.documentNumber = id_number;
         user.kyc.level2.approvedAt = now;
         user.kyc.level2.rejectionReason = null;
+        user.kyc.level2.submissionLocked = false;     // <<< unlock
+        user.kyc.level2.canResubmit = false;          // <<< no need to resubmit
 
-        // If email already verified, lift overall flags
         if (user.emailVerified) {
           user.kycLevel = Math.max(user.kycLevel ?? 0, 2);
           user.kycStatus = 'approved';
@@ -268,11 +255,14 @@ class SmileIDNINService {
       }
 
       if (ResultCode === PARTIAL) {
+        // PROVISIONAL → unlock but no auto-resubmit; manual review path
         user.kyc.level2.status = 'under_review';
         user.kyc.level2.documentSubmitted = true;
         user.kyc.level2.documentType = 'NIN';
         user.kyc.level2.submittedAt = now;
         user.kyc.level2.rejectionReason = `Partial match: ${ResultText || ''}`.trim();
+        user.kyc.level2.submissionLocked = false;     // <<< unlock
+        user.kyc.level2.canResubmit = false;          // manual review
         user.kycStatus = 'under_review';
 
         await user.save();
@@ -289,10 +279,12 @@ class SmileIDNINService {
         };
       }
 
-      // Any other code → failed
+      // Any other code → FAILED → unlock & allow resubmit
       user.kyc.level2.status = 'rejected';
       user.kyc.level2.rejectedAt = now;
       user.kyc.level2.rejectionReason = ResultText || 'NIN verification failed';
+      user.kyc.level2.submissionLocked = false;       // <<< unlock here
+      user.kyc.level2.canResubmit = true;             // <<< allow immediate resubmit
       user.kycStatus = 'rejected';
 
       await user.save();
@@ -309,23 +301,18 @@ class SmileIDNINService {
       };
     } catch (error) {
       logger.error('SmileIDNINService: Error processing callback', {
-        error: error.message,
-        stack: error.stack,
-        callbackData: JSON.stringify(callbackData)
+        error: error.message, stack: error.stack, callbackData: JSON.stringify(callbackData)
       });
       throw error;
     }
   }
 
-  /**
-   * Query verification status from your DB (by user or job id)
-   */
+  // --- status proxy (unchanged) ---------------------------------
+
   async getVerificationStatus(identifier, type = 'user') {
     try {
       let user;
-
       if (type === 'job') {
-        // Example of job lookup if you persisted job ids elsewhere
         user = await User.findOne({
           $or: [
             { 'kyc.level2.documentNumber': identifier },
@@ -352,67 +339,28 @@ class SmileIDNINService {
         approvedAt: user.kyc.level2.approvedAt,
         rejectedAt: user.kyc.level2.rejectedAt,
         rejectionReason: user.kyc.level2.rejectionReason,
+        submissionLocked: !!user.kyc.level2.submissionLocked,
+        canResubmit: !!user.kyc.level2.canResubmit,
         emailVerified: user.emailVerified,
         limits: user.getKycLimits?.()
       };
     } catch (error) {
       logger.error('SmileIDNINService: Error getting verification status', {
-        error: error.message,
-        identifier,
-        type
+        error: error.message, identifier, type
       });
       throw new Error(`Failed to get verification status: ${error.message}`);
     }
   }
 
-  /**
-   * Sandbox test data helper
-   */
   getSandboxTestData() {
     return {
       environment: this.isProduction ? 'production' : 'sandbox',
       note: 'Sandbox-only test NINs',
       test_data: [
-        {
-          nin: '12345678901',
-          first_name: 'Test',
-          last_name: 'User',
-          middle_name: 'Middle',
-          dob: '1990-01-01',
-          gender: 'M',
-          phone_number: '08012345678',
-          expected_result: 'verified'
-        },
-        {
-          nin: '12345678902',
-          first_name: 'Partial',
-          last_name: 'Match',
-          middle_name: '',
-          dob: '1985-05-15',
-          gender: 'F',
-          phone_number: '08087654321',
-          expected_result: 'partial_match'
-        },
-        {
-          nin: '12345678903',
-          first_name: 'Failed',
-          last_name: 'Verification',
-          middle_name: 'Test',
-          dob: '1992-12-25',
-          gender: 'M',
-          phone_number: '08099887766',
-          expected_result: 'failed'
-        },
-        {
-          nin: '12345678904',
-          first_name: 'Invalid',
-          last_name: 'Format',
-          middle_name: '',
-          dob: '1988-08-08',
-          gender: 'F',
-          phone_number: '08011223344',
-          expected_result: 'invalid_format'
-        }
+        { nin: '12345678901', first_name: 'Test', last_name: 'User', middle_name: 'Middle', dob: '1990-01-01', gender: 'M', phone_number: '08012345678', expected_result: 'verified' },
+        { nin: '12345678902', first_name: 'Partial', last_name: 'Match', middle_name: '',     dob: '1985-05-15', gender: 'F', phone_number: '08087654321', expected_result: 'partial_match' },
+        { nin: '12345678903', first_name: 'Failed',  last_name: 'Verification', middle_name: 'Test', dob: '1992-12-25', gender: 'M', phone_number: '08099887766', expected_result: 'failed' },
+        { nin: '12345678904', first_name: 'Invalid', last_name: 'Format', middle_name: '',    dob: '1988-08-08', gender: 'F', phone_number: '08011223344', expected_result: 'invalid_format' }
       ],
       result_codes: {
         '1012': 'Identity Verified (Success)',
@@ -424,9 +372,7 @@ class SmileIDNINService {
     };
   }
 
-  testAuthentication() {
-    return this.auth.testAuthentication();
-  }
+  testAuthentication() { return this.auth.testAuthentication(); }
 
   getHealthStatus() {
     const authHealth = this.auth.getHealthStatus();
