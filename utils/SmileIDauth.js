@@ -2,187 +2,121 @@ const crypto = require('crypto');
 const logger = require('./logger');
 
 /**
- * SmileID Authentication Utility
- * Handles authentication, signature generation, and API configuration for Smile ID
+ * SmileID Authentication Utility (v2 endpoints)
  */
 class SmileIDAuth {
   constructor(options = {}) {
-    // Environment variables with fallbacks
-    this.partnerId = options.partnerId || process.env.SMILE_ID_PARTNER_ID;
-    this.apiKey = options.apiKey || process.env.SMILE_ID_API_KEY;
-    this.callbackUrl = options.callbackUrl || process.env.SMILE_ID_CALLBACK_URL;
+    // Credentials & config
+    this.partnerId   = options.partnerId  || process.env.SMILE_ID_PARTNER_ID;
+    this.apiKey      = options.apiKey     || process.env.SMILE_ID_API_KEY;
+    this.callbackUrl = options.callbackUrl|| process.env.SMILE_ID_CALLBACK_URL;
     this.isProduction = options.isProduction ?? (process.env.NODE_ENV === 'production');
-    
-    // API URLs
-    this.sandboxURL = 'https://testapi.smileidentity.com/v1';
-    this.prodURL = 'https://api.smileidentity.com/v1';
-    this.apiURL = this.isProduction ? this.prodURL : this.sandboxURL;
 
-    // Validate required credentials
+    // v2 base URLs (no trailing /v1)
+    this.sandboxBase = 'https://testapi.smileidentity.com';
+    this.prodBase    = 'https://api.smileidentity.com';
+    this.apiBase     = this.isProduction ? this.prodBase : this.sandboxBase;
+
     this.validateCredentials();
   }
 
-  /**
-   * Validate required environment variables/credentials
-   * @throws {Error} If required credentials are missing
-   */
   validateCredentials() {
     const missing = [];
-    
     if (!this.partnerId) missing.push('SMILE_ID_PARTNER_ID');
-    if (!this.apiKey) missing.push('SMILE_ID_API_KEY');
-    
-    if (missing.length > 0) {
-      const errorMsg = `SmileIDAuth: Missing required credentials: ${missing.join(', ')}`;
-      logger.error(errorMsg, {
+    if (!this.apiKey)    missing.push('SMILE_ID_API_KEY');
+
+    if (missing.length) {
+      const msg = `SmileIDAuth: Missing required credentials: ${missing.join(', ')}`;
+      logger.error(msg, {
         hasPartnerId: !!this.partnerId,
         hasApiKey: !!this.apiKey,
         hasCallbackUrl: !!this.callbackUrl,
         environment: this.isProduction ? 'production' : 'sandbox'
       });
-      throw new Error(errorMsg);
+      throw new Error(msg);
     }
 
-    logger.info('SmileIDAuth: Credentials validated successfully', {
+    logger.info('SmileIDAuth: Credentials validated', {
       environment: this.isProduction ? 'production' : 'sandbox',
-      apiUrl: this.apiURL,
+      apiBase: this.apiBase,
       hasCallbackUrl: !!this.callbackUrl
     });
   }
 
-  /**
-   * Generate timestamp in ISO format with milliseconds (required by Smile ID)
-   * @returns {string} ISO timestamp in format "yyyy-MM-dd'T'HH:mm:ss.fffZ"
-   */
   generateTimestamp() {
-    const now = new Date();
-    return now.toISOString(); // This already gives us the correct format: 2024-09-07T09:02:15.887Z
+    return new Date().toISOString();
   }
 
   /**
-   * Generate HMAC signature for Smile ID API authentication
-   * @param {string} timestamp - ISO timestamp
-   * @param {string} partnerId - Partner ID (optional, uses instance partnerId if not provided)
-   * @param {string} requestType - Type of request ('sid_request' for requests, 'sid_response' for callbacks)
-   * @returns {string} Base64 encoded signature
-   * @throws {Error} If signature generation fails
+   * HMAC-SHA256 over `${timestamp}${partner_id}${requestType}`
+   * requestType: 'sid_request' for requests, 'sid_response' for callbacks
    */
   generateSignature(timestamp, partnerId = null, requestType = 'sid_request') {
     try {
-      const partnerIdToUse = partnerId || this.partnerId;
-      
-      if (!partnerIdToUse || !this.apiKey) {
-        throw new Error('Partner ID and API Key are required for signature generation');
-      }
+      const pid = partnerId || this.partnerId;
+      if (!pid || !this.apiKey) throw new Error('Partner ID and API Key are required for signature generation');
 
-      const signatureString = `${timestamp}${partnerIdToUse}${requestType}`;
-      const signature = crypto
-        .createHmac('sha256', this.apiKey)
-        .update(signatureString)
-        .digest('base64');
+      const str = `${timestamp}${pid}${requestType}`;
+      const signature = crypto.createHmac('sha256', this.apiKey).update(str).digest('base64');
 
-      logger.debug('SmileIDAuth: Signature generated successfully', {
-        timestamp,
-        partnerId: partnerIdToUse,
-        requestType,
-        signatureLength: signature.length
+      logger.debug('SmileIDAuth: Signature generated', {
+        timestamp, partnerId: pid, requestType, signatureLength: signature.length
       });
-
       return signature;
-    } catch (error) {
-      logger.error('SmileIDAuth: Error generating signature', {
-        error: error.message,
-        timestamp,
-        partnerId: partnerId || this.partnerId,
-        requestType
+    } catch (err) {
+      logger.error('SmileIDAuth: Signature generation failed', {
+        error: err.message, timestamp, partnerId: partnerId || this.partnerId, requestType
       });
-      throw new Error(`Failed to generate API signature: ${error.message}`);
+      throw new Error(`Failed to generate API signature: ${err.message}`);
     }
   }
 
   /**
-   * Generate authentication headers for Smile ID API requests
-   * @param {string} timestamp - Optional timestamp (will generate if not provided)
-   * @param {string} requestType - Type of request ('sid_request' for requests, 'sid_response' for callbacks)
-   * @returns {Object} Headers object with authentication
+   * Most v2 verify endpoints expect auth in the BODY (partner_id, timestamp, signature).
+   * Keep headers minimal.
    */
-  generateAuthHeaders(timestamp = null, requestType = 'sid_request') {
-    const ts = timestamp || this.generateTimestamp();
-    const signature = this.generateSignature(ts, this.partnerId, requestType);
-
+  generateAuthHeaders(timestamp = null) {
+    // Kept for consistency; NOT sending API key as a header to verify endpoints.
     return {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'User-Agent': 'ZeusODX-SmileID-Service/1.0',
-      'SmileApiKey': this.apiKey,
-      'signature': signature,
-      'timestamp': ts,
-      'partner_id': this.partnerId
+      'User-Agent': 'ZeusODX-SmileID-Service/1.0'
     };
   }
 
-  /**
-   * Generate authentication data object for API payloads
-   * @param {string} timestamp - Optional timestamp (will generate if not provided)
-   * @returns {Object} Authentication data object
-   */
   generateAuthData(timestamp = null) {
     const ts = timestamp || this.generateTimestamp();
-    const signature = this.generateSignature(ts, this.partnerId);
-
-    return {
-      partner_id: this.partnerId,
-      signature: signature,
-      timestamp: ts
-    };
+    const signature = this.generateSignature(ts, this.partnerId, 'sid_request');
+    return { partner_id: this.partnerId, signature, timestamp: ts };
   }
 
-  /**
-   * Verify signature from callback (for webhook validation)
-   * @param {string} receivedSignature - Signature received in callback
-   * @param {string} timestamp - Timestamp from callback
-   * @param {string} partnerId - Partner ID from callback (optional)
-   * @returns {boolean} True if signature is valid
-   */
   verifyCallbackSignature(receivedSignature, timestamp, partnerId = null) {
     try {
-      const partnerIdToUse = partnerId || this.partnerId;
-      const expectedSignature = this.generateSignature(timestamp, partnerIdToUse, 'sid_response');
-      
-      const isValid = receivedSignature === expectedSignature;
-      
-      if (!isValid) {
-        logger.warn('SmileIDAuth: Invalid callback signature detected', {
-          timestamp,
-          partnerId: partnerIdToUse,
+      const pid = partnerId || this.partnerId;
+      const expected = this.generateSignature(timestamp, pid, 'sid_response');
+      const ok = receivedSignature === expected;
+
+      if (!ok) {
+        logger.warn('SmileIDAuth: Invalid callback signature', {
+          timestamp, partnerId: pid,
           receivedSignatureLength: receivedSignature?.length,
-          expectedSignatureLength: expectedSignature?.length
+          expectedSignatureLength: expected?.length
         });
       } else {
-        logger.debug('SmileIDAuth: Callback signature verified successfully', {
-          timestamp,
-          partnerId: partnerIdToUse
-        });
+        logger.debug('SmileIDAuth: Callback signature OK', { timestamp, partnerId: pid });
       }
-
-      return isValid;
-    } catch (error) {
+      return ok;
+    } catch (err) {
       logger.error('SmileIDAuth: Error verifying callback signature', {
-        error: error.message,
-        timestamp,
-        partnerId: partnerId || this.partnerId
+        error: err.message, timestamp, partnerId: partnerId || this.partnerId
       });
       return false;
     }
   }
 
-  /**
-   * Get current API configuration
-   * @returns {Object} Current configuration
-   */
   getConfig() {
     return {
-      apiURL: this.apiURL,
+      apiURL: this.apiBase,
       partnerId: this.partnerId,
       callbackUrl: this.callbackUrl,
       isProduction: this.isProduction,
@@ -193,44 +127,33 @@ class SmileIDAuth {
   }
 
   /**
-   * Get API endpoints for different services
-   * @returns {Object} Available API endpoints
+   * v2 endpoints map
+   * - Basic KYC (async): /v2/verify_async
+   * - Basic KYC (sync):  /v2/verify
+   * - Job status (async result fetch): /v2/job_status
+   * Add/adjust others only when you actively use them.
    */
   getEndpoints() {
+    const base = this.apiBase;
     return {
-      basicKyc: `${this.apiURL}/async_basic_kyc`,
-      documentVerification: `${this.apiURL}/document_verification`,
-      biometricKyc: `${this.apiURL}/biometric_kyc`,
-      amlCheck: `${this.apiURL}/aml_check`,
-      enhancedKyc: `${this.apiURL}/enhanced_kyc`,
-      idVerification: `${this.apiURL}/id_verification`,
-      jobStatus: `${this.apiURL}/job_status`
+      basicKycAsync: `${base}/v2/verify_async`,
+      basicKycSync:  `${base}/v2/verify`,
+      jobStatus:     `${base}/v2/job_status`,
+      // Add others you truly need later, mapped to v2:
+      // e.g., `documentVerification`, `enhancedKyc`, etc., when you implement them.
     };
   }
 
-  /**
-   * Create a new auth instance with different credentials
-   * Useful for multi-tenant applications
-   * @param {Object} newCredentials - New credentials to use
-   * @returns {SmileIDAuth} New auth instance
-   */
   createInstance(newCredentials) {
-    return new SmileIDAuth({
-      ...this.getConfig(),
-      ...newCredentials
-    });
+    return new SmileIDAuth({ ...this.getConfig(), ...newCredentials });
   }
 
-  /**
-   * Health check for authentication service
-   * @returns {Object} Health status
-   */
   getHealthStatus() {
     return {
       service: 'SmileIDAuth',
       status: 'operational',
       environment: this.isProduction ? 'production' : 'sandbox',
-      api_url: this.apiURL,
+      api_url: this.apiBase,
       has_credentials: !!(this.partnerId && this.apiKey),
       has_callback_url: !!this.callbackUrl,
       partner_id: this.partnerId,
@@ -238,14 +161,10 @@ class SmileIDAuth {
     };
   }
 
-  /**
-   * Test authentication by generating a sample signature
-   * @returns {Object} Test result
-   */
   testAuthentication() {
     try {
       const timestamp = this.generateTimestamp();
-      const signature = this.generateSignature(timestamp);
+      const signature = this.generateSignature(timestamp, this.partnerId, 'sid_request');
       const headers = this.generateAuthHeaders(timestamp);
 
       return {
@@ -260,11 +179,7 @@ class SmileIDAuth {
         }
       };
     } catch (error) {
-      return {
-        success: false,
-        message: 'Authentication test failed',
-        error: error.message
-      };
+      return { success: false, message: 'Authentication test failed', error: error.message };
     }
   }
 }
