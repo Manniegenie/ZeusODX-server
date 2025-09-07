@@ -1,7 +1,7 @@
 const axios = require('axios');
 const User = require('../models/user');
 const logger = require('../utils/logger');
-const SmileIDAuth = require('../utils/SmileIDauth'); // Import the new auth utility
+const SmileIDAuth = require('../utils/SmileIDauth'); // Fixed: Ensure correct file name (capital A)
 
 /**
  * Smile ID NIN Verification Service
@@ -76,13 +76,17 @@ class SmileIDNINService {
       const payload = {
         source_sdk: 'rest_api',
         source_sdk_version: '1.0.0',
+        partner_id: authData.partner_id,
+        signature: authData.signature,
+        timestamp: authData.timestamp,
         country: 'NG', // Nigeria
-        id_type: 'NIN_V2', // Using NIN V2 for better reliability
+        id_type: 'NIN', // Fixed: Use 'NIN' instead of 'NIN_V2'
         id_number: nin.trim(),
         callback_url: this.callbackUrl,
         partner_params: {
           user_id: userId,
           job_id: uniqueJobId,
+          job_type: 1, // Fixed: Added required job_type for Basic KYC
           verification_type: 'nin_verification'
         },
         first_name: firstName.trim(),
@@ -90,11 +94,7 @@ class SmileIDNINService {
         last_name: lastName.trim(),
         dob: dateOfBirth, // YYYY-MM-DD format
         gender: gender.toUpperCase(),
-        phone_number: phoneNumber?.trim() || '',
-        // Include authentication data in payload (required by Basic KYC API)
-        partner_id: authData.partner_id,
-        signature: authData.signature,
-        timestamp: authData.timestamp
+        phone_number: phoneNumber?.trim() || ''
       };
 
       logger.info('SmileIDNINService: Initiating NIN verification', {
@@ -104,7 +104,8 @@ class SmileIDNINService {
         apiUrl: this.apiURL,
         environment: this.isProduction ? 'production' : 'sandbox',
         partnerId: this.partnerId,
-        timestamp: authData.timestamp
+        timestamp: authData.timestamp,
+        payloadKeys: Object.keys(payload)
       });
 
       // Use basic headers for Basic KYC (no authentication headers)
@@ -116,6 +117,14 @@ class SmileIDNINService {
 
       // Get API endpoints from auth utility
       const endpoints = this.auth.getEndpoints();
+
+      logger.info('SmileIDNINService: Making API request', {
+        endpoint: endpoints.basicKyc,
+        headers: headers,
+        hasSignature: !!payload.signature,
+        hasPartnerId: !!payload.partner_id,
+        hasTimestamp: !!payload.timestamp
+      });
 
       // Make API request to Smile ID (using asynchronous endpoint)
       const response = await axios.post(
@@ -150,7 +159,8 @@ class SmileIDNINService {
         logger.error('SmileIDNINService: Unexpected response from Smile ID', {
           userId,
           status: response.status,
-          data: response.data
+          data: response.data,
+          headers: response.headers
         });
         throw new Error(`Smile ID API returned status: ${response.status}`);
       }
@@ -162,7 +172,8 @@ class SmileIDNINService {
         userId: verificationData?.userId,
         isAxiosError: error.isAxiosError,
         responseStatus: error.response?.status,
-        responseData: error.response?.data
+        responseData: error.response?.data,
+        responseHeaders: error.response?.headers
       });
 
       // Handle specific error types
