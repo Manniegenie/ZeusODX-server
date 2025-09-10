@@ -172,14 +172,24 @@ router.post('/token-specific', async (req, res) => {
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
 
-    const filter = { userId: userId, currency: currency.toUpperCase() };
+    const filter = { 
+      userId: userId, 
+      currency: currency.toUpperCase(),
+      type: { $ne: 'OBIEX_SWAP' } // Exclude OBIEX_SWAP transactions
+    };
     Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
 
     if (type) {
       switch (type.toUpperCase()) {
-        case 'DEPOSIT': filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] }; break;
-        case 'WITHDRAWAL': filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] }; break;
-        case 'SWAP': filter.type = 'SWAP'; break;
+        case 'DEPOSIT': 
+          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'], $ne: 'OBIEX_SWAP' }; 
+          break;
+        case 'WITHDRAWAL': 
+          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'], $ne: 'OBIEX_SWAP' }; 
+          break;
+        case 'SWAP': 
+          filter.type = 'SWAP'; 
+          break;
       }
     }
     if (status) {
@@ -256,14 +266,23 @@ router.post('/all-tokens', async (req, res) => {
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
 
-    const filter = { userId: userId };
+    const filter = { 
+      userId: userId,
+      type: { $ne: 'OBIEX_SWAP' } // Exclude OBIEX_SWAP transactions
+    };
     Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
 
     if (type) {
       switch (type.toUpperCase()) {
-        case 'DEPOSIT': filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] }; break;
-        case 'WITHDRAWAL': filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] }; break;
-        case 'SWAP': filter.type = 'SWAP'; break;
+        case 'DEPOSIT': 
+          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'], $ne: 'OBIEX_SWAP' }; 
+          break;
+        case 'WITHDRAWAL': 
+          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'], $ne: 'OBIEX_SWAP' }; 
+          break;
+        case 'SWAP': 
+          filter.type = 'SWAP'; 
+          break;
       }
     }
     if (status) {
@@ -432,7 +451,11 @@ router.post('/complete-history', async (req, res) => {
     let totalCount = 0;
 
     const dateRangeFilter = buildDateRangeFilter(dateFrom, dateTo);
-    const tokenFilter = { userId: userId, ...dateRangeFilter };
+    const tokenFilter = { 
+      userId: userId, 
+      type: { $ne: 'OBIEX_SWAP' }, // Exclude OBIEX_SWAP transactions
+      ...dateRangeFilter 
+    };
     const billFilter  = { userId: userId, ...dateRangeFilter };
 
     if (status) {
