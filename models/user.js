@@ -3,6 +3,9 @@ const bcrypt = require('bcryptjs');
 
 const SALT_WORK_FACTOR = 10;
 
+// Import logger for KYC upgrade logging
+const logger = require('../utils/logger');
+
 const userSchema = new mongoose.Schema({
   // Authentication
   username: { type: String },
@@ -174,7 +177,7 @@ userSchema.set('toJSON', {
   }
 });
 
-// Pre-save: Hash sensitive fields + balance tracking
+// Pre-save: Hash sensitive fields + balance tracking + KYC upgrade checks
 userSchema.pre('save', async function (next) {
   try {
     const fieldsToHash = ['password', 'passwordpin', 'transactionpin', 'securitypin'];
@@ -184,6 +187,7 @@ userSchema.pre('save', async function (next) {
         this[field] = await bcrypt.hash(this[field], salt);
       }
     }
+    
     const balanceFields = [
       'solBalance', 'btcBalance', 'usdtBalance', 'usdcBalance', 'ethBalance',
       'bnbBalance', 'maticBalance', 'avaxBalance', 'ngnzBalance'
@@ -191,8 +195,26 @@ userSchema.pre('save', async function (next) {
     if (balanceFields.some(f => this.isModified(f))) {
       this.lastBalanceUpdate = new Date();
     }
+    
+    // Auto-check for KYC upgrades when relevant fields change
+    const kycRelevantFields = [
+      'emailVerified', 
+      'kyc.level2.status', 
+      'kyc.level2.documentSubmitted',
+      'kyc.level3.status'
+    ];
+    
+    if (kycRelevantFields.some(field => this.isModified(field))) {
+      // Only check if we're not already at the highest level
+      if (this.kycLevel < 2) {
+        await this.autoUpgradeKYC();
+      }
+    }
+    
     next();
-  } catch (err) { next(err); }
+  } catch (err) { 
+    next(err); 
+  }
 });
 
 // Authentication Methods
@@ -221,17 +243,22 @@ userSchema.methods.shouldSendLoginEmail = function () {
   return this.lastLoginEmailSent < fifteenMinutesAgo;
 };
 
-userSchema.methods.markEmailAsVerified = function () {
+// Updated markEmailAsVerified to trigger KYC upgrade check
+userSchema.methods.markEmailAsVerified = async function () {
   this.emailVerified = true;
   this.kyc.level2.emailVerified = true;
   this.pinChangeOtp = null;
   this.pinChangeOtpCreatedAt = null;
   this.pinChangeOtpExpiresAt = null;
   this.pinChangeOtpVerified = false;
+  
+  // Check for KYC upgrade after email verification
+  await this.autoUpgradeKYC();
+  
   return this.save();
 };
 
-// NEW: Email verification check method
+// Email verification check method
 userSchema.methods.isEmailVerified = function () {
   return this.emailVerified === true;
 };
@@ -378,8 +405,10 @@ userSchema.methods.getOrCreateKyc = async function () {
   return kycDoc;
 };
 
-// Auto-upgrade to KYC 2 (now requires email + document)
+// Enhanced Auto-upgrade KYC levels based on completed verifications
 userSchema.methods.autoUpgradeKYC = async function () {
+  let upgraded = false;
+  
   // Auto-upgrade to Level 1 on phone verification
   if (this.kycLevel < 1 && this.phonenumber) {
     this.kycLevel = 1;
@@ -387,22 +416,119 @@ userSchema.methods.autoUpgradeKYC = async function () {
     this.kyc.level1.phoneVerified = true;
     this.kyc.level1.verifiedAt = new Date();
     this.kycStatus = 'approved';
-    await this.save();
-    return true;
+    upgraded = true;
+    
+    logger.info('User auto-upgraded to KYC Level 1', { userId: this._id, phone: this.phonenumber?.slice(0, 5) + '****' });
   }
   
-  // Auto-upgrade to Level 2 if email verified and document submitted
-  if (this.kycLevel < 2 && this.emailVerified && this.kyc.level2.documentSubmitted) {
+  // Auto-upgrade to Level 2 if BOTH email verified AND identity document verified
+  if (this.kycLevel < 2 && this.canUpgradeToLevel2()) {
     this.kycLevel = 2;
     this.kyc.level2.status = 'approved';
     this.kyc.level2.emailVerified = true;
     this.kyc.level2.approvedAt = new Date();
     this.kycStatus = 'approved';
-    await this.save();
-    return true;
+    upgraded = true;
+    
+    logger.info('User auto-upgraded to KYC Level 2', { 
+      userId: this._id, 
+      emailVerified: this.emailVerified,
+      documentStatus: this.kyc.level2.status,
+      documentType: this.kyc.level2.documentType
+    });
   }
   
-  return false;
+  if (upgraded) {
+    await this.save();
+  }
+  
+  return upgraded;
+};
+
+// Check if user can be upgraded to KYC Level 2
+userSchema.methods.canUpgradeToLevel2 = function () {
+  const emailVerified = this.emailVerified === true;
+  const identityVerified = this.kyc.level2.status === 'approved' && this.kyc.level2.documentSubmitted === true;
+  
+  return emailVerified && identityVerified;
+};
+
+// Check if identity document verification is complete
+userSchema.methods.isIdentityDocumentVerified = function () {
+  return this.kyc.level2.status === 'approved' && this.kyc.level2.documentSubmitted === true;
+};
+
+// Comprehensive KYC status check
+userSchema.methods.getKycRequirements = function () {
+  const requirements = {
+    level1: {
+      phone: {
+        required: true,
+        completed: !!this.phonenumber && this.kyc.level1.phoneVerified === true,
+        status: this.kyc.level1.status
+      }
+    },
+    level2: {
+      email: {
+        required: true,
+        completed: this.emailVerified === true,
+        status: this.emailVerified ? 'approved' : 'not_submitted'
+      },
+      identity: {
+        required: true,
+        completed: this.isIdentityDocumentVerified(),
+        status: this.kyc.level2.status,
+        documentType: this.kyc.level2.documentType,
+        documentNumber: this.kyc.level2.documentNumber
+      }
+    },
+    level3: {
+      enhanced: {
+        required: true,
+        completed: this.kyc.level3.status === 'approved',
+        status: this.kyc.level3.status,
+        addressVerified: this.kyc.level3.addressVerified,
+        sourceOfFunds: this.kyc.level3.sourceOfFunds
+      }
+    }
+  };
+
+  // Calculate completion percentages
+  const level1Complete = requirements.level1.phone.completed;
+  const level2Complete = requirements.level2.email.completed && requirements.level2.identity.completed;
+  const level3Complete = requirements.level3.enhanced.completed;
+
+  return {
+    currentLevel: this.kycLevel,
+    status: this.kycStatus,
+    canUpgradeToLevel2: this.canUpgradeToLevel2(),
+    requirements,
+    completion: {
+      level1: level1Complete,
+      level2: level2Complete,
+      level3: level3Complete
+    }
+  };
+};
+
+// Method to call after identity document verification is completed
+userSchema.methods.onIdentityDocumentVerified = async function (documentType, documentNumber) {
+  // This method should be called from the webhook after successful identity verification
+  // The webhook already updates kyc.level2.status to 'approved', but we can double-check here
+  
+  if (this.kyc.level2.status === 'approved') {
+    logger.info('Identity document verified, checking for KYC upgrade', {
+      userId: this._id,
+      documentType,
+      documentNumber,
+      emailVerified: this.emailVerified
+    });
+    
+    // Trigger KYC upgrade check
+    await this.autoUpgradeKYC();
+  }
+  
+  return this.save();
 };
 
 // Phone verification check method
