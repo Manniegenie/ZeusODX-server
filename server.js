@@ -188,6 +188,7 @@ const NGNZWithdrawal = require('./routes/NGNZWithdrawal');
 const NINRoutes = require('./routes/NIN');
 const EmailVerifyRoutes = require('./routes/EmailVerify')
 const KYCRoutes = require('./routes/KYC');
+const ForgotPinRoutes = require('./routes/forgotpasswordpin');
 
 
 
@@ -262,6 +263,7 @@ app.use("/ngnz-withdrawal", authenticateToken, NGNZWithdrawal);
 app.use("/nin", authenticateToken, NINRoutes);
 app.use("/email", authenticateToken, EmailVerifyRoutes)
 app.use("/kyc", authenticateToken, KYCRoutes);
+app.use("/forgot-pin", ForgotPinRoutes);
 
 
 
