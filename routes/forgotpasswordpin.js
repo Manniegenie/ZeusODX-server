@@ -44,10 +44,10 @@ function isValidPhoneNumber(phone) {
   return /^\+?[\d\s\-()]{10,15}$/.test(phone);
 }
 
-// Helper to find user by phone number
+// Helper to find user by phone number - Note: schema uses 'phonenumber' not 'phoneNumber'
 async function findUserByPhone(phoneNumber) {
   try {
-    const user = await User.findOne({ phoneNumber: phoneNumber });
+    const user = await User.findOne({ phonenumber: phoneNumber });
     return user;
   } catch (error) {
     logger.error('Error finding user by phone number', {
@@ -58,7 +58,7 @@ async function findUserByPhone(phoneNumber) {
   }
 }
 
-// POST: /initiate - Send OTP via email using phone number
+// POST: /initiate - Send OTP via email using phone number (FORGOT PIN FLOW)
 router.post('/initiate', async (req, res) => {
   let { phoneNumber } = req.body;
 
@@ -189,7 +189,7 @@ router.post('/initiate', async (req, res) => {
   }
 });
 
-// POST: /verify-otp - Verify OTP only using phone number
+// POST: /verify-otp - Verify OTP only using phone number (FORGOT PIN FLOW)
 router.post('/verify-otp', async (req, res) => {
   let { otp, phoneNumber } = req.body;
 
@@ -288,8 +288,8 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// POST: /change-pin - Verify 2FA and change pin using phone number
-router.post('/change-pin', async (req, res) => {
+// POST: /reset-pin - Complete forgot pin flow: Verify 2FA and set new pin (FORGOT PIN FLOW)
+router.post('/reset-pin', async (req, res) => {
   let { newPin, confirmPin, twoFactorCode, phoneNumber } = req.body;
 
   // Validate presence of required fields
@@ -345,12 +345,12 @@ router.post('/change-pin', async (req, res) => {
 
     // Check if OTP was verified first
     if (!user.pinChangeOtpVerified) {
-      logger.warn('Attempt to change pin without OTP verification', { 
+      logger.warn('Attempt to reset pin without OTP verification', { 
         userId, 
         email: maskEmail(user.email),
         phoneNumber: maskPhoneNumber(phoneNumber)
       });
-      return res.status(400).json({ message: 'Please verify OTP first before proceeding with pin change.' });
+      return res.status(400).json({ message: 'Please verify OTP first before proceeding with pin reset.' });
     }
 
     // Check if OTP session has expired (even though OTP was verified)
@@ -421,6 +421,139 @@ router.post('/change-pin', async (req, res) => {
       stack: err.stack
     });
     return res.status(500).json({ message: 'Server error while verifying 2FA and resetting pin.' });
+  }
+});
+
+// POST: /update-pin - Change current pin to new pin (requires current pin)
+router.post('/update-pin', async (req, res) => {
+  let { phoneNumber, currentPin, newPin, confirmPin, twoFactorCode } = req.body;
+
+  // Validate presence of required fields
+  if (!phoneNumber || !currentPin || !newPin || !confirmPin || !twoFactorCode) {
+    logger.warn('Missing required fields for pin update');
+    return res.status(400).json({ 
+      message: 'Please provide all required fields: phoneNumber, currentPin, newPin, confirmPin, and twoFactorCode.' 
+    });
+  }
+
+  if (!twoFactorCode?.trim()) {
+    return res.status(400).json({ message: 'Two-factor authentication code is required.' });
+  }
+
+  // Sanitize inputs
+  phoneNumber = sanitizeInput(phoneNumber);
+  currentPin = sanitizeInput(currentPin);
+  newPin = sanitizeInput(newPin);
+  confirmPin = sanitizeInput(confirmPin);
+  twoFactorCode = sanitizeInput(twoFactorCode);
+
+  // Validate phone number format
+  if (!isValidPhoneNumber(phoneNumber)) {
+    return res.status(400).json({ message: 'Invalid phone number format.' });
+  }
+
+  // Validate current pin format
+  if (!/^\d{4,6}$/.test(currentPin)) {
+    return res.status(400).json({ message: 'Invalid current pin format. Pin should be 4-6 digits.' });
+  }
+
+  // Validate new pin format
+  if (!/^\d{4,6}$/.test(newPin)) {
+    return res.status(400).json({ message: 'Invalid new pin format. Pin should be 4-6 digits.' });
+  }
+
+  // Check if new pin and confirm pin match
+  if (newPin !== confirmPin) {
+    return res.status(400).json({ message: 'New pin and confirm pin do not match.' });
+  }
+
+  // Check if new pin is different from current pin
+  if (currentPin === newPin) {
+    return res.status(400).json({ message: 'New pin must be different from current pin.' });
+  }
+
+  try {
+    // Find user in database using phone number
+    const user = await findUserByPhone(phoneNumber);
+    if (!user) {
+      logger.warn('User not found for pin update', { 
+        phoneNumber: maskPhoneNumber(phoneNumber) 
+      });
+      return res.status(404).json({ message: 'User not found with this phone number.' });
+    }
+
+    const userId = user._id;
+
+    // Check if user has a current pin set
+    if (!user.passwordpin) {
+      logger.warn('User has no current pin set for pin update', { 
+        userId,
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
+      return res.status(400).json({ message: 'No current pin found. Please set up a pin first.' });
+    }
+
+    // Verify current pin
+    const isCurrentPinValid = await user.comparePasswordPin(currentPin);
+    if (!isCurrentPinValid) {
+      logger.warn('Invalid current pin provided for pin update', { 
+        userId,
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
+      return res.status(400).json({ message: 'Current pin is incorrect.' });
+    }
+
+    // Check if 2FA is set up
+    if (!user.twoFASecret || !user.is2FAEnabled) {
+      return res.status(400).json({
+        success: false,
+        message: '2FA Setup Required'
+      });
+    }
+
+    // Validate 2FA code
+    if (!validateTwoFactorAuth(user, twoFactorCode)) {
+      logger.warn('🚫 2FA validation failed for pin update', {
+        userId,
+        phoneNumber: maskPhoneNumber(phoneNumber),
+        errorType: 'INVALID_2FA'
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'INVALID_2FA_CODE',
+        message: 'Invalid two-factor authentication code'
+      });
+    }
+
+    logger.info('✅ 2FA validation successful for pin update', { 
+      userId,
+      phoneNumber: maskPhoneNumber(phoneNumber)
+    });
+
+    // Hash the new pin manually (schema no longer auto-hashes passwordpin)
+    const saltRounds = 10; // Match SALT_WORK_FACTOR from schema
+    const hashedNewPin = await bcrypt.hash(newPin, saltRounds);
+
+    // Update user's passwordpin
+    user.passwordpin = hashedNewPin;
+    await user.save();
+
+    logger.info('✅ Pin updated successfully', { 
+      userId, 
+      phoneNumber: maskPhoneNumber(phoneNumber)
+    });
+
+    return res.status(200).json({
+      message: 'Pin updated successfully.'
+    });
+
+  } catch (err) {
+    logger.error('Pin update error', {
+      phoneNumber: maskPhoneNumber(phoneNumber),
+      error: err.message,
+      stack: err.stack
+    });
+    return res.status(500).json({ message: 'Server error while updating pin.' });
   }
 });
 
