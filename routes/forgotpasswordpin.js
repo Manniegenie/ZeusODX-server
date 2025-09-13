@@ -1,8 +1,8 @@
+// routes/forgotpin.js
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
 const { sendOtpEmail } = require('../services/EmailService');
-const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
 const validator = require('validator');
 const bcrypt = require('bcryptjs');
@@ -58,7 +58,11 @@ async function findUserByPhone(phoneNumber) {
   }
 }
 
-// POST: /initiate - Send OTP via email using phone number (FORGOT PIN FLOW)
+/**
+ * POST: /initiate
+ * Sends an OTP to the user's email for forgot-pin flow.
+ * Request body: { phoneNumber }
+ */
 router.post('/initiate', async (req, res) => {
   let { phoneNumber } = req.body;
 
@@ -88,14 +92,6 @@ router.post('/initiate', async (req, res) => {
 
     const userId = user._id;
 
-    // Check if 2FA is set up
-    if (!user.twoFASecret || !user.is2FAEnabled) {
-      return res.status(400).json({
-        success: false,
-        message: '2FA Setup Required'
-      });
-    }
-
     // Ensure user has a valid email
     if (!user.email || !validator.isEmail(user.email)) {
       logger.warn('User has no valid email for forgot pin', { 
@@ -104,8 +100,6 @@ router.post('/initiate', async (req, res) => {
       });
       return res.status(400).json({ message: 'No valid email on file for this account.' });
     }
-
-    logger.info('✅ 2FA setup verified for forgot pin initiation', { userId });
 
     // Simple throttling: prevent repeated requests (e.g., once per 60 seconds)
     const now = new Date();
@@ -155,6 +149,7 @@ router.post('/initiate', async (req, res) => {
 
       return res.status(200).json({
         message: 'Pin reset verification code sent to your email.',
+        // return masked email so frontend can show an acknowledgement if needed
         email: maskEmail(user.email)
       });
 
@@ -189,7 +184,10 @@ router.post('/initiate', async (req, res) => {
   }
 });
 
-// POST: /verify-otp - Verify OTP only using phone number (FORGOT PIN FLOW)
+/**
+ * POST: /verify-otp
+ * Verify OTP only. Request body: { otp, phoneNumber }
+ */
 router.post('/verify-otp', async (req, res) => {
   let { otp, phoneNumber } = req.body;
 
@@ -264,7 +262,7 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ message: 'Invalid OTP.' });
     }
 
-    // Mark OTP as verified but don't clear it yet (will be cleared after 2FA)
+    // Mark OTP as verified so the user can reset their pin
     user.pinChangeOtpVerified = true;
     await user.save();
 
@@ -275,7 +273,7 @@ router.post('/verify-otp', async (req, res) => {
     });
 
     return res.status(200).json({
-      message: 'OTP verified successfully. Please proceed with two-factor authentication.'
+      message: 'OTP verified successfully. You may now reset your PIN.'
     });
 
   } catch (err) {
@@ -288,24 +286,23 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// POST: /reset-pin - Complete forgot pin flow: Verify 2FA and set new pin (FORGOT PIN FLOW)
+/**
+ * POST: /reset-pin
+ * Complete forgot-pin flow: set a new pin after OTP was verified.
+ * Request body: { newPin, confirmPin, phoneNumber }
+ */
 router.post('/reset-pin', async (req, res) => {
-  let { newPin, confirmPin, twoFactorCode, phoneNumber } = req.body;
+  let { newPin, confirmPin, phoneNumber } = req.body;
 
   // Validate presence of required fields
-  if (!newPin || !confirmPin || !twoFactorCode || !phoneNumber) {
-    logger.warn('Missing required fields for forgot pin 2FA and pin change');
-    return res.status(400).json({ message: 'Please provide all required fields: newPin, confirmPin, twoFactorCode, and phoneNumber.' });
-  }
-
-  if (!twoFactorCode?.trim()) {
-    return res.status(400).json({ message: 'Two-factor authentication code is required.' });
+  if (!newPin || !confirmPin || !phoneNumber) {
+    logger.warn('Missing required fields for pin reset');
+    return res.status(400).json({ message: 'Please provide newPin, confirmPin and phoneNumber.' });
   }
 
   // Sanitize inputs
   newPin = sanitizeInput(newPin);
   confirmPin = sanitizeInput(confirmPin);
-  twoFactorCode = sanitizeInput(twoFactorCode);
   phoneNumber = sanitizeInput(phoneNumber);
 
   // Validate phone number format
@@ -327,7 +324,7 @@ router.post('/reset-pin', async (req, res) => {
     // Find user in database using phone number
     const user = await findUserByPhone(phoneNumber);
     if (!user) {
-      logger.warn('User not found for forgot pin 2FA verification', { 
+      logger.warn('User not found for pin reset', { 
         phoneNumber: maskPhoneNumber(phoneNumber) 
       });
       return res.status(404).json({ message: 'User not found with this phone number.' });
@@ -335,15 +332,7 @@ router.post('/reset-pin', async (req, res) => {
 
     const userId = user._id;
 
-    // Check if 2FA is set up
-    if (!user.twoFASecret || !user.is2FAEnabled) {
-      return res.status(400).json({
-        success: false,
-        message: '2FA Setup Required'
-      });
-    }
-
-    // Check if OTP was verified first
+    // Ensure OTP was verified first
     if (!user.pinChangeOtpVerified) {
       logger.warn('Attempt to reset pin without OTP verification', { 
         userId, 
@@ -353,9 +342,9 @@ router.post('/reset-pin', async (req, res) => {
       return res.status(400).json({ message: 'Please verify OTP first before proceeding with pin reset.' });
     }
 
-    // Check if OTP session has expired (even though OTP was verified)
+    // Check if OTP session has expired
     if (new Date() > new Date(user.pinChangeOtpExpiresAt)) {
-      logger.warn('OTP session expired during 2FA verification', { 
+      logger.warn('OTP session expired during pin reset', { 
         userId, 
         email: maskEmail(user.email),
         phoneNumber: maskPhoneNumber(phoneNumber)
@@ -372,25 +361,6 @@ router.post('/reset-pin', async (req, res) => {
       return res.status(400).json({ message: 'Session has expired. Please start the pin reset process again.' });
     }
 
-    // Validate 2FA code
-    if (!validateTwoFactorAuth(user, twoFactorCode)) {
-      logger.warn('🚫 2FA validation failed for forgot pin completion', {
-        userId,
-        phoneNumber: maskPhoneNumber(phoneNumber),
-        errorType: 'INVALID_2FA'
-      });
-      return res.status(401).json({
-        success: false,
-        error: 'INVALID_2FA_CODE',
-        message: 'Invalid two-factor authentication code'
-      });
-    }
-
-    logger.info('✅ 2FA validation successful for forgot pin completion', { 
-      userId,
-      phoneNumber: maskPhoneNumber(phoneNumber)
-    });
-
     // Hash the new pin manually (schema no longer auto-hashes passwordpin)
     const saltRounds = 10; // Match SALT_WORK_FACTOR from schema
     const hashedNewPin = await bcrypt.hash(newPin, saltRounds);
@@ -404,7 +374,7 @@ router.post('/reset-pin', async (req, res) => {
     user.pinChangeOtpLastSentAt = undefined;
     await user.save();
 
-    logger.info('✅ Pin reset successfully after 2FA verification', { 
+    logger.info('✅ Pin reset successfully', { 
       userId, 
       email: maskEmail(user.email),
       phoneNumber: maskPhoneNumber(phoneNumber)
@@ -415,29 +385,29 @@ router.post('/reset-pin', async (req, res) => {
     });
 
   } catch (err) {
-    logger.error('Forgot pin 2FA verification and pin change error', {
+    logger.error('Pin reset error', {
       phoneNumber: maskPhoneNumber(phoneNumber),
       error: err.message,
       stack: err.stack
     });
-    return res.status(500).json({ message: 'Server error while verifying 2FA and resetting pin.' });
+    return res.status(500).json({ message: 'Server error while resetting pin.' });
   }
 });
 
-// POST: /update-pin - Change current pin to new pin (requires current pin)
+/**
+ * POST: /update-pin
+ * Change current pin to new pin (requires current pin).
+ * Request body: { phoneNumber, currentPin, newPin, confirmPin }
+ */
 router.post('/update-pin', async (req, res) => {
-  let { phoneNumber, currentPin, newPin, confirmPin, twoFactorCode } = req.body;
+  let { phoneNumber, currentPin, newPin, confirmPin } = req.body;
 
   // Validate presence of required fields
-  if (!phoneNumber || !currentPin || !newPin || !confirmPin || !twoFactorCode) {
+  if (!phoneNumber || !currentPin || !newPin || !confirmPin) {
     logger.warn('Missing required fields for pin update');
     return res.status(400).json({ 
-      message: 'Please provide all required fields: phoneNumber, currentPin, newPin, confirmPin, and twoFactorCode.' 
+      message: 'Please provide phoneNumber, currentPin, newPin and confirmPin.' 
     });
-  }
-
-  if (!twoFactorCode?.trim()) {
-    return res.status(400).json({ message: 'Two-factor authentication code is required.' });
   }
 
   // Sanitize inputs
@@ -445,7 +415,6 @@ router.post('/update-pin', async (req, res) => {
   currentPin = sanitizeInput(currentPin);
   newPin = sanitizeInput(newPin);
   confirmPin = sanitizeInput(confirmPin);
-  twoFactorCode = sanitizeInput(twoFactorCode);
 
   // Validate phone number format
   if (!isValidPhoneNumber(phoneNumber)) {
@@ -502,33 +471,6 @@ router.post('/update-pin', async (req, res) => {
       });
       return res.status(400).json({ message: 'Current pin is incorrect.' });
     }
-
-    // Check if 2FA is set up
-    if (!user.twoFASecret || !user.is2FAEnabled) {
-      return res.status(400).json({
-        success: false,
-        message: '2FA Setup Required'
-      });
-    }
-
-    // Validate 2FA code
-    if (!validateTwoFactorAuth(user, twoFactorCode)) {
-      logger.warn('🚫 2FA validation failed for pin update', {
-        userId,
-        phoneNumber: maskPhoneNumber(phoneNumber),
-        errorType: 'INVALID_2FA'
-      });
-      return res.status(401).json({
-        success: false,
-        error: 'INVALID_2FA_CODE',
-        message: 'Invalid two-factor authentication code'
-      });
-    }
-
-    logger.info('✅ 2FA validation successful for pin update', { 
-      userId,
-      phoneNumber: maskPhoneNumber(phoneNumber)
-    });
 
     // Hash the new pin manually (schema no longer auto-hashes passwordpin)
     const saltRounds = 10; // Match SALT_WORK_FACTOR from schema
