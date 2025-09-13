@@ -11,6 +11,10 @@ const crypto = require('crypto');
 
 const router = express.Router();
 
+// Cache for user data to avoid repeated DB queries
+const userCache = new Map();
+const CACHE_TTL = 30000; // 30 seconds
+
 const ELECTRICITY_SERVICES = [
   'ikeja-electric','eko-electric','kano-electric','portharcourt-electric',
   'jos-electric','ibadan-electric','kaduna-electric','abuja-electric',
@@ -20,99 +24,147 @@ const ELECTRICITY_SERVICES = [
 const VALID_METER_TYPES = ['prepaid', 'postpaid'];
 
 const SUPPORTED_TOKENS = {
-  BTC:{name:'Bitcoin'}, ETH:{name:'Ethereum'}, SOL:{name:'Solana'},
-  USDT:{name:'Tether'}, USDC:{name:'USD Coin'}, BNB:{name:'Binance Coin'},
-  MATIC:{name:'Polygon'}, AVAX:{name:'Avalanche'}, NGNZ:{name:'NGNZ Token'}
+  BTC: { name: 'Bitcoin' },
+  ETH: { name: 'Ethereum' }, 
+  SOL: { name: 'Solana' },
+  USDT: { name: 'Tether' },
+  USDC: { name: 'USD Coin' },
+  BNB: { name: 'Binance Coin' },
+  MATIC: { name: 'Polygon' },
+  AVAX: { name: 'Avalanche' },
+  NGNZ: { name: 'NGNZ Token' }
 };
 
 const TOKEN_FIELD_MAPPING = {
-  BTC:'btc', ETH:'eth', SOL:'sol', USDT:'usdt', USDC:'usdc',
-  BNB:'bnb', MATIC:'matic', AVAX:'avax', NGNZ:'ngnz'
+  BTC: 'btc',
+  ETH: 'eth', 
+  SOL: 'sol',
+  USDT: 'usdt',
+  USDC: 'usdc',
+  BNB: 'bnb',
+  MATIC: 'matic',
+  AVAX: 'avax',
+  NGNZ: 'ngnz'
 };
 
-async function reserveUserBalance(userId, currency, amount) {
-  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
-    throw new Error('Invalid parameters for balance reservation');
+/**
+ * Optimized user data retrieval with caching
+ */
+async function getCachedUser(userId) {
+  const cacheKey = `user_${userId}`;
+  const cached = userCache.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    return cached.user;
   }
-  const currencyUpper = currency.toUpperCase();
-  if (!SUPPORTED_TOKENS[currencyUpper]) throw new Error(`Unsupported currency: ${currencyUpper}`);
-  const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
-  const pendingBalanceKey = `${currencyLower}PendingBalance`;
-  const update = { $inc: { [pendingBalanceKey]: amount }, $set: { lastBalanceUpdate: new Date() } };
-  const user = await User.findByIdAndUpdate(userId, update, { new: true, runValidators: true });
-  if (!user) throw new Error(`User not found: ${userId}`);
-  logger.info(`Reserved ${amount} ${currencyUpper} for user ${userId}`);
+  
+  const user = await User.findById(userId).select(
+    'twoFASecret is2FAEnabled passwordpin ngnzBalance lastBalanceUpdate'
+  ).lean(); // Use lean() for better performance, only select what we need
+  
+  if (user) {
+    userCache.set(cacheKey, { user, timestamp: Date.now() });
+    // Auto-cleanup cache
+    setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
+  }
+  
   return user;
 }
 
-async function releaseReservedBalance(userId, currency, amount) {
-  if (!userId || !currency || typeof amount !== 'number' || amount <= 0) {
-    throw new Error('Invalid parameters for balance release');
-  }
-  const currencyUpper = currency.toUpperCase();
-  if (!SUPPORTED_TOKENS[currencyUpper]) throw new Error(`Unsupported currency: ${currencyUpper}`);
-  const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
-  const pendingBalanceKey = `${currencyLower}PendingBalance`;
-  const update = { $inc: { [pendingBalanceKey]: -amount }, $set: { lastBalanceUpdate: new Date() } };
-  const user = await User.findByIdAndUpdate(userId, update, { new: true, runValidators: true });
-  if (!user) throw new Error(`User not found: ${userId}`);
-  logger.info(`Released ${amount} ${currencyUpper} for user ${userId}`);
-  return user;
-}
-
+/**
+ * SIMPLIFIED: Direct balance update only (no reservations, no portfolio updates)
+ * @param {String} userId - User ID
+ * @param {String} currency - Currency code
+ * @param {Number} amount - Amount to add/subtract (negative for deductions)
+ * @returns {Promise<Object>} Updated user
+ */
 async function updateUserBalance(userId, currency, amount) {
   if (!userId || !currency || typeof amount !== 'number') {
     throw new Error('Invalid parameters for balance update');
   }
-  const currencyUpper = currency.toUpperCase();
-  if (!SUPPORTED_TOKENS[currencyUpper]) throw new Error(`Unsupported currency: ${currencyUpper}`);
-  const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
-  const balanceField = `${currencyLower}Balance`;
-  const updateFields = { $inc: { [balanceField]: amount }, $set: { lastBalanceUpdate: new Date() } };
-  const user = await User.findByIdAndUpdate(userId, updateFields, { new: true, runValidators: true });
-  if (!user) throw new Error(`User not found: ${userId}`);
-  logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
-  return user;
+  
+  try {
+    const currencyUpper = currency.toUpperCase();
+    
+    // Validate currency is supported
+    if (!SUPPORTED_TOKENS[currencyUpper]) {
+      throw new Error(`Unsupported currency: ${currencyUpper}`);
+    }
+    
+    // Map currency to correct balance field
+    const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
+    const balanceField = `${currencyLower}Balance`;
+    
+    // Simple atomic update
+    const updateFields = {
+      $inc: { [balanceField]: amount },
+      $set: { lastBalanceUpdate: new Date() }
+    };
+    
+    const user = await User.findByIdAndUpdate(
+      userId, 
+      updateFields, 
+      { new: true, runValidators: true }
+    );
+    
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+    
+    // Clear cache
+    userCache.delete(`user_${userId}`);
+    
+    logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
+    
+    return user;
+  } catch (error) {
+    logger.error(`Failed to update balance for user ${userId}`, { 
+      currency, 
+      amount, 
+      error: error.message 
+    });
+    throw error;
+  }
 }
 
-async function updateUserPortfolioBalance(userId) {
-  if (!userId) throw new Error('User ID is required');
-  const user = await User.findByIdAndUpdate(
-    userId,
-    { $set: { portfolioLastUpdated: new Date() } },
-    { new: true, runValidators: true }
-  );
-  if (!user) throw new Error(`User not found: ${userId}`);
-  logger.info(`Updated portfolio timestamp for user ${userId}`);
-  return user;
-}
-
+/**
+ * Compare password pin with user's hashed password pin
+ */
 async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
   if (!candidatePasswordPin || !hashedPasswordPin) return false;
-  try { return await bcrypt.compare(candidatePasswordPin, hashedPasswordPin); }
-  catch (error) { logger.error('Password pin comparison failed:', error); return false; }
+  try {
+    return await bcrypt.compare(candidatePasswordPin, hashedPasswordPin);
+  } catch (error) {
+    logger.error('Password pin comparison failed:', error);
+    return false;
+  }
 }
 
 function validateElectricityRequest(body) {
   const errors = [];
   const sanitized = {};
 
-  if (!body.customer_id) errors.push('Customer ID (meter/account number) is required');
-  else {
+  if (!body.customer_id) {
+    errors.push('Customer ID (meter/account number) is required');
+  } else {
     sanitized.customer_id = String(body.customer_id).trim();
-    if (!sanitized.customer_id.length) errors.push('Customer ID must be a non-empty string');
+    if (!sanitized.customer_id.length) {
+      errors.push('Customer ID must be a non-empty string');
+    }
   }
 
-  if (!body.service_id) errors.push('Service ID is required');
-  else {
+  if (!body.service_id) {
+    errors.push('Service ID is required');
+  } else {
     sanitized.service_id = String(body.service_id).toLowerCase().trim();
     if (!ELECTRICITY_SERVICES.includes(sanitized.service_id)) {
       errors.push(`Invalid service ID. Must be one of: ${ELECTRICITY_SERVICES.join(', ')}`);
     }
   }
 
-  if (!body.variation_id) errors.push('Variation ID (meter type) is required');
-  else {
+  if (!body.variation_id) {
+    errors.push('Variation ID (meter type) is required');
+  } else {
     sanitized.variation_id = String(body.variation_id).toLowerCase().trim();
     if (!VALID_METER_TYPES.includes(sanitized.variation_id)) {
       errors.push('Variation ID must be "prepaid" or "postpaid"');
@@ -123,24 +175,37 @@ function validateElectricityRequest(body) {
     errors.push('Amount is required');
   } else {
     const rawAmount = Number(body.amount);
-    if (!Number.isFinite(rawAmount)) errors.push('Amount must be a valid number');
-    else {
+    if (!Number.isFinite(rawAmount)) {
+      errors.push('Amount must be a valid number');
+    } else {
       sanitized.amount = Math.abs(Math.round(rawAmount * 100) / 100);
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
-      const minAmount = 1000, maxAmount = 100000;
-      if (sanitized.amount < minAmount) errors.push(`Amount below minimum. Minimum electricity purchase is ${minAmount} NGNZ`);
-      if (sanitized.amount > maxAmount) errors.push(`Amount above maximum. Maximum electricity purchase is ${maxAmount} NGNZ`);
+      
+      const minAmount = 1000;
+      const maxAmount = 100000;
+      if (sanitized.amount < minAmount) {
+        errors.push(`Amount below minimum. Minimum electricity purchase is ${minAmount} NGNZ`);
+      }
+      if (sanitized.amount > maxAmount) {
+        errors.push(`Amount above maximum. Maximum electricity purchase is ${maxAmount} NGNZ`);
+      }
     }
   }
 
-  if (!body.twoFactorCode?.trim()) errors.push('Two-factor authentication code is required');
-  else sanitized.twoFactorCode = String(body.twoFactorCode).trim();
+  if (!body.twoFactorCode?.trim()) {
+    errors.push('Two-factor authentication code is required');
+  } else {
+    sanitized.twoFactorCode = String(body.twoFactorCode).trim();
+  }
 
-  if (!body.passwordpin?.trim()) errors.push('Password PIN is required');
-  else {
+  if (!body.passwordpin?.trim()) {
+    errors.push('Password PIN is required');
+  } else {
     sanitized.passwordpin = String(body.passwordpin).trim();
-    if (!/^\d{6}$/.test(sanitized.passwordpin)) errors.push('Password PIN must be exactly 6 numbers');
+    if (!/^\d{6}$/.test(sanitized.passwordpin)) {
+      errors.push('Password PIN must be exactly 6 numbers');
+    }
   }
 
   sanitized.payment_currency = 'NGNZ';
@@ -162,7 +227,9 @@ async function callEBillsElectricityAPI({ customer_id, service_id, variation_id,
       customer_id, service_id, variation_id, amount, request_id, endpoint: '/api/v2/electricity'
     });
 
-    const response = await vtuAuth.makeRequest('POST', '/api/v2/electricity', payload, { timeout: 45000 });
+    const response = await vtuAuth.makeRequest('POST', '/api/v2/electricity', payload, {
+      timeout: 25000 // Reduced from 45s for faster failure
+    });
 
     logger.info(`eBills Electricity API response for ${request_id}:`, {
       code: response.code,
@@ -200,12 +267,11 @@ async function callEBillsElectricityAPI({ customer_id, service_id, variation_id,
 }
 
 /**
- * Main electricity purchase endpoint (mirrors eBills response on success)
+ * STREAMLINED electricity purchase endpoint - ATOMIC IMMEDIATE DEBIT
  */
 router.post('/purchase', async (req, res) => {
   const startTime = Date.now();
-  let balanceActionTaken = false;
-  let balanceActionType = null;
+  let balanceDeducted = false;
   let transactionCreated = false;
   let pendingTransaction = null;
   let ebillsResponse = null;
@@ -219,7 +285,7 @@ router.post('/purchase', async (req, res) => {
       passwordpin: '[REDACTED]'
     });
 
-    // 1) Validate request
+    // Step 1: Validate request
     const validation = validateElectricityRequest(requestBody);
     if (!validation.isValid) {
       return res.status(400).json({
@@ -232,9 +298,35 @@ router.post('/purchase', async (req, res) => {
     const { customer_id, service_id, variation_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
     const currency = 'NGNZ';
 
-    // 2) Validate user + 2FA
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // Step 2: Get user data (with caching) and run validations in parallel
+    const [user, kycValidation] = await Promise.all([
+      getCachedUser(userId),
+      validateTransactionLimit(userId, amount, 'NGNZ', 'ELECTRICITY')
+    ]);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Step 2.1: EARLY BALANCE CHECK - Check balance immediately after getting user
+    const availableBalance = user.ngnzBalance || 0;
+    if (availableBalance < amount) {
+      logger.info(`Insufficient NGNZ balance for user ${userId}: Available=${availableBalance}, Required=${amount}`);
+      return res.status(400).json({
+        success: false,
+        error: 'INSUFFICIENT_NGNZ_BALANCE',
+        message: `Insufficient NGNZ balance. Available: ₦${availableBalance.toLocaleString()}, Required: ₦${amount.toLocaleString()}`,
+        details: {
+          availableBalance,
+          requiredAmount: amount,
+          currency: currency,
+          shortfall: amount - availableBalance
+        }
+      });
+    }
 
     if (!user.twoFASecret || !user.is2FAEnabled) {
       return res.status(400).json({
@@ -244,27 +336,41 @@ router.post('/purchase', async (req, res) => {
     }
 
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
-      logger.warn('🚫 2FA validation failed for electricity purchase', { userId, errorType: 'INVALID_2FA' });
-      return res.status(401).json({ success: false, error: 'INVALID_2FA_CODE', message: 'Invalid two-factor authentication code' });
+      logger.warn('🚫 2FA validation failed for electricity purchase', { 
+        userId, errorType: 'INVALID_2FA'
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'INVALID_2FA_CODE',
+        message: 'Invalid two-factor authentication code'
+      });
     }
+
     logger.info('✅ 2FA validation successful for electricity purchase', { userId });
 
-    // 3) Password PIN
+    // Step 3: Validate password pin
     if (!user.passwordpin) {
       return res.status(400).json({
         success: false,
         message: 'Password PIN is not set up for your account. Please set up your password PIN first.'
       });
     }
+
     const isPasswordPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
     if (!isPasswordPinValid) {
-      logger.warn('🚫 Password PIN validation failed for electricity purchase', { userId, errorType: 'INVALID_PASSWORDPIN' });
-      return res.status(401).json({ success: false, error: 'INVALID_PASSWORDPIN', message: 'Invalid password PIN' });
+      logger.warn('🚫 Password PIN validation failed for electricity purchase', { 
+        userId, errorType: 'INVALID_PASSWORDPIN'
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'INVALID_PASSWORDPIN',
+        message: 'Invalid password PIN'
+      });
     }
+
     logger.info('✅ Password PIN validation successful for electricity purchase', { userId });
 
-    // 4) KYC limits
-    const kycValidation = await validateTransactionLimit(userId, amount, 'NGNZ', 'ELECTRICITY');
+    // Step 4: KYC validation
     if (!kycValidation.allowed) {
       return res.status(403).json({
         success: false,
@@ -279,41 +385,39 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // 5) Pending check
-    const existingPending = await BillTransaction.getUserPendingTransactions(userId, 'electricity', 5);
-    if (existingPending.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: 'PENDING_TRANSACTION_EXISTS',
-        message: 'You already have a pending electricity purchase. Please wait for it to complete.'
-      });
-    }
-
-    // 6) IDs
+    // Step 5: Generate unique IDs
     const timestamp = Date.now();
     const randomSuffix = Math.random().toString(36).substring(2, 8);
     const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
 
-    // 7) Balance check
-    const balanceValidation = await validateUserBalance(userId, currency, amount, {
-      includeBalanceDetails: true,
-      logValidation: true
-    });
-    if (!balanceValidation.success) {
+    // Step 6: REDUNDANT BALANCE CHECK (in case balance changed between cache and now)
+    // Re-fetch latest balance from database for final confirmation
+    const latestUser = await User.findById(userId).select('ngnzBalance').lean();
+    if (!latestUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found during balance verification'
+      });
+    }
+
+    const currentBalance = latestUser.ngnzBalance || 0;
+    if (currentBalance < amount) {
+      logger.info(`Final balance check failed for user ${userId}: Available=${currentBalance}, Required=${amount}`);
       return res.status(400).json({
         success: false,
-        error: 'INSUFFICIENT_BALANCE',
-        message: balanceValidation.message,
+        error: 'INSUFFICIENT_NGNZ_BALANCE',
+        message: `Insufficient NGNZ balance. Available: ₦${currentBalance.toLocaleString()}, Required: ₦${amount.toLocaleString()}`,
         details: {
-          availableBalance: balanceValidation.availableBalance,
+          availableBalance: currentBalance,
           requiredAmount: amount,
-          currency
+          currency: currency,
+          shortfall: amount - currentBalance
         }
       });
     }
 
-    // 8) Create transaction
+    // Step 7: Create minimal transaction record
     const initialTransactionData = {
       orderId: uniqueOrderId,
       status: 'initiated-api',
@@ -325,17 +429,28 @@ router.post('/purchase', async (req, res) => {
       paymentCurrency: currency,
       requestId: finalRequestId,
       metaData: {
-        customer_id, service_id, variation_id, meter_type: variation_id,
-        user_id: userId, payment_currency: currency, ngnz_amount: amount,
-        exchange_rate: 1, twofa_validated: true, passwordpin_validated: true,
-        kyc_validated: true, is_ngnz_transaction: true
+        customer_id,
+        service_id,
+        variation_id,
+        meter_type: variation_id,
+        user_id: userId,
+        payment_currency: currency,
+        ngnz_amount: amount,
+        exchange_rate: 1,
+        twofa_validated: true,
+        passwordpin_validated: true,
+        kyc_validated: true,
+        is_ngnz_transaction: true
       },
       network: service_id.toUpperCase(),
       customerPhone: customer_id,
-      customerInfo: { customer_id, service_provider: service_id, meter_type: variation_id },
+      customerInfo: {
+        customer_id,
+        service_provider: service_id,
+        meter_type: variation_id
+      },
       userId: userId,
       timestamp: new Date(),
-      balanceReserved: false,
       twoFactorValidated: true,
       passwordPinValidated: true,
       kycValidated: true
@@ -345,9 +460,9 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = pendingTx;
     transactionCreated = true;
 
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | electricity | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC | ⚠️ Balance Pending`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | electricity | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC`);
 
-    // 9) Call eBills
+    // Step 8: Call eBills API
     try {
       ebillsResponse = await callEBillsElectricityAPI({
         customer_id, service_id, variation_id, amount,
@@ -365,72 +480,87 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // 10) Balance handling based on provider status
+    // =====================================
+    // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
+    // =====================================
     const ebillsStatus = ebillsResponse.data.status;
 
-    if (ebillsStatus === 'completed-api') {
-      try {
-        await updateUserBalance(userId, currency, -amount);
-        await updateUserPortfolioBalance(userId);
-        balanceActionTaken = true;
-        balanceActionType = 'updated';
-        logger.info(`✅ Balance updated directly: -${amount} ${currency} for user ${userId}`);
-      } catch (balanceError) {
-        logger.error('CRITICAL: Balance update failed for completed transaction:', {
-          request_id: finalRequestId, userId, currency, amount, error: balanceError.message,
-          ebills_order_id: ebillsResponse.data?.order_id
-        });
+    // Deduct balance immediately regardless of eBills status (as long as API call succeeded)
+    logger.info(`✅ eBills API succeeded (${ebillsStatus}), deducting balance immediately for ${finalRequestId}`);
+
+    try {
+      await updateUserBalance(userId, currency, -amount);
+      balanceDeducted = true;
+
+      logger.info(`✅ Balance deducted immediately: -${amount} ${currency} for user ${userId}`);
+
+    } catch (balanceError) {
+      logger.error('CRITICAL: Balance deduction failed after successful eBills API call:', {
+        request_id: finalRequestId,
+        userId,
+        currency,
+        amount,
+        error: balanceError.message,
+        ebills_order_id: ebillsResponse.data?.order_id
+      });
+
+      // Check if this is an insufficient balance error during deduction
+      if (balanceError.message.includes('insufficient') || 
+          balanceError.message.includes('balance') ||
+          balanceError.message.toLowerCase().includes('ngnz')) {
+        
         await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
           status: 'failed',
           processingErrors: [{
-            error: `Balance update failed for completed transaction: ${balanceError.message}`,
+            error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
             timestamp: new Date(),
-            phase: 'balance_update',
+            phase: 'balance_deduction',
             ebills_order_id: ebillsResponse.data?.order_id
           }]
         });
-        return res.status(500).json({
+
+        return res.status(400).json({
           success: false,
-          error: 'BALANCE_UPDATE_FAILED',
-          message: 'eBills electricity transaction succeeded but balance update failed. Please contact support immediately.'
+          error: 'INSUFFICIENT_NGNZ_BALANCE',
+          message: 'Insufficient NGNZ balance to complete the transaction. Your balance may have changed during processing.',
+          details: {
+            ebills_order_id: ebillsResponse.data?.order_id,
+            ebills_status: ebillsResponse.data?.status,
+            amount: amount,
+            currency: 'NGNZ'
+          }
         });
       }
-    } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
-      try {
-        await reserveUserBalance(userId, currency, amount);
-        await pendingTransaction.markBalanceReserved();
-        balanceActionTaken = true;
-        balanceActionType = 'reserved';
-        logger.info(`✅ Balance reserved: ${amount} ${currency} for user ${userId}`);
-      } catch (balanceError) {
-        logger.error('CRITICAL: Balance reservation failed after eBills success:', {
-          request_id: finalRequestId, userId, currency, amount, error: balanceError.message,
+
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
+        status: 'failed',
+        processingErrors: [{
+          error: `Balance deduction failed after eBills success: ${balanceError.message}`,
+          timestamp: new Date(),
+          phase: 'balance_deduction',
           ebills_order_id: ebillsResponse.data?.order_id
-        });
-        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
-          status: 'failed',
-          processingErrors: [{
-            error: `Balance reservation failed after eBills success: ${balanceError.message}`,
-            timestamp: new Date(),
-            phase: 'balance_reservation',
-            ebills_order_id: ebillsResponse.data?.order_id
-          }]
-        });
-        return res.status(500).json({
-          success: false,
-          error: 'BALANCE_RESERVATION_FAILED',
-          message: 'eBills electricity transaction succeeded but balance reservation failed. Please contact support immediately.'
-        });
-      }
-    } else {
-      logger.warn(`Unexpected eBills status: ${ebillsStatus} for ${finalRequestId}`);
+        }]
+      });
+
+      return res.status(500).json({
+        success: false,
+        error: 'BALANCE_UPDATE_FAILED',
+        message: 'eBills electricity transaction succeeded but balance deduction failed. Please contact support immediately.',
+        details: {
+          ebills_order_id: ebillsResponse.data?.order_id,
+          ebills_status: ebillsResponse.data?.status,
+          amount: amount,
+          customer_id: customer_id
+        }
+      });
     }
 
-    // 11) Update transaction with eBills response (internal only; response to client mirrors eBills)
+    // Step 10: Update transaction with eBills response
     const updateData = {
       orderId: ebillsResponse.data.order_id?.toString?.() || String(ebillsResponse.data.order_id),
       status: ebillsResponse.data.status,
       productName: ebillsResponse.data.product_name,
+      balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
         ...initialTransactionData.metaData,
         service_name: ebillsResponse.data.service_name,
@@ -440,42 +570,58 @@ router.post('/purchase', async (req, res) => {
         units: ebillsResponse.data.units,
         band: ebillsResponse.data.band,
         amount_charged: ebillsResponse.data.amount_charged,
-        balance_action_taken: balanceActionTaken,
-        balance_action_type: balanceActionType,
+        balance_action_taken: true,
+        balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
         ebills_initial_balance: ebillsResponse.data.initial_balance,
         ebills_final_balance: ebillsResponse.data.final_balance
-      },
-      // derive balance flags for our DB only
-      balanceReserved: balanceActionType === 'reserved',
-      balanceCompleted: balanceActionType === 'updated'
+      }
     };
 
     await BillTransaction.findByIdAndUpdate(pendingTransaction._id, updateData, { new: true });
-    logger.info(`📋 Transaction updated: ${ebillsResponse.data.order_id} | ${ebillsResponse.data.status} | Balance: ${balanceActionType || 'none'}`);
+    logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
 
-    // 12) ❗RETURN EXACT EBILLS FORMAT
+    // Step 11: Return response - maintaining the exact eBills format for compatibility
     return res.status(200).json(ebillsResponse);
 
   } catch (error) {
     logger.error('Electricity purchase unexpected error:', {
       userId: req.user?.id,
       error: error.message,
+      stack: error.stack,
       processingTime: Date.now() - startTime
     });
 
-    // Attempt cleanup if we had reserved balance
-    try {
-      if (balanceActionTaken && balanceActionType === 'reserved') {
-        // If validation var not in scope, skip safe read
-        const amt = (req.body && Number(req.body.amount)) || 0;
-        if (amt > 0) await releaseReservedBalance(req.user.id, 'NGNZ', amt);
-        logger.info('🔄 Released reserved NGNZ balance due to error');
-      } else if (balanceActionTaken && balanceActionType === 'updated') {
-        logger.error('❌ CRITICAL: Direct balance update completed but transaction failed. Manual intervention required.');
+    // Check if the error is related to insufficient balance
+    if (error.message && 
+        (error.message.toLowerCase().includes('insufficient') || 
+         error.message.toLowerCase().includes('balance') ||
+         error.message.toLowerCase().includes('ngnz'))) {
+      
+      logger.info('Detected balance-related error in catch block', { 
+        userId: req.user?.id, 
+        error: error.message 
+      });
+
+      return res.status(400).json({
+        success: false,
+        error: 'INSUFFICIENT_NGNZ_BALANCE',
+        message: 'Insufficient NGNZ balance to complete the electricity purchase',
+        details: {
+          currency: 'NGNZ',
+          requestedAmount: validation?.sanitized?.amount
+        }
+      });
+    }
+
+    // SIMPLIFIED CLEANUP: If balance was deducted but something failed, reverse it
+    if (balanceDeducted) {
+      try {
+        await updateUserBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0); // Add back
+        logger.info('🔄 Reversed balance deduction due to error');
+      } catch (reverseError) {
+        logger.error('❌ CRITICAL: Failed to reverse balance deduction after error:', reverseError.message);
       }
-    } catch (releaseError) {
-      logger.error('❌ Failed to release reserved NGNZ balance after error:', releaseError.message);
     }
 
     if (transactionCreated && pendingTransaction) {
@@ -496,5 +642,15 @@ router.post('/purchase', async (req, res) => {
     });
   }
 });
+
+// Clean up user cache periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of userCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      userCache.delete(key);
+    }
+  }
+}, 60000); // Clean every minute
 
 module.exports = router;
