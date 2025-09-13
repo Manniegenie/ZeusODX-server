@@ -32,17 +32,61 @@ function maskEmail(email = '') {
   return `${maskedLocal}@${domain}`;
 }
 
-// POST: /initiate - Send OTP via email
+// Helper to mask phone number for logs
+function maskPhoneNumber(phone = '') {
+  if (!phone) return '';
+  return phone.replace(/\d(?=\d{4})/g, '*');
+}
+
+// Helper to validate phone number format
+function isValidPhoneNumber(phone) {
+  // Adjust regex based on your phone number requirements
+  return /^\+?[\d\s\-()]{10,15}$/.test(phone);
+}
+
+// Helper to find user by phone number
+async function findUserByPhone(phoneNumber) {
+  try {
+    const user = await User.findOne({ phoneNumber: phoneNumber });
+    return user;
+  } catch (error) {
+    logger.error('Error finding user by phone number', {
+      phoneNumber: maskPhoneNumber(phoneNumber),
+      error: error.message
+    });
+    return null;
+  }
+}
+
+// POST: /initiate - Send OTP via email using phone number
 router.post('/initiate', async (req, res) => {
-  const userId = req.user.id; // Extract user ID from JWT
+  let { phoneNumber } = req.body;
+
+  // Validate presence of phone number
+  if (!phoneNumber) {
+    logger.warn('Missing phone number for forgot pin initiation');
+    return res.status(400).json({ message: 'Phone number is required.' });
+  }
+
+  // Sanitize phone number input
+  phoneNumber = sanitizeInput(phoneNumber);
+
+  // Validate phone number format
+  if (!isValidPhoneNumber(phoneNumber)) {
+    return res.status(400).json({ message: 'Invalid phone number format.' });
+  }
 
   try {
-    // Find user in database using JWT user ID
-    const user = await User.findById(userId);
+    // Find user in database using phone number
+    const user = await findUserByPhone(phoneNumber);
     if (!user) {
-      logger.warn('User not found for forgot pin', { userId });
-      return res.status(404).json({ message: 'User not found.' });
+      logger.warn('User not found for forgot pin using phone number', { 
+        phoneNumber: maskPhoneNumber(phoneNumber) 
+      });
+      return res.status(404).json({ message: 'User not found with this phone number.' });
     }
+
+    const userId = user._id;
 
     // Check if 2FA is set up
     if (!user.twoFASecret || !user.is2FAEnabled) {
@@ -54,8 +98,11 @@ router.post('/initiate', async (req, res) => {
 
     // Ensure user has a valid email
     if (!user.email || !validator.isEmail(user.email)) {
-      logger.warn('User has no valid email for forgot pin', { userId });
-      return res.status(400).json({ message: 'No valid email on file.' });
+      logger.warn('User has no valid email for forgot pin', { 
+        userId, 
+        phoneNumber: maskPhoneNumber(phoneNumber) 
+      });
+      return res.status(400).json({ message: 'No valid email on file for this account.' });
     }
 
     logger.info('✅ 2FA setup verified for forgot pin initiation', { userId });
@@ -64,7 +111,11 @@ router.post('/initiate', async (req, res) => {
     const now = new Date();
     const lastSent = user.pinChangeOtpLastSentAt ? new Date(user.pinChangeOtpLastSentAt) : null;
     if (lastSent && (now.getTime() - lastSent.getTime()) < 60 * 1000) {
-      logger.warn('Forgot pin OTP requested too frequently', { userId, email: maskEmail(user.email) });
+      logger.warn('Forgot pin OTP requested too frequently', { 
+        userId, 
+        email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
       return res.status(429).json({ message: 'Please wait before requesting another code.' });
     }
 
@@ -86,7 +137,6 @@ router.post('/initiate', async (req, res) => {
       const fullName = `${user.firstname ?? ''} ${user.lastname ?? ''}`.trim();
 
       // sendOtpEmail signature assumed: (to, name, otp, minutes)
-      // if your service uses a different signature (e.g., options object), adapt accordingly.
       const emailResult = await sendOtpEmail(user.email, fullName, otp, 10);
 
       // emailResult may be provider-specific — attempt to log an identifier if present
@@ -99,11 +149,13 @@ router.post('/initiate', async (req, res) => {
       logger.info('Forgot pin OTP sent successfully', {
         userId,
         email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber),
         ...resultMeta
       });
 
       return res.status(200).json({
-        message: 'Pin reset verification code sent to your email.'
+        message: 'Pin reset verification code sent to your email.',
+        email: maskEmail(user.email)
       });
 
     } catch (emailError) {
@@ -111,6 +163,7 @@ router.post('/initiate', async (req, res) => {
       logger.error('Failed to send forgot pin OTP email', {
         userId,
         email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber),
         error: emailError?.message,
         stack: emailError?.stack
       });
@@ -128,7 +181,7 @@ router.post('/initiate', async (req, res) => {
 
   } catch (err) {
     logger.error('Forgot pin initiation error', {
-      userId,
+      phoneNumber: maskPhoneNumber(phoneNumber),
       error: err.message,
       stack: err.stack
     });
@@ -136,19 +189,24 @@ router.post('/initiate', async (req, res) => {
   }
 });
 
-// POST: /verify-otp - Verify OTP only
+// POST: /verify-otp - Verify OTP only using phone number
 router.post('/verify-otp', async (req, res) => {
-  let { otp } = req.body;
-  const userId = req.user.id; // Extract user ID from JWT
+  let { otp, phoneNumber } = req.body;
 
   // Validate presence of required fields
-  if (!otp) {
-    logger.warn('Missing OTP for forgot pin OTP verification', { userId });
-    return res.status(400).json({ message: 'Please provide OTP.' });
+  if (!otp || !phoneNumber) {
+    logger.warn('Missing OTP or phone number for forgot pin OTP verification');
+    return res.status(400).json({ message: 'Please provide both OTP and phone number.' });
   }
 
   // Sanitize inputs
   otp = sanitizeInput(otp);
+  phoneNumber = sanitizeInput(phoneNumber);
+
+  // Validate phone number format
+  if (!isValidPhoneNumber(phoneNumber)) {
+    return res.status(400).json({ message: 'Invalid phone number format.' });
+  }
 
   // Validate OTP format
   if (!/^\d{6}$/.test(otp)) {
@@ -156,22 +214,34 @@ router.post('/verify-otp', async (req, res) => {
   }
 
   try {
-    // Find user in database using JWT user ID
-    const user = await User.findById(userId);
+    // Find user in database using phone number
+    const user = await findUserByPhone(phoneNumber);
     if (!user) {
-      logger.warn('User not found for forgot pin OTP verification', { userId });
-      return res.status(404).json({ message: 'User not found.' });
+      logger.warn('User not found for forgot pin OTP verification', { 
+        phoneNumber: maskPhoneNumber(phoneNumber) 
+      });
+      return res.status(404).json({ message: 'User not found with this phone number.' });
     }
+
+    const userId = user._id;
 
     // Check if user has pending pin change OTP
     if (!user.pinChangeOtp) {
-      logger.warn('No pending forgot pin request found for OTP verification', { userId, email: maskEmail(user.email) });
+      logger.warn('No pending forgot pin request found for OTP verification', { 
+        userId, 
+        email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
       return res.status(400).json({ message: 'No pending pin reset request. Please initiate pin reset first.' });
     }
 
     // Check if OTP has expired
     if (new Date() > new Date(user.pinChangeOtpExpiresAt)) {
-      logger.warn('Expired forgot pin OTP used', { userId, email: maskEmail(user.email) });
+      logger.warn('Expired forgot pin OTP used', { 
+        userId, 
+        email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
 
       // Clean up expired OTP
       user.pinChangeOtp = undefined;
@@ -186,7 +256,11 @@ router.post('/verify-otp', async (req, res) => {
 
     // Verify OTP
     if (user.pinChangeOtp !== otp) {
-      logger.warn('Invalid forgot pin OTP provided', { userId, email: maskEmail(user.email) });
+      logger.warn('Invalid forgot pin OTP provided', { 
+        userId, 
+        email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
       return res.status(400).json({ message: 'Invalid OTP.' });
     }
 
@@ -194,7 +268,11 @@ router.post('/verify-otp', async (req, res) => {
     user.pinChangeOtpVerified = true;
     await user.save();
 
-    logger.info('✅ Forgot pin OTP verified successfully', { userId, email: maskEmail(user.email) });
+    logger.info('✅ Forgot pin OTP verified successfully', { 
+      userId, 
+      email: maskEmail(user.email),
+      phoneNumber: maskPhoneNumber(phoneNumber)
+    });
 
     return res.status(200).json({
       message: 'OTP verified successfully. Please proceed with two-factor authentication.'
@@ -202,7 +280,7 @@ router.post('/verify-otp', async (req, res) => {
 
   } catch (err) {
     logger.error('Forgot pin OTP verification error', {
-      userId,
+      phoneNumber: maskPhoneNumber(phoneNumber),
       error: err.message,
       stack: err.stack
     });
@@ -210,15 +288,14 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// POST: /change-pin - Verify 2FA and change pin
+// POST: /change-pin - Verify 2FA and change pin using phone number
 router.post('/change-pin', async (req, res) => {
-  let { newPin, confirmPin, twoFactorCode } = req.body;
-  const userId = req.user.id; // Extract user ID from JWT
+  let { newPin, confirmPin, twoFactorCode, phoneNumber } = req.body;
 
   // Validate presence of required fields
-  if (!newPin || !confirmPin || !twoFactorCode) {
-    logger.warn('Missing required fields for forgot pin 2FA and pin change', { userId });
-    return res.status(400).json({ message: 'Please provide all required fields.' });
+  if (!newPin || !confirmPin || !twoFactorCode || !phoneNumber) {
+    logger.warn('Missing required fields for forgot pin 2FA and pin change');
+    return res.status(400).json({ message: 'Please provide all required fields: newPin, confirmPin, twoFactorCode, and phoneNumber.' });
   }
 
   if (!twoFactorCode?.trim()) {
@@ -229,6 +306,12 @@ router.post('/change-pin', async (req, res) => {
   newPin = sanitizeInput(newPin);
   confirmPin = sanitizeInput(confirmPin);
   twoFactorCode = sanitizeInput(twoFactorCode);
+  phoneNumber = sanitizeInput(phoneNumber);
+
+  // Validate phone number format
+  if (!isValidPhoneNumber(phoneNumber)) {
+    return res.status(400).json({ message: 'Invalid phone number format.' });
+  }
 
   // Validate new pin format
   if (!/^\d{4,6}$/.test(newPin)) {
@@ -241,12 +324,16 @@ router.post('/change-pin', async (req, res) => {
   }
 
   try {
-    // Find user in database using JWT user ID
-    const user = await User.findById(userId);
+    // Find user in database using phone number
+    const user = await findUserByPhone(phoneNumber);
     if (!user) {
-      logger.warn('User not found for forgot pin 2FA verification', { userId });
-      return res.status(404).json({ message: 'User not found.' });
+      logger.warn('User not found for forgot pin 2FA verification', { 
+        phoneNumber: maskPhoneNumber(phoneNumber) 
+      });
+      return res.status(404).json({ message: 'User not found with this phone number.' });
     }
+
+    const userId = user._id;
 
     // Check if 2FA is set up
     if (!user.twoFASecret || !user.is2FAEnabled) {
@@ -258,13 +345,21 @@ router.post('/change-pin', async (req, res) => {
 
     // Check if OTP was verified first
     if (!user.pinChangeOtpVerified) {
-      logger.warn('Attempt to change pin without OTP verification', { userId, email: maskEmail(user.email) });
+      logger.warn('Attempt to change pin without OTP verification', { 
+        userId, 
+        email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
       return res.status(400).json({ message: 'Please verify OTP first before proceeding with pin change.' });
     }
 
     // Check if OTP session has expired (even though OTP was verified)
     if (new Date() > new Date(user.pinChangeOtpExpiresAt)) {
-      logger.warn('OTP session expired during 2FA verification', { userId, email: maskEmail(user.email) });
+      logger.warn('OTP session expired during 2FA verification', { 
+        userId, 
+        email: maskEmail(user.email),
+        phoneNumber: maskPhoneNumber(phoneNumber)
+      });
 
       // Clean up expired session
       user.pinChangeOtp = undefined;
@@ -281,6 +376,7 @@ router.post('/change-pin', async (req, res) => {
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
       logger.warn('🚫 2FA validation failed for forgot pin completion', {
         userId,
+        phoneNumber: maskPhoneNumber(phoneNumber),
         errorType: 'INVALID_2FA'
       });
       return res.status(401).json({
@@ -290,7 +386,10 @@ router.post('/change-pin', async (req, res) => {
       });
     }
 
-    logger.info('✅ 2FA validation successful for forgot pin completion', { userId });
+    logger.info('✅ 2FA validation successful for forgot pin completion', { 
+      userId,
+      phoneNumber: maskPhoneNumber(phoneNumber)
+    });
 
     // Hash the new pin manually (schema no longer auto-hashes passwordpin)
     const saltRounds = 10; // Match SALT_WORK_FACTOR from schema
@@ -305,7 +404,11 @@ router.post('/change-pin', async (req, res) => {
     user.pinChangeOtpLastSentAt = undefined;
     await user.save();
 
-    logger.info('✅ Pin reset successfully after 2FA verification', { userId, email: maskEmail(user.email) });
+    logger.info('✅ Pin reset successfully after 2FA verification', { 
+      userId, 
+      email: maskEmail(user.email),
+      phoneNumber: maskPhoneNumber(phoneNumber)
+    });
 
     return res.status(200).json({
       message: 'Pin reset successfully.'
@@ -313,7 +416,7 @@ router.post('/change-pin', async (req, res) => {
 
   } catch (err) {
     logger.error('Forgot pin 2FA verification and pin change error', {
-      userId,
+      phoneNumber: maskPhoneNumber(phoneNumber),
       error: err.message,
       stack: err.stack
     });
