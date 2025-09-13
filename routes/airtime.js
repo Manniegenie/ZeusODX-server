@@ -307,7 +307,7 @@ router.post('/purchase', async (req, res) => {
     }
     
     const { phone, service_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
-    const currency = 'NGNZ'; // UPDATED: NGNB to NGNZ
+    const currency = 'NGNZ';
     
     // Step 2: Get user data (with caching) and run validations in parallel
     const [user, kycValidation] = await Promise.all([
@@ -319,6 +319,23 @@ router.post('/purchase', async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'User not found'
+      });
+    }
+
+    // Step 2.1: EARLY BALANCE CHECK - Check balance immediately after getting user
+    const availableBalance = user.ngnzBalance || 0;
+    if (availableBalance < amount) {
+      logger.info(`Insufficient NGNZ balance for user ${userId}: Available=${availableBalance}, Required=${amount}`);
+      return res.status(400).json({
+        success: false,
+        error: 'INSUFFICIENT_NGNZ_BALANCE',
+        message: `Insufficient NGNZ balance. Available: ₦${availableBalance.toLocaleString()}, Required: ₦${amount.toLocaleString()}`,
+        details: {
+          availableBalance,
+          requiredAmount: amount,
+          currency: currency,
+          shortfall: amount - availableBalance
+        }
       });
     }
 
@@ -385,17 +402,28 @@ router.post('/purchase', async (req, res) => {
     const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
     
-    // Step 6: Validate balance (simplified - just check cached user balance)
-    const availableBalance = user.ngnzBalance || 0;
-    if (availableBalance < amount) {
+    // Step 6: REDUNDANT BALANCE CHECK (in case balance changed between cache and now)
+    // Re-fetch latest balance from database for final confirmation
+    const latestUser = await User.findById(userId).select('ngnzBalance').lean();
+    if (!latestUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found during balance verification'
+      });
+    }
+
+    const currentBalance = latestUser.ngnzBalance || 0;
+    if (currentBalance < amount) {
+      logger.info(`Final balance check failed for user ${userId}: Available=${currentBalance}, Required=${amount}`);
       return res.status(400).json({
         success: false,
-        error: 'INSUFFICIENT_BALANCE',
-        message: `Insufficient NGNZ balance. Available: ${availableBalance}, Required: ${amount}`,
+        error: 'INSUFFICIENT_NGNZ_BALANCE',
+        message: `Insufficient NGNZ balance. Available: ₦${currentBalance.toLocaleString()}, Required: ₦${amount.toLocaleString()}`,
         details: {
-          availableBalance,
+          availableBalance: currentBalance,
           requiredAmount: amount,
-          currency: currency
+          currency: currency,
+          shortfall: amount - currentBalance
         }
       });
     }
@@ -417,12 +445,12 @@ router.post('/purchase', async (req, res) => {
         service_id,
         user_id: userId,
         payment_currency: currency,
-        ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
+        ngnz_amount: amount,
         exchange_rate: 1,
         twofa_validated: true,
         passwordpin_validated: true,
         kyc_validated: true,
-        is_ngnz_transaction: true // UPDATED: Added for consistency
+        is_ngnz_transaction: true
       },
       network: service_id.toUpperCase(),
       customerPhone: phone,
@@ -436,7 +464,7 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC`); // UPDATED: NGNB to NGNZ
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC`);
     
     // Step 8: Call eBills API
     try {
@@ -485,6 +513,34 @@ router.post('/purchase', async (req, res) => {
         error: balanceError.message,
         ebills_order_id: ebillsResponse.data?.order_id
       });
+
+      // Check if this is an insufficient balance error during deduction
+      if (balanceError.message.includes('insufficient') || 
+          balanceError.message.includes('balance') ||
+          balanceError.message.toLowerCase().includes('ngnz')) {
+        
+        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+          status: 'failed',
+          processingErrors: [{
+            error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
+            timestamp: new Date(),
+            phase: 'balance_deduction',
+            ebills_order_id: ebillsResponse.data?.order_id
+          }]
+        });
+        
+        return res.status(400).json({
+          success: false,
+          error: 'INSUFFICIENT_NGNZ_BALANCE',
+          message: 'Insufficient NGNZ balance to complete the transaction. Your balance may have changed during processing.',
+          details: {
+            ebills_order_id: ebillsResponse.data?.order_id,
+            ebills_status: ebillsResponse.data?.status,
+            amount: amount,
+            currency: 'NGNZ'
+          }
+        });
+      }
       
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
         status: 'failed',
@@ -550,7 +606,7 @@ router.post('/purchase', async (req, res) => {
           balance_action: 'updated_directly',
           payment_details: {
             currency: currency,
-            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
+            ngnz_amount: amount,
             amount_usd: (amount * (1 / 1554.42)).toFixed(2)
           }
         }
@@ -566,10 +622,10 @@ router.post('/purchase', async (req, res) => {
           amount: ebillsResponse.data.amount,
           service_name: ebillsResponse.data.service_name,
           request_id: finalRequestId,
-          balance_action: 'updated_directly', // Changed from 'reserved' since we deduct immediately
+          balance_action: 'updated_directly',
           payment_details: {
             currency: currency,
-            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
+            ngnz_amount: amount,
             amount_usd: (amount * (1 / 1554.42)).toFixed(2)
           }
         },
@@ -585,7 +641,7 @@ router.post('/purchase', async (req, res) => {
           balance_action: 'updated_directly',
           payment_details: {
             currency: currency,
-            ngnz_amount: amount, // UPDATED: ngnb_amount to ngnz_amount
+            ngnz_amount: amount,
             amount_usd: (amount * (1 / 1554.42)).toFixed(2)
           }
         }
@@ -596,8 +652,31 @@ router.post('/purchase', async (req, res) => {
     logger.error('Airtime purchase unexpected error:', {
       userId: req.user?.id,
       error: error.message,
+      stack: error.stack,
       processingTime: Date.now() - startTime
     });
+
+    // Check if the error is related to insufficient balance
+    if (error.message && 
+        (error.message.toLowerCase().includes('insufficient') || 
+         error.message.toLowerCase().includes('balance') ||
+         error.message.toLowerCase().includes('ngnz'))) {
+      
+      logger.info('Detected balance-related error in catch block', { 
+        userId: req.user?.id, 
+        error: error.message 
+      });
+
+      return res.status(400).json({
+        success: false,
+        error: 'INSUFFICIENT_NGNZ_BALANCE',
+        message: 'Insufficient NGNZ balance to complete the airtime purchase',
+        details: {
+          currency: 'NGNZ',
+          requestedAmount: validation?.sanitized?.amount
+        }
+      });
+    }
 
     // SIMPLIFIED CLEANUP: If balance was deducted but something failed, reverse it
     if (balanceDeducted) {
@@ -631,5 +710,15 @@ router.post('/purchase', async (req, res) => {
     });
   }
 });
+
+// Clean up user cache periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of userCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      userCache.delete(key);
+    }
+  }
+}, 60000); // Clean every minute
 
 module.exports = router;
