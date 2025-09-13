@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
-const { sendOtpEmail } = require('../services/EmailService');
+const { sendEmailVerificationOTP } = require('../services/EmailService'); // Fixed import
 const logger = require('../utils/logger');
 const validator = require('validator');
 const bcrypt = require('bcryptjs');
@@ -126,12 +126,22 @@ router.post('/initiate', async (req, res) => {
     user.pinChangeOtpLastSentAt = createdAt; // Save last-sent timestamp for throttling
     await user.save();
 
-    // Send OTP via email using your EmailService
+    // Send OTP via email using EmailService
     try {
       const fullName = `${user.firstname ?? ''} ${user.lastname ?? ''}`.trim();
 
-      // sendOtpEmail signature assumed: (to, name, otp, minutes)
-      const emailResult = await sendOtpEmail(user.email, fullName, otp, 10);
+      // Use sendEmailVerificationOTP with PIN reset context
+      const emailResult = await sendEmailVerificationOTP(
+        user.email, 
+        fullName || 'User', 
+        otp, 
+        10, // 10 minutes expiry
+        {
+          ctaText: 'Reset PIN',
+          companyName: 'ZeusODX',
+          supportEmail: 'support@zeusodx.com'
+        }
+      );
 
       // emailResult may be provider-specific — attempt to log an identifier if present
       const resultMeta = {};
