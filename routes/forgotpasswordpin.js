@@ -5,7 +5,7 @@ const User = require('../models/user');
 const { sendEmailVerificationOTP } = require('../services/EmailService'); // Fixed import
 const logger = require('../utils/logger');
 const validator = require('validator');
-const bcrypt = require('bcryptjs');
+// bcrypt removed - no longer needed for manual hashing
 
 // Generate numeric OTP (same as signup)
 function generateOTP(length = 6) {
@@ -371,18 +371,17 @@ router.post('/reset-pin', async (req, res) => {
       return res.status(400).json({ message: 'Session has expired. Please start the pin reset process again.' });
     }
 
-    // Hash the new pin manually (schema no longer auto-hashes passwordpin)
-    const saltRounds = 10; // Match SALT_WORK_FACTOR from schema
-    const hashedNewPin = await bcrypt.hash(newPin, saltRounds);
-
-    // Update user's passwordpin and clear all OTP fields
-    user.passwordpin = hashedNewPin;
+    // Let the schema handle hashing - just assign the plain PIN
+    user.passwordpin = newPin; // Schema will auto-hash this via pre-save hook
+    
+    // Clear all OTP fields
     user.pinChangeOtp = undefined;
     user.pinChangeOtpCreatedAt = undefined;
     user.pinChangeOtpExpiresAt = undefined;
     user.pinChangeOtpVerified = undefined;
     user.pinChangeOtpLastSentAt = undefined;
-    await user.save();
+    
+    await user.save(); // Schema pre-save hook will hash the PIN
 
     logger.info('✅ Pin reset successfully', { 
       userId, 
@@ -472,7 +471,7 @@ router.post('/update-pin', async (req, res) => {
       return res.status(400).json({ message: 'No current pin found. Please set up a pin first.' });
     }
 
-    // Verify current pin
+    // Verify current pin using the schema method
     const isCurrentPinValid = await user.comparePasswordPin(currentPin);
     if (!isCurrentPinValid) {
       logger.warn('Invalid current pin provided for pin update', { 
@@ -482,13 +481,9 @@ router.post('/update-pin', async (req, res) => {
       return res.status(400).json({ message: 'Current pin is incorrect.' });
     }
 
-    // Hash the new pin manually (schema no longer auto-hashes passwordpin)
-    const saltRounds = 10; // Match SALT_WORK_FACTOR from schema
-    const hashedNewPin = await bcrypt.hash(newPin, saltRounds);
-
-    // Update user's passwordpin
-    user.passwordpin = hashedNewPin;
-    await user.save();
+    // Let the schema handle hashing - just assign the plain PIN
+    user.passwordpin = newPin; // Schema will auto-hash this via pre-save hook
+    await user.save(); // Schema pre-save hook will hash the PIN
 
     logger.info('✅ Pin updated successfully', { 
       userId, 
