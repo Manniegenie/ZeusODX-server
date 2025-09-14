@@ -6,11 +6,9 @@ const router = express.Router();
 const User = require("../models/user");
 const config = require("./config");
 const logger = require("../utils/logger");
-// const { sendLoginEmail } = require("../services/EmailService"); // COMMENTED OUT
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
-// const LOGIN_EMAIL_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds // COMMENTED OUT
 
 // JWT secrets validation function
 const validateJWTSecrets = () => {
@@ -39,9 +37,15 @@ router.post(
       }),
     body("passwordpin")
       .trim()
-      .customSanitizer((value) => String(value).padStart(6, '0'))
+      .customSanitizer((value) => {
+        // Convert to string and preserve leading zeros
+        return String(value);
+      })
       .custom((value) => {
-        if (!/^\d{6}$/.test(value)) throw new Error("Password pin must be 5-6 digits (will be padded to 6).");
+        // Accept 4-6 digits, preserve leading zeros
+        if (!/^\d{4,6}$/.test(value)) {
+          throw new Error("Password pin must be 4-6 digits.");
+        }
         return true;
       }),
   ],
@@ -76,6 +80,7 @@ router.post(
 
       let isValidPin = false;
       try {
+        // Compare the PIN exactly as entered (preserving leading zeros)
         isValidPin = await user.comparePasswordPin(passwordpin);
       } catch (bcryptError) {
         logger.error("PIN comparison failed", { userId: user._id, error: bcryptError.message });
@@ -119,36 +124,6 @@ router.post(
       // Store refresh token (keep only last 5 tokens)
       user.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
       if (user.refreshTokens.length > 5) user.refreshTokens = user.refreshTokens.slice(-5);
-
-      // **Send login email with cooldown logic** - COMMENTED OUT
-      /*
-      const now = new Date();
-      const shouldSendEmail = !user.lastLoginEmailSent || 
-                             (now.getTime() - user.lastLoginEmailSent.getTime()) >= LOGIN_EMAIL_COOLDOWN;
-
-      if (shouldSendEmail) {
-        try {
-          const device = req.get('User-Agent') || "Unknown Device";
-          const location = req.ip || "Unknown Location";
-          const time = now.toLocaleString();
-          await sendLoginEmail(user.email, user.firstname || user.username || "User", device, location, time);
-          
-          // Update last login email sent time
-          user.lastLoginEmailSent = now;
-          logger.info("Login email sent", { userId: user._id, email: user.email });
-        } catch (emailError) {
-          logger.error("Failed to send login email", { userId: user._id, error: emailError.message });
-          // Don't fail the login if email fails, but don't update lastLoginEmailSent either
-        }
-      } else {
-        const timeSinceLastEmail = Math.round((now.getTime() - user.lastLoginEmailSent.getTime()) / (60 * 1000));
-        logger.info("Login email skipped due to cooldown", { 
-          userId: user._id, 
-          timeSinceLastEmail: `${timeSinceLastEmail} minutes`,
-          cooldownMinutes: LOGIN_EMAIL_COOLDOWN / (60 * 1000)
-        });
-      }
-      */
 
       await user.save();
 
