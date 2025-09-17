@@ -20,11 +20,12 @@ cloudinary.config({
 const GIFTCARD_CONFIG = {
   SUPPORTED_TYPES: [
     'APPLE', 'STEAM', 'NORDSTROM', 'MACY', 'NIKE', 'GOOGLE_PLAY',
-    'AMAZON', 'VISA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS',
+    'AMAZON', 'VISA', 'VANILLA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS',
     'SEPHORA', 'FOOTLOCKER', 'XBOX', 'EBAY'
   ],
   SUPPORTED_FORMATS: ['PHYSICAL', 'E_CODE'],
   SUPPORTED_COUNTRIES: ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'],
+  SUPPORTED_VANILLA_TYPES: ['4097', '4118'],
   MAX_PENDING_SUBMISSIONS: 5,
   MAX_IMAGES: 20,
   STATUS: { PENDING: 'PENDING' }
@@ -60,13 +61,26 @@ function uploadToCloudinary(fileBuffer) {
   });
 }
 
-// Rate calculation
-async function calculateAmountToReceive(cardType, country, cardValue, cardFormat) {
-  const rate = await GiftCardPrice.getRateByCardTypeAndCountry(cardType, country);
-  if (!rate) throw new Error(`Rate not found for ${cardType} in ${country}`);
+// Rate calculation with vanilla type support
+async function calculateAmountToReceive(cardType, country, cardValue, cardFormat, vanillaType = null) {
+  const options = {};
+  if (cardType === 'VANILLA' && vanillaType) {
+    options.vanillaType = vanillaType;
+  }
+
+  const rate = await GiftCardPrice.getRateByCardTypeAndCountry(cardType, country, options);
+  if (!rate) {
+    let errorMessage = `Rate not found for ${cardType} in ${country}`;
+    if (cardType === 'VANILLA' && vanillaType) {
+      errorMessage += ` with vanilla type ${vanillaType}`;
+    }
+    throw new Error(errorMessage);
+  }
+  
   if (!rate.isValidAmount(cardValue)) {
     throw new Error(`Amount must be between $${rate.minAmount} and $${rate.maxAmount}`);
   }
+  
   return {
     ...rate.calculateAmount(cardValue, cardFormat),
     giftCardRateId: rate._id
@@ -84,7 +98,8 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       currency,
       country,
       description,
-      eCode
+      eCode,
+      vanillaType
     } = req.body;
 
     const errors = [];
@@ -101,6 +116,17 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
     }
     if (!cardRange) {
       errors.push('Card range is required');
+    }
+
+    // Validate vanillaType for VANILLA cards
+    if (cardType && cardType.toUpperCase() === 'VANILLA') {
+      if (!vanillaType) {
+        errors.push('Vanilla type is required for VANILLA gift cards');
+      } else if (!GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.includes(vanillaType)) {
+        errors.push(`Vanilla type must be one of: ${GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.join(', ')}`);
+      }
+    } else if (vanillaType) {
+      errors.push('Vanilla type can only be specified for VANILLA gift cards');
     }
 
     // Validate cardValue as string first, then convert to number
@@ -136,6 +162,7 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
     const normalizedCardFormat = cardFormat.toUpperCase();
     const normalizedCountry = country.toUpperCase();
     const normalizedCurrency = currency?.toUpperCase() || 'USD';
+    const normalizedVanillaType = vanillaType || null;
     const cardVal = parseFloat(cardValue); // Convert to number after validation
 
     const userId = req.user?.id;
@@ -160,14 +187,20 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       uploadedImages.push(result);
     }
 
-    // Rate calculation
-    const rateCalculation = await calculateAmountToReceive(normalizedCardType, normalizedCountry, cardVal, normalizedCardFormat);
+    // Rate calculation with vanilla type support
+    const rateCalculation = await calculateAmountToReceive(
+      normalizedCardType, 
+      normalizedCountry, 
+      cardVal, 
+      normalizedCardFormat,
+      normalizedVanillaType
+    );
 
     const imageUrls = uploadedImages.map(img => img.secure_url);
     const imagePublicIds = uploadedImages.map(img => img.public_id);
 
     // Save gift card
-    const giftCard = await GiftCard.create({
+    const giftCardData = {
       userId,
       cardType: normalizedCardType,
       cardFormat: normalizedCardFormat,
@@ -192,10 +225,17 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
         userAgent: req.get('User-Agent'),
         ipAddress: req.ip
       }
-    });
+    };
+
+    // Add vanillaType for VANILLA cards
+    if (normalizedCardType === 'VANILLA' && normalizedVanillaType) {
+      giftCardData.vanillaType = normalizedVanillaType;
+    }
+
+    const giftCard = await GiftCard.create(giftCardData);
 
     // Save transaction
-    const transaction = await Transaction.create({
+    const transactionData = {
       userId,
       type: 'GIFTCARD',
       currency: normalizedCurrency,
@@ -218,35 +258,66 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       expectedSourceCurrency: rateCalculation.sourceCurrency,
       expectedTargetCurrency: rateCalculation.targetCurrency,
       narration: `Gift card submission - ${normalizedCardType} ${normalizedCardFormat} (${normalizedCountry}) - Expected: ${rateCalculation.amountToReceive} ${rateCalculation.targetCurrency}`
-    });
+    };
+
+    // Add vanillaType for VANILLA cards
+    if (normalizedCardType === 'VANILLA' && normalizedVanillaType) {
+      transactionData.vanillaType = normalizedVanillaType;
+      // Update narration to include vanilla type
+      transactionData.narration = `Gift card submission - ${normalizedCardType} ${normalizedVanillaType} ${normalizedCardFormat} (${normalizedCountry}) - Expected: ${rateCalculation.amountToReceive} ${rateCalculation.targetCurrency}`;
+    }
+
+    const transaction = await Transaction.create(transactionData);
 
     giftCard.transactionId = transaction._id;
     await giftCard.save();
 
+    logger.info('Gift card submitted successfully', {
+      userId,
+      submissionId: giftCard._id,
+      transactionId: transaction._id,
+      cardType: normalizedCardType,
+      cardFormat: normalizedCardFormat,
+      country: normalizedCountry,
+      vanillaType: normalizedVanillaType,
+      cardValue: cardVal,
+      expectedAmountToReceive: rateCalculation.amountToReceive
+    });
+
+    // Prepare response data
+    const responseData = {
+      submissionId: giftCard._id,
+      transactionId: transaction._id,
+      cardType: normalizedCardType,
+      cardFormat: normalizedCardFormat,
+      cardRange,
+      cardValue: cardVal,
+      currency: normalizedCurrency,
+      country: normalizedCountry,
+      expectedAmountToReceive: rateCalculation.amountToReceive,
+      rate: rateCalculation.rateDisplay,
+      totalImages: imageUrls.length,
+      imageUrls,
+      status: giftCard.status,
+      submittedAt: giftCard.createdAt
+    };
+
+    // Add vanillaType to response for VANILLA cards
+    if (normalizedCardType === 'VANILLA' && normalizedVanillaType) {
+      responseData.vanillaType = normalizedVanillaType;
+    }
+
     res.status(201).json({
       success: true,
       message: 'Gift card submitted successfully',
-      data: {
-        submissionId: giftCard._id,
-        transactionId: transaction._id,
-        cardType: normalizedCardType,
-        cardFormat: normalizedCardFormat,
-        cardRange,
-        cardValue: cardVal,
-        currency: normalizedCurrency,
-        country: normalizedCountry,
-        expectedAmountToReceive: rateCalculation.amountToReceive,
-        rate: rateCalculation.rateDisplay,
-        totalImages: imageUrls.length,
-        imageUrls,
-        status: giftCard.status,
-        submittedAt: giftCard.createdAt
-      }
+      data: responseData
     });
 
   } catch (error) {
     logger.error('Gift card submission failed', {
       userId: req.user?.id,
+      cardType: req.body?.cardType,
+      vanillaType: req.body?.vanillaType,
       error: error.message,
       stack: error.stack
     });
