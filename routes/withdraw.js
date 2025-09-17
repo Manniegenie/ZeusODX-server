@@ -425,8 +425,8 @@ async function checkDuplicateWithdrawal(userId, currency, amount, address) {
 }
 
 /**
- * Gets withdrawal fee configuration - now returns fee directly in network currency
- * @param {string} currency - Currency symbol
+ * Gets withdrawal fee configuration - converts network fee to withdrawal currency equivalent
+ * @param {string} currency - Currency symbol being withdrawn
  * @param {string} network - Network (optional, for matching specific network fees)
  * @returns {Promise<Object>} Fee information
  */
@@ -450,15 +450,48 @@ async function getWithdrawalFee(currency, network = null) {
       throw new Error(`Invalid fee configuration for ${currency.toUpperCase()}`);
     }
 
-    // Get current price for USD equivalent calculation (for display purposes)
-    const cryptoPrice = await getCryptoPriceInternal(currency);
-    const feeUsd = networkFee * cryptoPrice;
+    // Determine the network's native currency for fee conversion
+    const networkCurrency = getNetworkNativeCurrency(network);
+    const withdrawalCurrency = currency.toUpperCase();
+
+    let feeInWithdrawalCurrency;
+    let feeUsd;
+
+    if (networkCurrency === withdrawalCurrency) {
+      // Same currency - no conversion needed
+      feeInWithdrawalCurrency = networkFee;
+      const cryptoPrice = await getCryptoPriceInternal(withdrawalCurrency);
+      feeUsd = networkFee * cryptoPrice;
+    } else {
+      // Different currencies - convert network fee to withdrawal currency equivalent
+      const prices = await getOriginalPricesWithCache([networkCurrency, withdrawalCurrency]);
+      const networkPrice = prices[networkCurrency] || 0;
+      const withdrawalPrice = prices[withdrawalCurrency] || 0;
+
+      if (networkPrice <= 0 || withdrawalPrice <= 0) {
+        throw new Error(`Unable to get prices for fee conversion: ${networkCurrency} = ${networkPrice}, ${withdrawalCurrency} = ${withdrawalPrice}`);
+      }
+
+      // Convert network fee to USD, then to withdrawal currency equivalent
+      const feeValueUsd = networkFee * networkPrice;
+      feeInWithdrawalCurrency = feeValueUsd / withdrawalPrice;
+      feeUsd = feeValueUsd;
+
+      logger.info('Converted cross-currency fee', {
+        originalFee: `${networkFee} ${networkCurrency}`,
+        convertedFee: `${feeInWithdrawalCurrency} ${withdrawalCurrency}`,
+        feeUsd: `${feeUsd}`,
+        networkPrice: `${networkPrice}`,
+        withdrawalPrice: `${withdrawalPrice}`
+      });
+    }
 
     return {
       success: true,
-      networkFee: parseFloat(networkFee.toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)),
+      networkFee: parseFloat(feeInWithdrawalCurrency.toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)),
       feeUsd: parseFloat(feeUsd.toFixed(2)),
-      cryptoPrice,
+      originalNetworkFee: networkFee,
+      networkCurrency,
       networkName: feeDoc.networkName
     };
   } catch (error) {
@@ -468,6 +501,29 @@ async function getWithdrawalFee(currency, network = null) {
       message: error.message
     };
   }
+}
+
+/**
+ * Get network's native currency for fee calculations
+ * @param {string} network - Network identifier
+ * @returns {string} Native currency symbol
+ */
+function getNetworkNativeCurrency(network) {
+  const networkMap = {
+    'BSC': 'BNB',
+    'ETH': 'ETH',
+    'MATIC': 'MATIC',
+    'POLYGON': 'MATIC',
+    'AVAX': 'AVAX',
+    'AVALANCHE': 'AVAX',
+    'SOL': 'SOL',
+    'SOLANA': 'SOL',
+    'BTC': 'BTC',
+    'BITCOIN': 'BTC',
+    // Add more networks as needed
+  };
+  
+  return networkMap[network?.toUpperCase()] || network?.toUpperCase() || 'ETH'; // Default to ETH if unknown
 }
 
 /**
@@ -796,10 +852,26 @@ router.post('/crypto', async (req, res) => {
     }
 
     const { networkFee, feeUsd } = feeInfo;
-    const totalAmount = amount + networkFee;
+    const totalAmount = amount; // Total deducted from user's balance is the requested amount
+    const receiverAmount = amount - networkFee; // Receiver gets requested amount minus fee
+
+    // Validate that receiver will get a positive amount after fee deduction
+    if (receiverAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'AMOUNT_TOO_LOW',
+        message: `Withdrawal amount too low. Fee (${networkFee} ${currency}) exceeds requested amount (${amount} ${currency}).`,
+        details: {
+          requestedAmount: amount,
+          fee: networkFee,
+          wouldReceive: receiverAmount,
+          currency: currency
+        }
+      });
+    }
 
     // Store for cleanup
-    reservedAmount = totalAmount;
+    reservedAmount = totalAmount; // Reserve the full requested amount
     reservedCurrency = currency;
 
     // Validate user balance using internal function
@@ -814,6 +886,7 @@ router.post('/crypto', async (req, res) => {
           availableBalance: balanceValidation.availableBalance,
           requiredAmount: totalAmount,
           withdrawalAmount: amount,
+          receiverAmount: receiverAmount,
           fee: networkFee,
           currency: currency
         }
@@ -830,9 +903,9 @@ router.post('/crypto', async (req, res) => {
       security_status: '2FA + PIN + KYC + Balance validated'
     });
 
-    // Initiate Obiex withdrawal
+    // Initiate Obiex withdrawal with the receiver amount (after fee deduction)
     const obiexResult = await initiateObiexWithdrawal({
-      amount,
+      amount: receiverAmount, // Send the actual amount receiver will get
       address,
       currency,
       network,
@@ -860,7 +933,7 @@ router.post('/crypto', async (req, res) => {
     const transaction = await createWithdrawalTransaction({
       userId,
       currency,
-      amount,
+      amount: receiverAmount, // Store the actual amount being sent (after fee deduction)
       address,
       network,
       memo,
@@ -912,10 +985,11 @@ router.post('/crypto', async (req, res) => {
         obiexReference: obiexResult.data.reference,
         obiexStatus: obiexResult.data.status,
         currency,
-        amount,
+        requestedAmount: amount, // Original amount user requested
+        receiverAmount: receiverAmount, // Amount user will actually receive (after fee)
         fee: networkFee,
         feeUsd,
-        totalAmount,
+        totalAmount, // Amount deducted from user's balance
         estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`,
         security_info: {
           twofa_validated: true,
@@ -1053,8 +1127,8 @@ router.post('/initiate', async (req, res) => {
     }
 
     const { networkFee, feeUsd } = feeInfo;
-    const totalAmount = amount + networkFee;
-    const receiverAmount = amount; // User gets the exact amount they requested
+    const totalAmount = amount; // Total deducted from user's balance is the requested amount
+    const receiverAmount = amount - networkFee; // Receiver gets requested amount minus fee
 
     // Calculate the response
     const response = {
