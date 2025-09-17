@@ -13,6 +13,7 @@ const allowedGiftCards = [
   'GOOGLE_PLAY',
   'AMAZON',
   'VISA',
+  'VANILLA',
   'RAZOR_GOLD',
   'AMERICAN_EXPRESS',
   'SEPHORA',
@@ -24,9 +25,12 @@ const allowedGiftCards = [
 // Allowed countries
 const allowedCountries = ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'];
 
+// Allowed vanilla types
+const allowedVanillaTypes = ['4097', '4118'];
+
 // Validation function
 function validateRateRequest(body) {
-  const { amount, giftcard, country, cardFormat } = body;
+  const { amount, giftcard, country, cardFormat, vanillaType } = body;
   const errors = [];
 
   if (!amount && amount !== 0) {
@@ -55,6 +59,17 @@ function validateRateRequest(body) {
     errors.push('Card format must be either PHYSICAL or E_CODE');
   }
 
+  // Validate vanillaType for VANILLA cards
+  if (giftcard && giftcard.toUpperCase() === 'VANILLA') {
+    if (!vanillaType) {
+      errors.push('Vanilla type is required for VANILLA gift cards');
+    } else if (!allowedVanillaTypes.includes(vanillaType)) {
+      errors.push(`Vanilla type must be one of: ${allowedVanillaTypes.join(', ')}`);
+    }
+  } else if (vanillaType) {
+    errors.push('Vanilla type can only be specified for VANILLA gift cards');
+  }
+
   if (errors.length > 0) {
     return { success: false, errors, message: errors.join('; ') };
   }
@@ -65,7 +80,8 @@ function validateRateRequest(body) {
       amount: parseFloat(amount),
       giftcard: giftcard.toUpperCase().trim(),
       country: country.toUpperCase().trim(),
-      cardFormat: cardFormat ? cardFormat.toUpperCase() : null
+      cardFormat: cardFormat ? cardFormat.toUpperCase() : null,
+      vanillaType: vanillaType || null
     }
   };
 }
@@ -82,15 +98,28 @@ router.post('/calculate-rate', async (req, res) => {
       });
     }
 
-    const { amount, giftcard, country, cardFormat } = validation.validatedData;
-    const giftCardRate = await GiftCardPrice.getRateByCardTypeAndCountry(giftcard, country);
+    const { amount, giftcard, country, cardFormat, vanillaType } = validation.validatedData;
+    
+    // Prepare options for getRateByCardTypeAndCountry
+    const options = {};
+    if (giftcard === 'VANILLA' && vanillaType) {
+      options.vanillaType = vanillaType;
+    }
+
+    const giftCardRate = await GiftCardPrice.getRateByCardTypeAndCountry(giftcard, country, options);
 
     if (!giftCardRate) {
+      let errorMessage = `Rate not found for gift card type: ${giftcard} in country: ${country}`;
+      if (giftcard === 'VANILLA' && vanillaType) {
+        errorMessage += ` with vanilla type: ${vanillaType}`;
+      }
+      
       return res.status(404).json({
         success: false,
-        message: `Rate not found for gift card type: ${giftcard} in country: ${country}`,
+        message: errorMessage,
         availableCards: allowedGiftCards,
-        availableCountries: allowedCountries
+        availableCountries: allowedCountries,
+        ...(giftcard === 'VANILLA' && { availableVanillaTypes: allowedVanillaTypes })
       });
     }
 
@@ -112,6 +141,7 @@ router.post('/calculate-rate', async (req, res) => {
       country,
       amount,
       cardFormat,
+      vanillaType,
       rate: calculation.rate,
       amountToReceive: calculation.amountToReceive
     });
@@ -130,7 +160,8 @@ router.post('/calculate-rate', async (req, res) => {
           sourceCurrency: calculation.sourceCurrency,
           targetCurrency: calculation.targetCurrency,
           cardFormat: cardFormat,
-          country: country
+          country: country,
+          vanillaType: vanillaType
         }
       },
       message: 'Rate calculation completed successfully'
