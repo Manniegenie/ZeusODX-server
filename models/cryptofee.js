@@ -16,10 +16,10 @@ const CryptoFeeMarkupSchema = new mongoose.Schema({
     required: false,
     trim: true,
   },
-  feeUsd: {
+  networkFee: {
     type: Number,
     required: true,
-    default: 0, // Fee amount in USD
+    default: 0, // Fee amount in network's native currency (e.g., 0.50 BSC, 0.01 ETH)
   },
 }, {
   timestamps: true,

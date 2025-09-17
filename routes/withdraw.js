@@ -9,6 +9,7 @@ const CryptoFeeMarkup = require('../models/cryptofee');
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
+const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
 
@@ -63,18 +64,7 @@ const WITHDRAWAL_CONFIG = {
   },
 };
 
-// Simple price cache for fallback prices
-const FALLBACK_PRICES = {
-  'BTC': 65000,
-  'ETH': 3200,
-  'SOL': 200,
-  'USDT': 1,
-  'USDC': 1,
-  'BNB': 580,
-  'MATIC': 0.85,
-  'AVAX': 35,
-  'NGNB': 0.000643 // ~1555 NGNB per USD
-};
+// Empty - using portfolio service for prices
 
 /**
  * Get balance field name for currency
@@ -117,16 +107,22 @@ function getPendingBalanceFieldName(currency) {
 }
 
 /**
- * Get current crypto price (fallback implementation)
+ * Get current crypto price using portfolio service
  * @param {string} currency - Currency code
- * @returns {number} Price in USD
+ * @returns {Promise<number>} Price in USD
  */
-function getCryptoPriceInternal(currency) {
-  const upperCurrency = currency.toUpperCase();
-  const price = FALLBACK_PRICES[upperCurrency] || 0;
-  
-  logger.debug(`Using internal price for ${upperCurrency}: $${price}`);
-  return price;
+async function getCryptoPriceInternal(currency) {
+  try {
+    const upperCurrency = currency.toUpperCase();
+    const prices = await getOriginalPricesWithCache([upperCurrency]);
+    const price = prices[upperCurrency] || 0;
+    
+    logger.debug(`Retrieved price for ${upperCurrency}: ${price}`);
+    return price;
+  } catch (error) {
+    logger.error(`Failed to get price for ${currency}:`, error.message);
+    return 0;
+  }
 }
 
 /**
@@ -429,36 +425,44 @@ async function checkDuplicateWithdrawal(userId, currency, amount, address) {
 }
 
 /**
- * Gets withdrawal fee configuration and calculates fee in crypto
+ * Gets withdrawal fee configuration - now returns fee directly in network currency
  * @param {string} currency - Currency symbol
- * @param {number} cryptoPrice - Current crypto price in USD
+ * @param {string} network - Network (optional, for matching specific network fees)
  * @returns {Promise<Object>} Fee information
  */
-async function getWithdrawalFee(currency, cryptoPrice) {
+async function getWithdrawalFee(currency, network = null) {
   try {
-    const feeDoc = await CryptoFeeMarkup.findOne({ currency: currency.toUpperCase() });
-    
-    if (!feeDoc) {
-      throw new Error(`Fee configuration missing for ${currency.toUpperCase()}`);
+    // Build query to find fee configuration
+    const query = { currency: currency.toUpperCase() };
+    if (network) {
+      query.network = network.toUpperCase();
     }
 
-    const feeUsd = feeDoc.feeUsd;
+    const feeDoc = await CryptoFeeMarkup.findOne(query);
     
-    if (!feeUsd || feeUsd <= 0) {
+    if (!feeDoc) {
+      throw new Error(`Fee configuration missing for ${currency.toUpperCase()}${network ? ` on ${network}` : ''}`);
+    }
+
+    const networkFee = feeDoc.networkFee;
+    
+    if (!networkFee || networkFee < 0) {
       throw new Error(`Invalid fee configuration for ${currency.toUpperCase()}`);
     }
 
-    // Calculate fee in crypto
-    const feeInCrypto = feeUsd / cryptoPrice;
-    
+    // Get current price for USD equivalent calculation (for display purposes)
+    const cryptoPrice = await getCryptoPriceInternal(currency);
+    const feeUsd = networkFee * cryptoPrice;
+
     return {
       success: true,
-      feeUsd,
-      feeInCrypto: parseFloat(feeInCrypto.toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)),
-      cryptoPrice
+      networkFee: parseFloat(networkFee.toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)),
+      feeUsd: parseFloat(feeUsd.toFixed(2)),
+      cryptoPrice,
+      networkName: feeDoc.networkName
     };
   } catch (error) {
-    logger.error('Error getting withdrawal fee', { currency, error: error.message });
+    logger.error('Error getting withdrawal fee', { currency, network, error: error.message });
     return {
       success: false,
       message: error.message
@@ -781,19 +785,8 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    // Get current crypto price using internal function
-    const cryptoPrice = getCryptoPriceInternal(currency);
-    
-    if (!cryptoPrice || cryptoPrice <= 0) {
-      return res.status(500).json({
-        success: false,
-        error: 'PRICE_DATA_ERROR',
-        message: 'Unable to fetch current price data. Please try again.'
-      });
-    }
-
-    // Get withdrawal fee
-    const feeInfo = await getWithdrawalFee(currency, cryptoPrice);
+    // Get withdrawal fee - now directly in network currency
+    const feeInfo = await getWithdrawalFee(currency, network);
     if (!feeInfo.success) {
       return res.status(400).json({
         success: false,
@@ -802,8 +795,8 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    const { feeInCrypto, feeUsd } = feeInfo;
-    const totalAmount = amount + feeInCrypto;
+    const { networkFee, feeUsd } = feeInfo;
+    const totalAmount = amount + networkFee;
 
     // Store for cleanup
     reservedAmount = totalAmount;
@@ -821,7 +814,7 @@ router.post('/crypto', async (req, res) => {
           availableBalance: balanceValidation.availableBalance,
           requiredAmount: totalAmount,
           withdrawalAmount: amount,
-          fee: feeInCrypto,
+          fee: networkFee,
           currency: currency
         }
       });
@@ -833,7 +826,7 @@ router.post('/crypto', async (req, res) => {
       amount,
       totalAmount,
       address: address.substring(0, 10) + '...',
-      cryptoPrice,
+      networkFee,
       security_status: '2FA + PIN + KYC + Balance validated'
     });
 
@@ -871,7 +864,7 @@ router.post('/crypto', async (req, res) => {
       address,
       network,
       memo,
-      fee: feeInCrypto,
+      fee: networkFee,
       obiexTransactionId: obiexResult.data.transactionId,
       obiexReference: obiexResult.data.reference,
       narration,
@@ -920,10 +913,9 @@ router.post('/crypto', async (req, res) => {
         obiexStatus: obiexResult.data.status,
         currency,
         amount,
-        fee: feeInCrypto,
+        fee: networkFee,
         feeUsd,
         totalAmount,
-        cryptoPrice,
         estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`,
         security_info: {
           twofa_validated: true,
@@ -1034,7 +1026,7 @@ router.get('/status/:transactionId', async (req, res) => {
 });
 
 router.post('/initiate', async (req, res) => {
-  const { amount, currency } = req.body;
+  const { amount, currency, network } = req.body;
 
   if (!amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({
@@ -1051,17 +1043,8 @@ router.post('/initiate', async (req, res) => {
   }
 
   try {
-    // Get the current price of the crypto in USD
-    const cryptoPrice = getCryptoPriceInternal(currency);
-    if (cryptoPrice <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid price data.',
-      });
-    }
-
-    // Get withdrawal fee (in USD) for the selected currency
-    const feeInfo = await getWithdrawalFee(currency, cryptoPrice);
+    // Get withdrawal fee directly in network currency
+    const feeInfo = await getWithdrawalFee(currency, network);
     if (!feeInfo.success) {
       return res.status(400).json({
         success: false,
@@ -1069,21 +1052,20 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    const { feeInCrypto, feeUsd } = feeInfo;
-    const totalAmount = amount + feeInCrypto;
-    const receiverAmount = amount - feeInCrypto;
+    const { networkFee, feeUsd } = feeInfo;
+    const totalAmount = amount + networkFee;
+    const receiverAmount = amount; // User gets the exact amount they requested
 
-    // Calculate the receiver's amount after fee
+    // Calculate the response
     const response = {
       success: true,
       data: {
-        amount,            // User's requested amount
-        currency,          // Currency of the transaction
-        fee: feeInCrypto,  // Fee in token
-        feeUsd,            // Fee in USD
-        receiverAmount,    // Amount after deducting the fee
-        totalAmount,       // Total amount with fee included
-        cryptoPrice        // Current price of the crypto in USD
+        amount,                    // User's requested withdrawal amount
+        currency,                  // Currency of the transaction
+        fee: networkFee,          // Fee in network currency (e.g., 0.50 BSC)
+        feeUsd,                   // Fee in USD for display
+        receiverAmount,           // Amount receiver will get (same as requested)
+        totalAmount               // Total deducted from user's balance
       }
     };
 
