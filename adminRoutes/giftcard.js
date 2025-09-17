@@ -5,7 +5,7 @@ const logger = require('../utils/logger');
 
 // Validation function for rate data (updated for NGN rates)
 function validateRateData(data) {
-  const { cardType, country, rate, physicalRate, ecodeRate, sourceCurrency, targetCurrency, minAmount, maxAmount } = data;
+  const { cardType, country, rate, physicalRate, ecodeRate, sourceCurrency, targetCurrency, minAmount, maxAmount, vanillaType } = data;
   const errors = [];
 
   // Updated allowed gift card types
@@ -18,6 +18,7 @@ function validateRateData(data) {
     'GOOGLE_PLAY',
     'AMAZON',
     'VISA',
+    'VANILLA',
     'RAZOR_GOLD',
     'AMERICAN_EXPRESS',
     'SEPHORA',
@@ -28,6 +29,7 @@ function validateRateData(data) {
 
   const allowedCountries = ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'];
   const allowedCurrencies = ['USD', 'NGN', 'GBP', 'EUR', 'CAD'];
+  const allowedVanillaTypes = ['4097', '4118'];
 
   // Required fields
   if (!cardType) {
@@ -48,6 +50,17 @@ function validateRateData(data) {
     errors.push('rate must be a positive number');
   } else if (rate < 100) {
     errors.push('rate seems too low for NGN conversion (expected range: 1000-2000)');
+  }
+
+  // Validate vanillaType for VANILLA cards
+  if (cardType && cardType.toUpperCase() === 'VANILLA') {
+    if (!vanillaType) {
+      errors.push('vanillaType is required for VANILLA gift cards');
+    } else if (!allowedVanillaTypes.includes(vanillaType)) {
+      errors.push(`vanillaType must be one of: ${allowedVanillaTypes.join(', ')}`);
+    }
+  } else if (vanillaType) {
+    errors.push('vanillaType can only be specified for VANILLA gift cards');
   }
 
   // Optional field validations
@@ -99,7 +112,8 @@ function validateRateData(data) {
       sourceCurrency: sourceCurrency ? sourceCurrency.toUpperCase() : 'USD',
       targetCurrency: targetCurrency ? targetCurrency.toUpperCase() : 'NGN',
       minAmount: minAmount ? parseFloat(minAmount) : 5,
-      maxAmount: maxAmount ? parseFloat(maxAmount) : 2000
+      maxAmount: maxAmount ? parseFloat(maxAmount) : 2000,
+      vanillaType: vanillaType || null
     } : null
   };
 }
@@ -121,16 +135,28 @@ router.post('/rates', async (req, res) => {
       notes: req.body.notes || null
     };
 
-    // Check if rate already exists
-    const existingRate = await GiftCardPrice.findOne({
+    // Check if rate already exists (including vanillaType for VANILLA cards)
+    const existingQuery = {
       cardType: rateData.cardType,
       country: rateData.country
-    });
+    };
+
+    if (rateData.cardType === 'VANILLA' && rateData.vanillaType) {
+      existingQuery.vanillaType = rateData.vanillaType;
+    }
+
+    const existingRate = await GiftCardPrice.findOne(existingQuery);
 
     if (existingRate) {
+      let message = `Rate already exists for ${rateData.cardType} in ${rateData.country}`;
+      if (rateData.cardType === 'VANILLA' && rateData.vanillaType) {
+        message += ` with vanilla type ${rateData.vanillaType}`;
+      }
+      message += '. Use PUT to update.';
+      
       return res.status(409).json({
         success: false,
-        message: `Rate already exists for ${rateData.cardType} in ${rateData.country}. Use PUT to update.`
+        message: message
       });
     }
 
@@ -139,7 +165,8 @@ router.post('/rates', async (req, res) => {
     logger.info('Gift card rate created', {
       cardType: newRate.cardType,
       country: newRate.country,
-      rate: newRate.rate
+      rate: newRate.rate,
+      vanillaType: newRate.vanillaType
     });
 
     res.status(201).json({
@@ -155,6 +182,7 @@ router.post('/rates', async (req, res) => {
         ecodeRate: newRate.ecodeRate,
         minAmount: newRate.minAmount,
         maxAmount: newRate.maxAmount,
+        vanillaType: newRate.vanillaType,
         isActive: newRate.isActive,
         createdAt: newRate.createdAt
       }
@@ -169,7 +197,7 @@ router.post('/rates', async (req, res) => {
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
-        message: 'Rate already exists for this card type and country'
+        message: 'Rate already exists for this card type and country combination'
       });
     }
 
@@ -244,7 +272,8 @@ router.post('/rates/bulk', async (req, res) => {
           cardType: rate.cardType,
           country: rate.country,
           rate: rate.rate,
-          rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`
+          rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`,
+          vanillaType: rate.vanillaType
         }))
       }
     });
@@ -285,6 +314,9 @@ router.put('/rates/:id', async (req, res) => {
     // Validate only provided fields
     const updateData = {};
     const fieldsToUpdate = ['rate', 'physicalRate', 'ecodeRate', 'minAmount', 'maxAmount', 'isActive', 'notes'];
+    
+    // Note: cardType, country, and vanillaType should not be updated after creation
+    // as they define the unique identity of the rate
     
     for (const field of fieldsToUpdate) {
       if (req.body[field] !== undefined) {
@@ -343,6 +375,7 @@ router.put('/rates/:id', async (req, res) => {
       rateId: id,
       cardType: updatedRate.cardType,
       country: updatedRate.country,
+      vanillaType: updatedRate.vanillaType,
       updatedFields: Object.keys(updateData)
     });
 
@@ -359,6 +392,7 @@ router.put('/rates/:id', async (req, res) => {
         ecodeRate: updatedRate.ecodeRate,
         minAmount: updatedRate.minAmount,
         maxAmount: updatedRate.maxAmount,
+        vanillaType: updatedRate.vanillaType,
         isActive: updatedRate.isActive,
         lastUpdated: updatedRate.lastUpdated
       }
@@ -394,7 +428,8 @@ router.delete('/rates/:id', async (req, res) => {
     logger.info('Gift card rate deleted', {
       rateId: id,
       cardType: deletedRate.cardType,
-      country: deletedRate.country
+      country: deletedRate.country,
+      vanillaType: deletedRate.vanillaType
     });
 
     res.status(200).json({
@@ -404,7 +439,8 @@ router.delete('/rates/:id', async (req, res) => {
         deletedRate: {
           cardType: deletedRate.cardType,
           country: deletedRate.country,
-          rate: deletedRate.rate
+          rate: deletedRate.rate,
+          vanillaType: deletedRate.vanillaType
         }
       }
     });
@@ -425,7 +461,7 @@ router.delete('/rates/:id', async (req, res) => {
 // GET /admin/giftcard/rates - Get all rates (admin view with more details) (no auth)
 router.get('/rates', async (req, res) => {
   try {
-    const { country, cardType, isActive, page = 1, limit = 50 } = req.query;
+    const { country, cardType, vanillaType, isActive, page = 1, limit = 50 } = req.query;
     
     const query = {};
     
@@ -442,6 +478,16 @@ router.get('/rates', async (req, res) => {
     if (cardType) {
       query.cardType = cardType.toUpperCase();
     }
+
+    if (vanillaType) {
+      if (!['4097', '4118'].includes(vanillaType)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid vanillaType. Must be 4097 or 4118'
+        });
+      }
+      query.vanillaType = vanillaType;
+    }
     
     if (isActive !== undefined) {
       query.isActive = isActive === 'true';
@@ -453,7 +499,7 @@ router.get('/rates', async (req, res) => {
 
     // No populate() on updatedBy anymore
     const rates = await GiftCardPrice.find(query)
-      .sort({ country: 1, cardType: 1 })
+      .sort({ country: 1, cardType: 1, vanillaType: 1 })
       .skip(skip)
       .limit(limitNum);
 
@@ -474,6 +520,7 @@ router.get('/rates', async (req, res) => {
           targetCurrency: rate.targetCurrency,
           minAmount: rate.minAmount,
           maxAmount: rate.maxAmount,
+          vanillaType: rate.vanillaType,
           isActive: rate.isActive,
           lastUpdated: rate.lastUpdated,
           notes: rate.notes,
