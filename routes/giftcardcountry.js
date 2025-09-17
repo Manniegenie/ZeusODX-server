@@ -1,173 +1,169 @@
 // routes/giftcards.js
 const express = require('express');
 const router = express.Router();
-const GiftCardPrice = require('../models/giftcardPrice'); // adjust path if needed
-const logger = console; // replace with your logger if you have one
+const GiftCardPrice = require('../models/giftcardPrice'); // Adjust path if needed
 
 /**
- * Route:
- *   GET /:cardType/countries
- *   GET /:cardType/:subType/countries
- *
- * Examples the route will accept:
- *   /APPLE/countries
- *   /APPLE/ITUNES/countries
- *   /APPLE-ITUNES/countries
- *   /GOOGLE_PLAY/countries
- *   /GOOGLEPLAY/countries
- *   /VISA/Vanilla/countries
+ * Flexible normalizer that maps many client-side variations to canonical model values.
+ * Returns an object: { cardType: 'APPLE'|'VISA'|'VANILLA'|..., vanillaType: '4097'|'4118'|undefined }
  */
-router.get('/:cardType/:subType?/countries', async (req, res) => {
+function normalizeCardType(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const s = raw.trim().toLowerCase();
+
+  // Quick helpers
+  const onlyAlpha = (t) => t.replace(/[^a-z0-9]/g, '');
+  const includes = (t) => s.indexOf(t) !== -1;
+
+  // Exact mappings & common aliases
+  if (includes('apple') || includes('itunes')) return { cardType: 'APPLE' };
+  if (includes('steam')) return { cardType: 'STEAM' };
+  if (includes('nord') || includes('nordstrom')) return { cardType: 'NORDSTROM' };
+  if (includes('macy')) return { cardType: 'MACY' };
+  if (includes('nike')) return { cardType: 'NIKE' };
+  if (includes('google') || includes('googleplay') || includes('google_play') || includes('playstore')) return { cardType: 'GOOGLE_PLAY' };
+  if (includes('amazon')) return { cardType: 'AMAZON' };
+  if (includes('american') || includes('amex') || includes('american_express') || includes('american-express')) return { cardType: 'AMERICAN_EXPRESS' };
+  if (includes('sephora')) return { cardType: 'SEPHORA' };
+  if (includes('foot') || includes('footlocker')) return { cardType: 'FOOTLOCKER' };
+  if (includes('xbox')) return { cardType: 'XBOX' };
+  if (includes('ebay')) return { cardType: 'EBAY' };
+  if (includes('razor') || includes('razor_gold') || includes('razer')) return { cardType: 'RAZOR_GOLD' };
+
+  // VISA vs VANILLA ambiguity handling:
+  // If the string explicitly mentions "vanilla" or a bin variant (4097/4118) treat as VANILLA
+  if (includes('vanilla') || includes('4097') || includes('4118')) {
+    const vanillaType = s.includes('4097') ? '4097' : (s.includes('4118') ? '4118' : undefined);
+    return { cardType: 'VANILLA', vanillaType };
+  }
+
+  // If the string explicitly mentions "visa" but not vanilla, map to VISA
+  if (includes('visa')) {
+    // guard: avoid false positive for "visa_card" that actually meant "vanilla" clients — but per instruction, handle client side
+    // If the string also mentions vanilla-like terms, prefer VANILLA above; since we've already checked vanilla, we can safely map to VISA here.
+    return { cardType: 'VISA' };
+  }
+
+  // Fallback: try to map clean alphanumeric token to possible enum (e.g., "VISA_CARD" -> "VISA")
+  const token = onlyAlpha(s).toUpperCase();
+  const known = [
+    'APPLE','STEAM','NORDSTROM','MACY','NIKE','GOOGLEPLAY','GOOGLE_PLAY','AMAZON',
+    'VISA','VANILLA','RAZORGOLD','RAZOR_GOLD','AMERICANEXPRESS','AMERICAN_EXPRESS',
+    'SEPHORA','FOOTLOCKER','XBOX','EBAY'
+  ];
+  // normalize token variants
+  if (token === 'GOOGLEPLAY' || token === 'GOOGLE_PLAY') return { cardType: 'GOOGLE_PLAY' };
+  if (token === 'RAZORGOLD' || token === 'RAZOR_GOLD') return { cardType: 'RAZOR_GOLD' };
+  if (token === 'AMERICANEXPRESS' || token === 'AMERICAN_EXPRESS') return { cardType: 'AMERICAN_EXPRESS' };
+  if (known.includes(token)) {
+    // map to canonical form
+    if (token === 'GOOGLEPLAY') return { cardType: 'GOOGLE_PLAY' };
+    if (token === 'RAZORGOLD') return { cardType: 'RAZOR_GOLD' };
+    if (token === 'AMERICANEXPRESS') return { cardType: 'AMERICAN_EXPRESS' };
+    if (token === 'VANILLA') return { cardType: 'VANILLA' };
+    return { cardType: token };
+  }
+
+  // if nothing matched, return null so route can respond 400
+  return null;
+}
+
+/**
+ * GET /api/giftcards/:cardType/countries
+ */
+router.get('/:cardType/countries', async (req, res) => {
   try {
-    let { cardType: rawCardType, subType } = req.params;
+    const { cardType: rawCardType } = req.params;
 
-    // Basic validation
     if (!rawCardType) {
-      return res.status(400).json({ success: false, message: 'Card type is required' });
+      return res.status(400).json({ success: false, message: 'Card type parameter is required' });
     }
 
-    // Normalize incoming values
-    const normalize = (s) => String(s || '').trim().toUpperCase().replace(/[\s\-]+/g, '_');
-
-    let normalizedCardType = normalize(rawCardType);
-    let normalizedSubType = subType ? normalize(subType) : '';
-
-    // If cardType contains a delimiter like "APPLE/ITUNES" or "APPLE-ITUNES" or "APPLE_ITUNES"
-    // (some clients may send combined strings), attempt to split and interpret.
-    if (normalizedCardType.includes('/') || normalizedCardType.includes('_')) {
-      // try to split on underscore (after normalization)
-      const parts = normalizedCardType.split('_').filter(Boolean);
-      if (parts.length >= 2) {
-        // prefer the first part as cardType, second as subtype
-        normalizedCardType = parts[0];
-        if (!normalizedSubType) normalizedSubType = parts[1];
-      }
-    }
-
-    // Map common subtype aliases to canonical card types or canonical enum names.
-    // Extend this map if you have more aliases.
-    const subtypeToCardMap = {
-      ITUNES: 'APPLE',
-      ITUNE: 'APPLE',
-      APPLE_ITUNES: 'APPLE',
-      APPLEITUNES: 'APPLE',
-
-      GOOGLEPLAY: 'GOOGLE_PLAY',
-      GOOGLE_PLAY: 'GOOGLE_PLAY',
-      PLAY: 'GOOGLE_PLAY',
-      'GOOGLE-PLAY': 'GOOGLE_PLAY',
-
-      VANILLA: 'VISA',
-      VISA_VANILLA: 'VISA',
-      'VISA-VANILLA': 'VISA',
-
-      RAZORGOLD: 'RAZOR_GOLD',
-      RAZOR_GOLD: 'RAZOR_GOLD',
-
-      AMEX: 'AMERICAN_EXPRESS',
-      AMERICANEXPRESS: 'AMERICAN_EXPRESS',
-      'AMERICAN-EXPRESS': 'AMERICAN_EXPRESS'
-    };
-
-    // If a subtype maps to a canonical card type, prefer that
-    if (normalizedSubType && subtypeToCardMap[normalizedSubType]) {
-      normalizedCardType = subtypeToCardMap[normalizedSubType];
-    }
-
-    // If cardType itself is an alias in map, map it
-    if (subtypeToCardMap[normalizedCardType]) {
-      normalizedCardType = subtypeToCardMap[normalizedCardType];
-    }
-
-    // Final canonical list of valid card types (match your schema)
-    const validCardTypes = [
-      'APPLE', 'STEAM', 'NORDSTROM', 'MACY', 'NIKE', 'GOOGLE_PLAY',
-      'AMAZON', 'VISA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS', 'SEPHORA',
-      'FOOTLOCKER', 'XBOX', 'EBAY'
-    ];
-
-    // Defensive: if someone passes "APPLE_ITUNES" as single token after normalization,
-    // try to map it back:
-    if (!validCardTypes.includes(normalizedCardType) && subtypeToCardMap[normalizedCardType]) {
-      normalizedCardType = subtypeToCardMap[normalizedCardType];
-    }
-
-    if (!validCardTypes.includes(normalizedCardType)) {
+    const normalized = normalizeCardType(rawCardType);
+    if (!normalized) {
+      // client will handle enum deficiencies; server returns clear guidance
       return res.status(400).json({
         success: false,
-        message: `Invalid card type. Must be one of: ${validCardTypes.join(', ')}`,
-        validCardTypes
+        message: `Unable to map card type "${rawCardType}" to a known cardType`
       });
     }
 
-    // Query DB for active rates for this card type
-    const countries = await GiftCardPrice.getCountriesForCard(normalizedCardType);
+    const { cardType, vanillaType } = normalized;
+
+    // Call model helper and pass vanillaType when available
+    const options = {};
+    if (vanillaType) options.vanillaType = vanillaType;
+
+    const countries = await GiftCardPrice.getCountriesForCard(cardType, options);
 
     if (!countries || countries.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `No active countries found for ${normalizedCardType} gift cards`,
-        data: { cardType: normalizedCardType, countries: [] }
+        message: `No active countries found for ${cardType} gift cards`,
+        data: { cardType, countries: [] }
       });
     }
 
-    // Format response
-    const formattedCountries = countries.map(c => ({
-      code: c.country,
-      name: getCountryDisplayName(c.country),
-      rate: c.rate,
-      rateDisplay: `${c.rate}/${c.sourceCurrency}`,
-      sourceCurrency: c.sourceCurrency
+    const formattedCountries = countries.map(row => ({
+      code: row.country,
+      name: getCountryDisplayName(row.country),
+      rate: row.rate,
+      rateDisplay: `${row.rate}/${row.sourceCurrency}`,
+      sourceCurrency: row.sourceCurrency,
+      // include vanillaType if present on DB row or requested
+      vanillaType: row.vanillaType || (vanillaType || undefined)
     }));
 
     return res.status(200).json({
       success: true,
-      message: `Available countries for ${normalizedCardType} retrieved successfully`,
+      message: `Available countries for ${cardType} retrieved successfully`,
       data: {
-        cardType: normalizedCardType,
-        cardTypeDisplay: getCardTypeDisplayName(normalizedCardType),
+        cardType,
+        cardTypeDisplay: getCardTypeDisplayName(cardType),
+        requestedRaw: rawCardType,
+        requestedNormalized: { cardType, vanillaType },
         totalCountries: countries.length,
         countries: formattedCountries
       }
     });
 
   } catch (err) {
-    logger.error('Error fetching countries for gift card:', err && (err.stack || err.message || err));
+    console.error('Error fetching countries for gift card:', err);
     return res.status(500).json({
       success: false,
       message: 'Internal server error while fetching available countries',
-      error: process.env.NODE_ENV === 'development' ? (err && err.message) : undefined
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
 
 /**
- * Helper: country display names
+ * Helper function to get display names for countries
  */
 function getCountryDisplayName(countryCode) {
-  const map = {
+  const countryNames = {
     'US': 'United States',
     'CANADA': 'Canada',
     'AUSTRALIA': 'Australia',
     'SWITZERLAND': 'Switzerland'
   };
-  const k = String(countryCode || '').toUpperCase();
-  return map[k] || k;
+  return countryNames[countryCode] || countryCode;
 }
 
 /**
- * Helper: card type display names
+ * Helper function to get display names for card types
  */
 function getCardTypeDisplayName(cardType) {
-  const map = {
-    'APPLE': 'Apple / iTunes',
+  const cardTypeNames = {
+    'APPLE': 'Apple/iTunes',
     'STEAM': 'Steam',
     'NORDSTROM': 'Nordstrom',
     'MACY': 'Macy\'s',
     'NIKE': 'Nike',
     'GOOGLE_PLAY': 'Google Play',
     'AMAZON': 'Amazon',
-    'VISA': 'Visa / Vanilla',
+    'VISA': 'Visa',
+    'VANILLA': 'Vanilla (4097 / 4118)',
     'RAZOR_GOLD': 'Razor Gold',
     'AMERICAN_EXPRESS': 'American Express',
     'SEPHORA': 'Sephora',
@@ -175,7 +171,7 @@ function getCardTypeDisplayName(cardType) {
     'XBOX': 'Xbox',
     'EBAY': 'eBay'
   };
-  return map[cardType] || cardType;
+  return cardTypeNames[cardType] || cardType;
 }
 
 module.exports = router;

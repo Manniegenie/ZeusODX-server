@@ -1,27 +1,37 @@
+// models/giftcardPrice.js
 const mongoose = require('mongoose');
 
 const giftCardPriceSchema = new mongoose.Schema({
   cardType: {
-  type: String,
-  required: true,
-  enum: [
-    'APPLE',              // Apple / iTunes
-    'STEAM',              // Steam card
-    'NORDSTROM',          // Nordstrom
-    'MACY',               // Macy
-    'NIKE',               // Nike gift card
-    'GOOGLE_PLAY',        // Google Play Store
-    'AMAZON',             // Amazon gift card
-    'VISA',               // Visa + Vanilla (4097|4118)
-    'RAZOR_GOLD',         // Razor gold gift card
-    'AMERICAN_EXPRESS',   // American Express (3779/3751)
-    'SEPHORA',            // Sephora
-    'FOOTLOCKER',         // Footlocker
-    'XBOX',               // Xbox card
-    'EBAY'                // eBay
-  ],
-  index: true
-},
+    type: String,
+    required: true,
+    enum: [
+      'APPLE',              // Apple / iTunes
+      'STEAM',              // Steam card
+      'NORDSTROM',          // Nordstrom
+      'MACY',               // Macy
+      'NIKE',               // Nike gift card
+      'GOOGLE_PLAY',        // Google Play Store
+      'AMAZON',             // Amazon gift card
+      'VISA',               // Visa
+      'VANILLA',            // Vanilla (two BIN variations supported via vanillaType)
+      'RAZOR_GOLD',         // Razor gold gift card
+      'AMERICAN_EXPRESS',   // American Express (3779/3751)
+      'SEPHORA',            // Sephora
+      'FOOTLOCKER',         // Footlocker
+      'XBOX',               // Xbox card
+      'EBAY'                // eBay
+    ],
+    index: true
+  },
+
+  // For VANILLA rows, which BIN/variation (4097 or 4118). null for other card types.
+  vanillaType: {
+    type: String,
+    enum: ['4097', '4118', null],
+    default: null,
+    index: true
+  },
 
   // Country for the gift card rate
   country: {
@@ -112,8 +122,16 @@ giftCardPriceSchema.index({ cardType: 1, country: 1, isActive: 1 });
 giftCardPriceSchema.index({ country: 1, isActive: 1 });
 giftCardPriceSchema.index({ isActive: 1, lastUpdated: -1 });
 
-// Compound unique index to ensure one rate per card type per country
-giftCardPriceSchema.index({ cardType: 1, country: 1 }, { unique: true });
+// Compound unique index:
+// - For non-VANILLA types uniqueness by (cardType, country)
+// - For VANILLA we want uniqueness by (cardType, country, vanillaType)
+// We accomplish this by creating a unique index including vanillaType and allowing null.
+// Note: If your Mongo version and driver support partialFilterExpression you can refine this, but this index will work:
+// ensure that (cardType + country + vanillaType) is unique — for non-VANILLA rows vanillaType will be null.
+giftCardPriceSchema.index(
+  { cardType: 1, country: 1, vanillaType: 1 },
+  { unique: true, partialFilterExpression: { isActive: { $exists: true } } }
+);
 
 // Instance methods
 giftCardPriceSchema.methods.calculateAmount = function(amount, cardFormat = null) {
@@ -150,23 +168,46 @@ giftCardPriceSchema.statics.getActiveRates = async function(country = null) {
   }
   
   return await this.find(query)
-    .select('cardType country rate physicalRate ecodeRate sourceCurrency targetCurrency minAmount maxAmount')
+    .select('cardType country rate physicalRate ecodeRate sourceCurrency targetCurrency minAmount maxAmount vanillaType')
     .sort({ country: 1, cardType: 1 });
 };
 
-giftCardPriceSchema.statics.getRateByCardTypeAndCountry = async function(cardType, country) {
-  return await this.findOne({ 
-    cardType: cardType.toUpperCase(), 
+/**
+ * Get single rate by cardType + country.
+ * options = { vanillaType: '4097' } (optional)
+ */
+giftCardPriceSchema.statics.getRateByCardTypeAndCountry = async function(cardType, country, options = {}) {
+  if (!cardType || !country) return null;
+  const q = {
+    cardType: cardType.toUpperCase(),
     country: country.toUpperCase(),
-    isActive: true 
-  });
+    isActive: true
+  };
+
+  // If cardType is VANILLA and vanillaType provided, use it.
+  if (q.cardType === 'VANILLA' && options && options.vanillaType) {
+    q.vanillaType = String(options.vanillaType);
+  }
+
+  return await this.findOne(q).select('cardType country rate sourceCurrency targetCurrency physicalRate ecodeRate minAmount maxAmount vanillaType');
 };
 
-giftCardPriceSchema.statics.getCountriesForCard = async function(cardType) {
-  return await this.find({ 
-    cardType: cardType.toUpperCase(), 
-    isActive: true 
-  }).select('country rate sourceCurrency').sort({ country: 1 });
+/**
+ * Get countries (rate rows) for a card type.
+ * options = { vanillaType: '4097' } (optional)
+ */
+giftCardPriceSchema.statics.getCountriesForCard = async function(cardType, options = {}) {
+  if (!cardType) return [];
+  const q = {
+    cardType: cardType.toUpperCase(),
+    isActive: true
+  };
+
+  if (q.cardType === 'VANILLA' && options && options.vanillaType) {
+    q.vanillaType = String(options.vanillaType);
+  }
+
+  return await this.find(q).select('country rate sourceCurrency vanillaType').sort({ country: 1 });
 };
 
 giftCardPriceSchema.statics.getAllCountries = async function() {
@@ -174,10 +215,11 @@ giftCardPriceSchema.statics.getAllCountries = async function() {
 };
 
 giftCardPriceSchema.statics.getCardsByCountry = async function(country) {
+  if (!country) return [];
   return await this.find({ 
     country: country.toUpperCase(), 
     isActive: true 
-  }).select('cardType rate').sort({ cardType: 1 });
+  }).select('cardType rate vanillaType').sort({ cardType: 1 });
 };
 
 // Update lastUpdated on save
