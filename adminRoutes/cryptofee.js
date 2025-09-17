@@ -2,21 +2,21 @@ const express = require('express');
 const router = express.Router();
 const CryptoFeeMarkup = require('../models/cryptofee'); // Adjust path as needed
 
-// PUT /crypto-fee - Update feeUsd for a currency and network combination
+// PUT /crypto-fee - Update networkFee for a currency and network combination
 router.put('/crypto-fee', async (req, res) => {
   try {
-    const { currency, network, networkName, feeUsd } = req.body;
+    const { currency, network, networkName, networkFee } = req.body;
 
-    if (!currency || !network || feeUsd === undefined) {
-      return res.status(400).json({ message: 'currency, network, and feeUsd are required.' });
+    if (!currency || !network || networkFee === undefined) {
+      return res.status(400).json({ message: 'currency, network, and networkFee are required.' });
     }
 
-    if (typeof feeUsd !== 'number' || feeUsd < 0) {
-      return res.status(400).json({ message: 'feeUsd must be a non-negative number.' });
+    if (typeof networkFee !== 'number' || networkFee < 0) {
+      return res.status(400).json({ message: 'networkFee must be a non-negative number.' });
     }
 
     // Prepare update object
-    const updateData = { feeUsd };
+    const updateData = { networkFee };
     if (networkName !== undefined) {
       updateData.networkName = networkName.trim();
     }
@@ -72,7 +72,6 @@ router.patch('/crypto-fee-name', async (req, res) => {
     res.status(500).json({ message: 'Server error updating network name.' });
   }
 });
-
 
 // GET /crypto-fees - Fetch all available crypto fees
 router.get('/crypto-fees', async (req, res) => {
