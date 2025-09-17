@@ -189,6 +189,7 @@ const NINRoutes = require('./routes/NIN');
 const EmailVerifyRoutes = require('./routes/EmailVerify')
 const KYCRoutes = require('./routes/KYC');
 const ForgotPinRoutes = require('./routes/forgotpasswordpin');
+const AccountnameRoutes = require('./routes/Accountname');
 
 
 
@@ -200,6 +201,7 @@ app.use("/verify-otp", verifyotpRoutes);
 app.use("/passwordpin", passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
 app.use("/naira", nairaAccountsRoutes);
+app.use("/accountname", AccountnameRoutes);
 
 
 // Webhook Routes
