@@ -47,6 +47,29 @@ function shapeTokenDetails(tx) {
     createdAt: tx.createdAt,
   };
 }
+
+function shapeGiftCardDetails(tx) {
+  return {
+    category: 'giftcard',
+    giftCardId: tx.giftCardId,
+    cardType: tx.cardType,
+    cardFormat: tx.cardFormat,
+    cardRange: tx.cardRange,
+    country: tx.country,
+    description: tx.description,
+    expectedRate: tx.expectedRate,
+    expectedRateDisplay: tx.expectedRateDisplay,
+    expectedAmountToReceive: tx.expectedAmountToReceive,
+    expectedSourceCurrency: tx.expectedSourceCurrency,
+    expectedTargetCurrency: tx.expectedTargetCurrency,
+    eCode: tx.eCode,
+    totalImages: tx.totalImages,
+    imageUrls: tx.imageUrls,
+    imagePublicIds: tx.imagePublicIds,
+    transactionId: firstTruthy(tx.transactionId, tx.reference, tx.externalId, tx.id, tx._id),
+    createdAt: tx.createdAt,
+  };
+}
 // ------------------------------------------------------
 
 // Helper function to build date range filter
@@ -82,7 +105,8 @@ function formatTransactionType(type) {
     'WITHDRAWAL': 'Withdrawal',
     'INTERNAL_TRANSFER_SENT': 'Withdrawal',
     'INTERNAL_TRANSFER_RECEIVED': 'Deposit',
-    'SWAP': 'Swap'
+    'SWAP': 'Swap',
+    'GIFTCARD': 'Gift Card'
   };
   return typeMap[type] || type;
 }
@@ -190,6 +214,9 @@ router.post('/token-specific', async (req, res) => {
         case 'SWAP': 
           filter.type = 'SWAP'; 
           break;
+        case 'GIFTCARD':
+          filter.type = 'GIFTCARD';
+          break;
       }
     }
     if (status) {
@@ -209,8 +236,27 @@ router.post('/token-specific', async (req, res) => {
     ]);
 
     const formattedTokenTransactions = transactions.map(tx => {
-      const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
+      const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
       const createdAtISO = new Date(tx.createdAt).toISOString();
+      
+      // Handle gift card transactions
+      if (tx.type === 'GIFTCARD') {
+        return {
+          id: tx._id,
+          type: formatTransactionType(tx.type),
+          status: formatStatus(tx.status),
+          amount: formatAmount(Math.abs(tx.amount), tx.currency, tx.type, true),
+          date: formatDate(tx.createdAt),
+          createdAt: createdAtISO,
+          currency: tx.currency,
+          cardType: tx.cardType,
+          cardFormat: tx.cardFormat,
+          cardRange: tx.cardRange,
+          country: tx.country,
+          details: shapeGiftCardDetails(tx)
+        };
+      }
+      
       return {
         id: tx._id,
         type: formatTransactionType(tx.type),
@@ -283,6 +329,9 @@ router.post('/all-tokens', async (req, res) => {
         case 'SWAP': 
           filter.type = 'SWAP'; 
           break;
+        case 'GIFTCARD':
+          filter.type = 'GIFTCARD';
+          break;
       }
     }
     if (status) {
@@ -302,8 +351,24 @@ router.post('/all-tokens', async (req, res) => {
     ]);
 
     const formattedAllTokens = transactions.map(tx => {
-      const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
+      const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
       const createdAtISO = new Date(tx.createdAt).toISOString();
+      
+      // Handle gift card transactions
+      if (tx.type === 'GIFTCARD') {
+        return {
+          id: tx._id,
+          type: formatTransactionType(tx.type),
+          status: formatStatus(tx.status),
+          amount: formatAmount(Math.abs(tx.amount), tx.currency, tx.type, true),
+          date: formatDate(tx.createdAt),
+          createdAt: createdAtISO,
+          currency: tx.currency,
+          cardType: tx.cardType,
+          details: shapeGiftCardDetails(tx)
+        };
+      }
+      
       return {
         id: tx._id,
         type: formatTransactionType(tx.type),
@@ -427,7 +492,90 @@ router.post('/all-utilities', async (req, res) => {
   }
 });
 
-// POST /api/transactions/complete-history - Get ALL transactions (tokens + utilities combined)
+// POST /api/transactions/gift-cards - Get ALL gift card transactions
+router.post('/gift-cards', async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const body = req.body || {};
+    const {
+      status,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = body;
+
+    const defaultRange = getDefaultDateRange();
+    const dateFrom = body.dateFrom || defaultRange.dateFrom;
+    const dateTo = body.dateTo || defaultRange.dateTo;
+
+    const filter = { 
+      userId: userId,
+      type: 'GIFTCARD'
+    };
+    Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
+
+    if (status) {
+      switch (status.toLowerCase()) {
+        case 'successful': filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] }; break;
+        case 'failed': filter.status = { $in: ['FAILED', 'REJECTED'] }; break;
+        case 'pending': filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] }; break;
+      }
+    }
+
+    const skip = (page - 1) * limit;
+    const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    const [transactions, totalCount] = await Promise.all([
+      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)).lean(),
+      Transaction.countDocuments(filter)
+    ]);
+
+    const formattedGiftCards = transactions.map(tx => {
+      const amount = Math.abs(tx.amount);
+      const createdAtISO = new Date(tx.createdAt).toISOString();
+      return {
+        id: tx._id,
+        type: 'Gift Card',
+        status: formatStatus(tx.status),
+        amount: formatAmount(amount, tx.currency, tx.type, true),
+        date: formatDate(tx.createdAt),
+        createdAt: createdAtISO,
+        currency: tx.currency,
+        cardType: tx.cardType,
+        cardFormat: tx.cardFormat,
+        cardRange: tx.cardRange,
+        country: tx.country,
+        details: shapeGiftCardDetails(tx)
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Gift card transaction history retrieved successfully',
+      data: {
+        transactions: formattedGiftCards,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / limit),
+          totalCount,
+          limit: parseInt(limit)
+        },
+        dateRange: { dateFrom, dateTo }
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching gift card transactions', {
+      userId: req.user?.id,
+      error: error.message
+    });
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// POST /api/transactions/complete-history - Get ALL transactions (tokens + utilities + gift cards combined)
 router.post('/complete-history', async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -481,8 +629,25 @@ router.post('/complete-history', async (req, res) => {
         Transaction.countDocuments(tokenFilter)
       ]);
       const formattedTokens = tokenTxs.map(tx => {
-        const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT';
+        const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
         const createdAtISO = new Date(tx.createdAt).toISOString();
+        
+        // Handle gift card transactions
+        if (tx.type === 'GIFTCARD') {
+          return {
+            id: tx._id,
+            type: 'Gift Card',
+            status: formatStatus(tx.status),
+            amount: formatAmount(Math.abs(tx.amount), tx.currency, tx.type, true),
+            date: formatDate(tx.createdAt),
+            createdAt: createdAtISO,
+            currency: tx.currency,
+            cardType: tx.cardType,
+            details: shapeGiftCardDetails(tx)
+          };
+        }
+        
+        // Handle other token transactions
         return {
           id: tx._id,
           type: formatTransactionType(tx.type),
