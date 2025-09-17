@@ -4,27 +4,26 @@ const GiftCardPrice = require('../models/giftcardPrice');
 const logger = require('../utils/logger');
 
 // Validation function for rate data (updated for NGN rates)
-// Validation function for rate data (updated for NGN rates)
 function validateRateData(data) {
   const { cardType, country, rate, physicalRate, ecodeRate, sourceCurrency, targetCurrency, minAmount, maxAmount } = data;
   const errors = [];
 
   // Updated allowed gift card types
   const allowedCardTypes = [
-    'APPLE',              // Apple / iTunes
-    'STEAM',              // Steam card
-    'NORDSTROM',          // Nordstrom
-    'MACY',               // Macy
-    'NIKE',               // Nike gift card
-    'GOOGLE_PLAY',        // Google Play Store
-    'AMAZON',             // Amazon gift card
-    'VISA',               // Visa + Vanilla (4097|4118)
-    'RAZOR_GOLD',         // Razor gold gift card
-    'AMERICAN_EXPRESS',   // American Express (3779/3751)
-    'SEPHORA',            // Sephora
-    'FOOTLOCKER',         // Footlocker
-    'XBOX',               // Xbox card
-    'EBAY'                // eBay
+    'APPLE',
+    'STEAM',
+    'NORDSTROM',
+    'MACY',
+    'NIKE',
+    'GOOGLE_PLAY',
+    'AMAZON',
+    'VISA',
+    'RAZOR_GOLD',
+    'AMERICAN_EXPRESS',
+    'SEPHORA',
+    'FOOTLOCKER',
+    'XBOX',
+    'EBAY'
   ];
 
   const allowedCountries = ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'];
@@ -105,11 +104,9 @@ function validateRateData(data) {
   };
 }
 
-// POST /admin/giftcard/rates - Create new rate
+// POST /admin/giftcard/rates - Create new rate (no auth)
 router.post('/rates', async (req, res) => {
   try {
-    const adminUserId = req.user?.id || null; // Handle case where no auth middleware
-    
     const validation = validateRateData(req.body);
     if (!validation.success) {
       return res.status(400).json({
@@ -121,7 +118,6 @@ router.post('/rates', async (req, res) => {
 
     const rateData = {
       ...validation.validatedData,
-      updatedBy: adminUserId,
       notes: req.body.notes || null
     };
 
@@ -141,7 +137,6 @@ router.post('/rates', async (req, res) => {
     const newRate = await GiftCardPrice.create(rateData);
 
     logger.info('Gift card rate created', {
-      adminUserId,
       cardType: newRate.cardType,
       country: newRate.country,
       rate: newRate.rate
@@ -167,7 +162,6 @@ router.post('/rates', async (req, res) => {
 
   } catch (error) {
     logger.error('Error creating gift card rate', {
-      adminUserId: req.user?.id,
       error: error.message,
       requestBody: req.body
     });
@@ -186,10 +180,9 @@ router.post('/rates', async (req, res) => {
   }
 });
 
-// POST /admin/giftcard/rates/bulk - Create multiple rates
+// POST /admin/giftcard/rates/bulk - Create multiple rates (no auth)
 router.post('/rates/bulk', async (req, res) => {
   try {
-    const adminUserId = req.user?.id || null;
     const { rates } = req.body;
 
     if (!Array.isArray(rates) || rates.length === 0) {
@@ -221,7 +214,6 @@ router.post('/rates/bulk', async (req, res) => {
       } else {
         validatedRates.push({
           ...validation.validatedData,
-          updatedBy: adminUserId,
           notes: rates[i].notes || null
         });
       }
@@ -239,7 +231,6 @@ router.post('/rates/bulk', async (req, res) => {
     const createdRates = await GiftCardPrice.insertMany(validatedRates, { ordered: false });
 
     logger.info('Bulk gift card rates created', {
-      adminUserId,
       totalRates: createdRates.length
     });
 
@@ -260,7 +251,6 @@ router.post('/rates/bulk', async (req, res) => {
 
   } catch (error) {
     logger.error('Error creating bulk gift card rates', {
-      adminUserId: req.user?.id,
       error: error.message
     });
 
@@ -279,10 +269,9 @@ router.post('/rates/bulk', async (req, res) => {
   }
 });
 
-// PUT /admin/giftcard/rates/:id - Update existing rate
+// PUT /admin/giftcard/rates/:id - Update existing rate (no auth)
 router.put('/rates/:id', async (req, res) => {
   try {
-    const adminUserId = req.user?.id || null;
     const { id } = req.params;
 
     const existingRate = await GiftCardPrice.findById(id);
@@ -346,13 +335,11 @@ router.put('/rates/:id', async (req, res) => {
       }
     }
 
-    updateData.updatedBy = adminUserId;
     updateData.lastUpdated = new Date();
 
     const updatedRate = await GiftCardPrice.findByIdAndUpdate(id, updateData, { new: true });
 
     logger.info('Gift card rate updated', {
-      adminUserId,
       rateId: id,
       cardType: updatedRate.cardType,
       country: updatedRate.country,
@@ -379,7 +366,6 @@ router.put('/rates/:id', async (req, res) => {
 
   } catch (error) {
     logger.error('Error updating gift card rate', {
-      adminUserId: req.user?.id,
       rateId: req.params.id,
       error: error.message
     });
@@ -391,10 +377,9 @@ router.put('/rates/:id', async (req, res) => {
   }
 });
 
-// DELETE /admin/giftcard/rates/:id - Delete rate
+// DELETE /admin/giftcard/rates/:id - Delete rate (no auth)
 router.delete('/rates/:id', async (req, res) => {
   try {
-    const adminUserId = req.user?.id || null;
     const { id } = req.params;
 
     const deletedRate = await GiftCardPrice.findByIdAndDelete(id);
@@ -407,7 +392,6 @@ router.delete('/rates/:id', async (req, res) => {
     }
 
     logger.info('Gift card rate deleted', {
-      adminUserId,
       rateId: id,
       cardType: deletedRate.cardType,
       country: deletedRate.country
@@ -427,7 +411,6 @@ router.delete('/rates/:id', async (req, res) => {
 
   } catch (error) {
     logger.error('Error deleting gift card rate', {
-      adminUserId: req.user?.id,
       rateId: req.params.id,
       error: error.message
     });
@@ -439,7 +422,7 @@ router.delete('/rates/:id', async (req, res) => {
   }
 });
 
-// GET /admin/giftcard/rates - Get all rates (admin view with more details)
+// GET /admin/giftcard/rates - Get all rates (admin view with more details) (no auth)
 router.get('/rates', async (req, res) => {
   try {
     const { country, cardType, isActive, page = 1, limit = 50 } = req.query;
@@ -468,8 +451,8 @@ router.get('/rates', async (req, res) => {
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
+    // No populate() on updatedBy anymore
     const rates = await GiftCardPrice.find(query)
-      .populate('updatedBy', 'username email')
       .sort({ country: 1, cardType: 1 })
       .skip(skip)
       .limit(limitNum);
@@ -493,7 +476,6 @@ router.get('/rates', async (req, res) => {
           maxAmount: rate.maxAmount,
           isActive: rate.isActive,
           lastUpdated: rate.lastUpdated,
-          updatedBy: rate.updatedBy,
           notes: rate.notes,
           createdAt: rate.createdAt
         })),
@@ -509,7 +491,6 @@ router.get('/rates', async (req, res) => {
 
   } catch (error) {
     logger.error('Error fetching admin gift card rates', {
-      adminUserId: req.user?.id,
       error: error.message
     });
 
