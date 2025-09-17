@@ -7,7 +7,7 @@ const giftCardSchema = new mongoose.Schema({
   // UPDATED: Fixed cardType enum to match endpoint exactly
   cardType: {
     type: String, required: true,
-    enum: ['APPLE', 'STEAM', 'NORDSTROM', 'MACY', 'NIKE', 'GOOGLE_PLAY', 'AMAZON', 'VISA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS', 'SEPHORA', 'FOOTLOCKER', 'XBOX', 'EBAY']
+    enum: ['APPLE', 'STEAM', 'NORDSTROM', 'MACY', 'NIKE', 'GOOGLE_PLAY', 'AMAZON', 'VISA', 'VANILLA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS', 'SEPHORA', 'FOOTLOCKER', 'XBOX', 'EBAY']
   },
   
   // Keep index: true - not covered by compound indexes
@@ -42,6 +42,13 @@ const giftCardSchema = new mongoose.Schema({
   
   // REMOVED index: true since we have multiple compound indexes with status
   status: { type: String, enum: ['PENDING', 'REVIEWING', 'APPROVED', 'REJECTED', 'PAID'], default: 'PENDING' },
+  
+  // NEW: Added vanillaType field to support VANILLA cards
+  vanillaType: { 
+    type: String, 
+    enum: ['4097', '4118'],
+    default: null
+  },
   
   // Admin review data
   reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -88,6 +95,8 @@ giftCardSchema.index({ cardType: 1, country: 1, status: 1 });      // Covers car
 giftCardSchema.index({ status: 1, createdAt: -1 });                // Covers status queries with sorting
 giftCardSchema.index({ giftCardRateId: 1 });                       // For rate lookups
 giftCardSchema.index({ transactionId: 1 });                        // For transaction lookups
+// NEW: Index for vanilla type queries
+giftCardSchema.index({ cardType: 1, vanillaType: 1, status: 1 });  // For VANILLA card queries
 
 // Validation
 giftCardSchema.pre('save', function(next) {
@@ -97,6 +106,14 @@ giftCardSchema.pre('save', function(next) {
   if (this.cardFormat === 'PHYSICAL') this.eCode = null;
   if (this.cardFormat === 'PHYSICAL' && (!this.imageUrls || this.imageUrls.length === 0)) {
     return next(new Error('At least one image is required for physical cards'));
+  }
+  
+  // NEW: Validate vanillaType for VANILLA cards
+  if (this.cardType === 'VANILLA' && !this.vanillaType) {
+    return next(new Error('vanillaType is required for VANILLA gift cards'));
+  }
+  if (this.cardType !== 'VANILLA' && this.vanillaType) {
+    return next(new Error('vanillaType can only be specified for VANILLA gift cards'));
   }
   
   // Update totalImages count
