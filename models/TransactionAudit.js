@@ -74,7 +74,8 @@ const transactionAuditSchema = new mongoose.Schema({
       'SYSTEM_PROCESS',
       'BACKGROUND_JOB',
       'API_ENDPOINT',
-      'CRON_JOB'
+      'CRON_JOB',
+      'NGNZ_WITHDRAWAL'
     ],
     index: true
   },
@@ -156,7 +157,7 @@ const transactionAuditSchema = new mongoose.Schema({
     provider: String,
     swapType: {
       type: String,
-      enum: ['CRYPTO_TO_CRYPTO', 'CRYPTO_TO_FIAT', 'CRYPTO_TO_NGNX', 'INTERNAL', 'OBIEX', 'OFFRAMP']
+      enum: ['CRYPTO_TO_CRYPTO', 'CRYPTO_TO_FIAT', 'CRYPTO_TO_NGNX', 'INTERNAL', 'OBIEX', 'OFFRAMP', 'NGNZ_TO_BANK']
     }
   },
   
@@ -169,7 +170,7 @@ const transactionAuditSchema = new mongoose.Schema({
     obiexRequestId: String,
     obiexOperationType: {
       type: String,
-      enum: ['QUOTE_CREATE', 'QUOTE_ACCEPT', 'CRYPTO_TO_NGNX', 'CURRENCY_FETCH']
+      enum: ['QUOTE_CREATE', 'QUOTE_ACCEPT', 'CRYPTO_TO_NGNX', 'CURRENCY_FETCH', 'FIAT_WITHDRAWAL']
     }
   },
   
