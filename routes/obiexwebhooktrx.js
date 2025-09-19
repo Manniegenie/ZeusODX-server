@@ -4,6 +4,7 @@ const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const webhookAuth = require('../auth/webhookauth');
 const logger = require('../utils/logger');
+const { sendDepositEmail } = require('../services/EmailService'); // Import email service
 
 // Supported tokens - aligned with user schema (DOGE REMOVED)
 const SUPPORTED_TOKENS = {
@@ -292,6 +293,25 @@ router.post('/transaction', webhookAuth, async (req, res) => {
       try {
         updatedUser = await updateUserBalance(user._id, normalizedCurrency, parseFloat(amount));
         logger.info(`Credited ${amount} ${normalizedCurrency} to user ${user._id} for confirmed deposit`);
+        
+        // Send deposit notification email
+        try {
+          if (user.email) {
+            await sendDepositEmail(
+              user.email,
+              user.firstName || user.username || 'User',
+              parseFloat(amount),
+              normalizedCurrency,
+              reference
+            );
+            logger.info(`Deposit notification email sent to ${user.email} for ${amount} ${normalizedCurrency}`);
+          } else {
+            logger.warn(`No email address found for user ${user._id}, skipping deposit notification email`);
+          }
+        } catch (emailError) {
+          // Log email error but don't fail the transaction
+          logger.error(`Failed to send deposit notification email to user ${user._id}:`, emailError);
+        }
       } catch (err) {
         logger.error(`Error crediting balance for confirmed deposit:`, err);
         return res.status(500).json({ 
