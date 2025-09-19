@@ -4,7 +4,7 @@ const Transaction = require('../models/transaction');
 const BillTransaction = require('../models/billstransaction');
 const logger = require('../utils/logger');
 
-// ----------------- helpers added (new) -----------------
+// ----------------- helpers added (updated) -----------------
 function firstTruthy(...vals) {
   for (const v of vals) {
     if (v !== undefined && v !== null && `${v}`.trim() !== '') return v;
@@ -35,9 +35,10 @@ function shapeTokenDetails(tx) {
   const fee = firstTruthy(tx.fee, tx.networkFee, tx.gasFee, tx.txFee, tx?.metadata?.fee, 0);
   const narration = firstTruthy(tx.narration, tx.note, tx.description, tx.memo, tx.reason);
 
-  return {
+  // Base details for all token transactions
+  const baseDetails = {
     category: 'token',
-    transactionId: firstTruthy(tx.transactionId, tx.reference, tx.externalId, tx.id, tx._id),
+    transactionId: firstTruthy(tx.transactionId, tx.obiexTransactionId, tx.reference, tx.externalId, tx.id, tx._id),
     currency: tx.currency,
     network,
     address,
@@ -46,6 +47,41 @@ function shapeTokenDetails(tx) {
     narration,
     createdAt: tx.createdAt,
   };
+
+  // Enhanced details for NGNZ withdrawals
+  if (tx.isNGNZWithdrawal && tx.type === 'WITHDRAWAL') {
+    return {
+      ...baseDetails,
+      category: 'withdrawal', // Override category for withdrawals
+      // Include receipt details if available
+      ...(tx.receiptDetails && {
+        receiptDetails: tx.receiptDetails,
+        // Make key fields easily accessible
+        reference: tx.receiptDetails.reference || tx.reference,
+        provider: tx.receiptDetails.provider,
+        providerStatus: tx.receiptDetails.providerStatus,
+        bankName: tx.receiptDetails.bankName,
+        accountName: tx.receiptDetails.accountName,
+        accountNumber: tx.receiptDetails.accountNumber,
+        withdrawalFee: tx.receiptDetails.fee,
+      }),
+      // NGNZ withdrawal specific fields
+      ...(tx.ngnzWithdrawal && {
+        bankAmount: tx.bankAmount,
+        withdrawalFee: tx.withdrawalFee,
+        amountSentToBank: tx.ngnzWithdrawal.amountSentToBank,
+        destination: tx.ngnzWithdrawal.destination,
+        obiexDetails: tx.ngnzWithdrawal.obiex,
+        withdrawalReference: tx.ngnzWithdrawal.withdrawalReference,
+        payoutCurrency: tx.payoutCurrency || tx.ngnzWithdrawal.payoutCurrency,
+      }),
+      // Flag for frontend to show receipt modal
+      hasReceiptData: !!(tx.receiptDetails || tx.isNGNZWithdrawal),
+      isNGNZWithdrawal: true,
+    };
+  }
+
+  return baseDetails;
 }
 
 function shapeGiftCardDetails(tx) {
@@ -70,6 +106,42 @@ function shapeGiftCardDetails(tx) {
     createdAt: tx.createdAt,
   };
 }
+
+/**
+ * Enhanced transaction formatter that includes receipt data for withdrawals
+ */
+function formatTransactionWithReceipt(tx, isNegative = false) {
+  const createdAtISO = new Date(tx.createdAt).toISOString();
+  
+  // Base transaction format
+  const baseTransaction = {
+    id: tx._id,
+    type: formatTransactionType(tx.type),
+    status: formatStatus(tx.status),
+    amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
+    date: formatDate(tx.createdAt),      // human-readable, Lagos time
+    createdAt: createdAtISO,             // raw ISO for client-side TZ formatting/sorting
+    details: shapeTokenDetails(tx)       // enhanced with receipt data
+  };
+
+  // Add receipt data for NGNZ withdrawals if available
+  if (tx.isNGNZWithdrawal && tx.type === 'WITHDRAWAL') {
+    baseTransaction.receiptData = tx.getReceiptData ? tx.getReceiptData() : null;
+    baseTransaction.currency = tx.currency;
+    baseTransaction.isNGNZWithdrawal = true;
+    
+    // Add withdrawal-specific display fields
+    if (tx.ngnzWithdrawal || tx.receiptDetails) {
+      baseTransaction.bankName = tx.receiptDetails?.bankName || tx.ngnzWithdrawal?.destination?.bankName;
+      baseTransaction.accountNumber = tx.receiptDetails?.accountNumber || tx.ngnzWithdrawal?.destination?.accountNumberMasked;
+      baseTransaction.withdrawalFee = tx.withdrawalFee || tx.ngnzWithdrawal?.withdrawalFee;
+      baseTransaction.amountSentToBank = tx.bankAmount || tx.ngnzWithdrawal?.amountSentToBank;
+    }
+  }
+
+  return baseTransaction;
+}
+
 // ------------------------------------------------------
 
 // Helper function to build date range filter
@@ -152,10 +224,10 @@ function formatStatus(status, type = 'token') {
 
 function formatAmount(amount, currency, type = '', isNegative = false) {
   const sign = isNegative ? '-' : '+';
-  if (currency === 'NGNB') {
-    return `${sign}₦${amount.toLocaleString()}`;
+  if (currency === 'NGNB' || currency === 'NGNZ') {
+    return `${sign}₦${Math.abs(amount).toLocaleString()}`;
   }
-  return `${sign}${amount} ${currency}`;
+  return `${sign}${Math.abs(amount)} ${currency}`;
 }
 
 // Always format display date in Africa/Lagos
@@ -231,7 +303,7 @@ router.post('/token-specific', async (req, res) => {
     const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
     const [transactions, totalCount] = await Promise.all([
-      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)).lean(),
+      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)),
       Transaction.countDocuments(filter)
     ]);
 
@@ -253,19 +325,12 @@ router.post('/token-specific', async (req, res) => {
           cardFormat: tx.cardFormat,
           cardRange: tx.cardRange,
           country: tx.country,
-          details: shapeGiftCardDetails(tx)
+          details: shapeGiftCardDetails(tx.toObject())
         };
       }
       
-      return {
-        id: tx._id,
-        type: formatTransactionType(tx.type),
-        status: formatStatus(tx.status),
-        amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
-        date: formatDate(tx.createdAt),      // human-readable, Lagos time
-        createdAt: createdAtISO,             // raw ISO for client-side TZ formatting/sorting
-        details: shapeTokenDetails(tx)       // <— updated
-      };
+      // Use enhanced formatter for other transactions
+      return formatTransactionWithReceipt(tx.toObject(), isNegative);
     });
 
     return res.status(200).json({
@@ -346,7 +411,7 @@ router.post('/all-tokens', async (req, res) => {
     const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
     const [transactions, totalCount] = await Promise.all([
-      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)).lean(),
+      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)),
       Transaction.countDocuments(filter)
     ]);
 
@@ -365,19 +430,12 @@ router.post('/all-tokens', async (req, res) => {
           createdAt: createdAtISO,
           currency: tx.currency,
           cardType: tx.cardType,
-          details: shapeGiftCardDetails(tx)
+          details: shapeGiftCardDetails(tx.toObject())
         };
       }
       
-      return {
-        id: tx._id,
-        type: formatTransactionType(tx.type),
-        status: formatStatus(tx.status),
-        amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
-        date: formatDate(tx.createdAt),      // Lagos
-        createdAt: createdAtISO,             // ISO
-        details: shapeTokenDetails(tx)       // <— updated
-      };
+      // Use enhanced formatter for other transactions
+      return formatTransactionWithReceipt(tx.toObject(), isNegative);
     });
 
     return res.status(200).json({
@@ -625,7 +683,7 @@ router.post('/complete-history', async (req, res) => {
 
     if (transactionType === 'all' || transactionType === 'token') {
       const [tokenTxs, tokenCount] = await Promise.all([
-        Transaction.find(tokenFilter).lean(),
+        Transaction.find(tokenFilter),
         Transaction.countDocuments(tokenFilter)
       ]);
       const formattedTokens = tokenTxs.map(tx => {
@@ -643,20 +701,12 @@ router.post('/complete-history', async (req, res) => {
             createdAt: createdAtISO,
             currency: tx.currency,
             cardType: tx.cardType,
-            details: shapeGiftCardDetails(tx)
+            details: shapeGiftCardDetails(tx.toObject())
           };
         }
         
-        // Handle other token transactions
-        return {
-          id: tx._id,
-          type: formatTransactionType(tx.type),
-          status: formatStatus(tx.status),
-          amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
-          date: formatDate(tx.createdAt),   // Lagos
-          createdAt: createdAtISO,          // ISO
-          details: shapeTokenDetails(tx)    // <— updated (has category: 'token')
-        };
+        // Handle other token transactions with enhanced formatting
+        return formatTransactionWithReceipt(tx.toObject(), isNegative);
       });
       allTransactions = [...allTransactions, ...formattedTokens];
       totalCount += tokenCount;
@@ -716,6 +766,111 @@ router.post('/complete-history', async (req, res) => {
     });
   } catch (error) {
     logger.error('Error fetching complete transaction history', {
+      userId: req.user?.id,
+      error: error.message
+    });
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// New endpoint specifically for NGNZ withdrawal transactions with full receipt data
+router.post('/ngnz-withdrawals', async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const body = req.body || {};
+    const {
+      status,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = body;
+
+    const defaultRange = getDefaultDateRange();
+    const dateFrom = body.dateFrom || defaultRange.dateFrom;
+    const dateTo = body.dateTo || defaultRange.dateTo;
+
+    const filter = { 
+      userId: userId,
+      currency: 'NGNZ',
+      type: 'WITHDRAWAL',
+      isNGNZWithdrawal: true
+    };
+    Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
+
+    if (status) {
+      switch (status.toLowerCase()) {
+        case 'successful': filter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] }; break;
+        case 'failed': filter.status = { $in: ['FAILED', 'REJECTED'] }; break;
+        case 'pending': filter.status = { $in: ['PENDING', 'PROCESSING', 'APPROVED'] }; break;
+      }
+    }
+
+    const skip = (page - 1) * limit;
+    const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    const [transactions, totalCount] = await Promise.all([
+      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)),
+      Transaction.countDocuments(filter)
+    ]);
+
+    const formattedWithdrawals = transactions.map(tx => {
+      const txObj = tx.toObject();
+      const createdAtISO = new Date(tx.createdAt).toISOString();
+      
+      return {
+        id: tx._id,
+        type: 'NGNZ Withdrawal',
+        status: formatStatus(tx.status),
+        amount: formatAmount(tx.amount, tx.currency, tx.type, true), // Negative for withdrawals
+        date: formatDate(tx.createdAt),
+        createdAt: createdAtISO,
+        currency: tx.currency,
+        
+        // NGNZ withdrawal specific fields
+        withdrawalReference: tx.reference || tx.ngnzWithdrawal?.withdrawalReference,
+        bankName: tx.receiptDetails?.bankName || tx.ngnzWithdrawal?.destination?.bankName,
+        accountName: tx.receiptDetails?.accountName || tx.ngnzWithdrawal?.destination?.accountName,
+        accountNumber: tx.receiptDetails?.accountNumber || tx.ngnzWithdrawal?.destination?.accountNumberMasked,
+        amountSentToBank: tx.bankAmount || tx.ngnzWithdrawal?.amountSentToBank,
+        withdrawalFee: tx.withdrawalFee || tx.ngnzWithdrawal?.withdrawalFee || 30,
+        provider: tx.receiptDetails?.provider || tx.ngnzWithdrawal?.provider || 'OBIEX',
+        providerStatus: tx.receiptDetails?.providerStatus || tx.ngnzWithdrawal?.obiex?.status,
+        
+        // Enhanced details for frontend
+        details: {
+          ...shapeTokenDetails(txObj),
+          category: 'withdrawal',
+          isNGNZWithdrawal: true,
+          hasReceiptData: true
+        },
+        
+        // Full receipt data for modal
+        receiptData: tx.getReceiptData ? tx.getReceiptData() : null,
+        
+        // Raw transaction data for fallback
+        raw: txObj
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'NGNZ withdrawal history retrieved successfully',
+      data: {
+        transactions: formattedWithdrawals,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / limit),
+          totalCount,
+          limit: parseInt(limit)
+        },
+        dateRange: { dateFrom, dateTo }
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching NGNZ withdrawal transactions', {
       userId: req.user?.id,
       error: error.message
     });

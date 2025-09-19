@@ -48,6 +48,38 @@ const NGNZWithdrawalSchema = new mongoose.Schema({
   failureReason: { type: String },
 }, { _id: false });
 
+/** ========= Frontend Receipt Details Schema ========= **/
+// This schema ensures all fields needed by FiatWithdrawalReceiptModal are easily accessible
+const ReceiptDetailsSchema = new mongoose.Schema({
+  // Core transaction identifiers
+  transactionId: { type: String }, // Maps to _id or obiexTransactionId
+  reference: { type: String }, // Primary reference number
+  
+  // Provider information
+  provider: { type: String }, // e.g., 'OBIEX', 'PAYSTACK'
+  providerStatus: { type: String }, // Provider's status (e.g., obiexStatus)
+  
+  // Bank details (for withdrawals)
+  bankName: { type: String },
+  accountName: { type: String },
+  accountNumber: { type: String }, // Masked version for display
+  
+  // Financial details
+  currency: { type: String }, // e.g., 'NGN', 'NGNZ'
+  amount: { type: String }, // Formatted amount with currency symbol (e.g., "₦120,000")
+  fee: { type: String }, // Formatted fee (e.g., "₦30")
+  
+  // Additional details
+  narration: { type: String }, // Transaction description/note
+  date: { type: String }, // Human-readable date
+  
+  // Category for frontend filtering/display
+  category: { type: String, enum: ['token', 'utility', 'withdrawal', 'deposit', 'swap'], default: 'utility' },
+  
+  // Any additional provider-specific fields
+  additionalFields: { type: mongoose.Schema.Types.Mixed }
+}, { _id: false });
+
 /** ========= Main Transaction schema ========= **/
 
 const transactionSchema = new mongoose.Schema({
@@ -104,6 +136,10 @@ const transactionSchema = new mongoose.Schema({
   memo: { type: String },
   metadata: { type: mongoose.Schema.Types.Mixed },
   reference: { type: String },
+
+  /** ========= Frontend Receipt Details ========= **/
+  // This field ensures all data needed by the receipt modal is easily accessible
+  receiptDetails: { type: ReceiptDetailsSchema },
 
   /** ========= Internal transfer ========= **/
   recipientUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -180,18 +216,124 @@ transactionSchema.index({ cardType: 1, country: 1, status: 1 });
 transactionSchema.index({ isNGNZWithdrawal: 1, status: 1, createdAt: -1 });
 transactionSchema.index({ bankAmount: 1, status: 1 });
 
+// Receipt details indexes for faster frontend queries
+transactionSchema.index({ 'receiptDetails.transactionId': 1 }, { sparse: true });
+transactionSchema.index({ 'receiptDetails.reference': 1 }, { sparse: true });
+transactionSchema.index({ 'receiptDetails.provider': 1 }, { sparse: true });
+
 // Subdoc indexes moved here to avoid duplicates
 transactionSchema.index({ 'ngnzWithdrawal.withdrawalReference': 1 }, { sparse: true });
 transactionSchema.index({ 'ngnzWithdrawal.obiex.reference': 1 }, { sparse: true });
 transactionSchema.index({ 'ngnzWithdrawal.obiex.id': 1 }, { sparse: true });
 transactionSchema.index({ 'ngnzWithdrawal.destination.accountNumberHash': 1 }, { sparse: true });
 
-/** ========= Hooks & Statics ========= **/
+/** ========= Hooks & Methods ========= **/
 
 transactionSchema.pre('save', function (next) {
   this.updatedAt = new Date();
+  
+  // Auto-populate receiptDetails for withdrawals if not already set
+  if (this.isNGNZWithdrawal && !this.receiptDetails && this.ngnzWithdrawal) {
+    this.populateReceiptDetails();
+  }
+  
   next();
 });
+
+/**
+ * Method to populate receiptDetails from transaction data
+ * This ensures the frontend modal has all the data it needs
+ */
+transactionSchema.methods.populateReceiptDetails = function() {
+  const formatCurrency = (amount, currency = 'NGN') => {
+    if (!amount) return '—';
+    const symbol = currency === 'NGN' ? '₦' : currency === 'NGNZ' ? '₦' : '';
+    return `${symbol}${Math.abs(amount).toLocaleString()}`;
+  };
+
+  const formatDate = (date) => {
+    if (!date) return '—';
+    return new Date(date).toLocaleString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  this.receiptDetails = {
+    // Core identifiers
+    transactionId: this.obiexTransactionId || this._id.toString(),
+    reference: this.reference,
+    
+    // Provider info
+    provider: this.ngnzWithdrawal?.provider || this.source || '—',
+    providerStatus: this.ngnzWithdrawal?.obiex?.status,
+    
+    // Bank details (for NGNZ withdrawals)
+    bankName: this.ngnzWithdrawal?.destination?.bankName,
+    accountName: this.ngnzWithdrawal?.destination?.accountName,
+    accountNumber: this.ngnzWithdrawal?.destination?.accountNumberMasked,
+    
+    // Financial details
+    currency: this.currency,
+    amount: formatCurrency(Math.abs(this.amount), this.currency),
+    fee: this.withdrawalFee ? formatCurrency(this.withdrawalFee) : undefined,
+    
+    // Additional details
+    narration: this.narration,
+    date: formatDate(this.createdAt),
+    
+    // Category
+    category: this.isNGNZWithdrawal ? 'withdrawal' : 'utility',
+    
+    // Additional provider-specific fields
+    additionalFields: {
+      obiexId: this.ngnzWithdrawal?.obiex?.id,
+      obiexReference: this.ngnzWithdrawal?.obiex?.reference,
+      amountSentToBank: this.bankAmount ? formatCurrency(this.bankAmount) : undefined,
+      totalAmountDeducted: formatCurrency(Math.abs(this.amount), this.currency),
+    }
+  };
+};
+
+/**
+ * Method to get formatted data for frontend receipt modal
+ */
+transactionSchema.methods.getReceiptData = function() {
+  // Ensure receiptDetails is populated
+  if (!this.receiptDetails) {
+    this.populateReceiptDetails();
+  }
+
+  return {
+    id: this._id.toString(),
+    type: this.type === 'WITHDRAWAL' ? 'Withdrawal' : this.type,
+    status: this.status === 'SUCCESSFUL' ? 'Successful' : this.status,
+    amount: this.receiptDetails.amount,
+    date: this.receiptDetails.date,
+    createdAt: this.createdAt.toISOString(),
+    details: {
+      // All the fields your frontend modal expects
+      transactionId: this.receiptDetails.transactionId,
+      reference: this.receiptDetails.reference,
+      provider: this.receiptDetails.provider,
+      providerStatus: this.receiptDetails.providerStatus,
+      bankName: this.receiptDetails.bankName,
+      accountName: this.receiptDetails.accountName,
+      accountNumber: this.receiptDetails.accountNumber,
+      currency: this.receiptDetails.currency,
+      fee: this.receiptDetails.fee,
+      amount: this.receiptDetails.amount,
+      narration: this.receiptDetails.narration,
+      category: this.receiptDetails.category,
+      
+      // Additional fields that might be useful
+      ...this.receiptDetails.additionalFields
+    }
+  };
+};
 
 /**
  * Static method to create swap transaction pairs

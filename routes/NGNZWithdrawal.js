@@ -82,6 +82,29 @@ function hashAccountNumber(accountNumber) {
 }
 
 /**
+ * Format currency for display
+ */
+function formatCurrency(amount, currency = 'NGN') {
+  if (!amount) return '—';
+  const symbol = currency === 'NGN' ? '₦' : currency === 'NGNZ' ? '₦' : '';
+  return `${symbol}${Math.abs(amount).toLocaleString()}`;
+}
+
+/**
+ * Format date for display
+ */
+function formatDate(date) {
+  if (!date) return '—';
+  return new Date(date).toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/**
  * Compare password pin with user's hashed password pin
  */
 async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
@@ -251,6 +274,29 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         provider: 'OBIEX',
         idempotencyKey: `ngnz-wd-${withdrawalReference}`,
         preparedAt: new Date(),
+      },
+
+      // NEW: Frontend receipt details - all fields the modal needs
+      receiptDetails: {
+        transactionId: withdrawalReference, // Will be updated with Obiex ID if successful
+        reference: withdrawalReference,
+        provider: 'OBIEX',
+        providerStatus: 'PENDING',
+        bankName: destination.bankName,
+        accountName: destination.accountName,
+        accountNumber: maskAccountNumber(destination.accountNumber),
+        currency: 'NGNZ',
+        amount: formatCurrency(totalDeducted, 'NGNZ'),
+        fee: formatCurrency(feeAmount),
+        narration: narration || `NGNZ withdrawal to ${destination.bankName}`,
+        date: formatDate(new Date()),
+        category: 'withdrawal',
+        additionalFields: {
+          amountSentToBank: formatCurrency(amountToObiex),
+          totalAmountDeducted: formatCurrency(totalDeducted, 'NGNZ'),
+          withdrawalFee: formatCurrency(feeAmount),
+          payoutCurrency: 'NGN'
+        }
       },
 
       // Keep metadata for backwards compatibility
@@ -520,7 +566,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     const endTime = new Date();
 
     if (obiexResult.success) {
-      // Update transaction status to SUCCESS + enrich subdoc
+      // Update transaction status to SUCCESS + enrich subdoc + update receipt details
       await Transaction.findByIdAndUpdate(
         transactionId,
         {
@@ -537,7 +583,15 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
             'ngnzWithdrawal.provider': 'OBIEX',
             'ngnzWithdrawal.obiex.id': obiexResult.data?.id,
             'ngnzWithdrawal.obiex.reference': obiexResult.data?.reference,
-            'ngnzWithdrawal.obiex.status': obiexResult.data?.status
+            'ngnzWithdrawal.obiex.status': obiexResult.data?.status,
+
+            // Update receipt details with final Obiex information
+            'receiptDetails.transactionId': obiexResult.data?.id || withdrawalReference,
+            'receiptDetails.providerStatus': obiexResult.data?.status || 'SUCCESSFUL',
+            'receiptDetails.additionalFields.obiexId': obiexResult.data?.id,
+            'receiptDetails.additionalFields.obiexReference': obiexResult.data?.reference,
+            'receiptDetails.additionalFields.obiexStatus': obiexResult.data?.status,
+            'receiptDetails.additionalFields.completedAt': formatDate(new Date()),
           }
         }
       );
@@ -600,7 +654,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
       return { success: true, data: obiexResult.data, amountSent: amountToObiex, feeDeducted: feeAmount };
 
     } else {
-      // Update transaction status to FAILED + subdoc failure fields
+      // Update transaction status to FAILED + subdoc failure fields + update receipt details
       await Transaction.findByIdAndUpdate(
         transactionId,
         {
@@ -611,7 +665,13 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
             'metadata.obiexStatusCode': obiexResult.statusCode,
 
             'ngnzWithdrawal.failedAt': new Date(),
-            'ngnzWithdrawal.failureReason': obiexResult.message || 'UNKNOWN_ERROR'
+            'ngnzWithdrawal.failureReason': obiexResult.message || 'UNKNOWN_ERROR',
+
+            // Update receipt details for failed transaction
+            'receiptDetails.providerStatus': 'FAILED',
+            'receiptDetails.additionalFields.failureReason': obiexResult.message,
+            'receiptDetails.additionalFields.statusCode': obiexResult.statusCode,
+            'receiptDetails.additionalFields.failedAt': formatDate(new Date()),
           }
         }
       );
@@ -691,7 +751,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
       amountToObiex
     });
 
-    // Update transaction status to FAILED + subdoc failure fields
+    // Update transaction status to FAILED + subdoc failure fields + update receipt details
     await Transaction.findByIdAndUpdate(
       transactionId,
       {
@@ -701,7 +761,13 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
           'metadata.systemError': error.message,
 
           'ngnzWithdrawal.failedAt': new Date(),
-          'ngnzWithdrawal.failureReason': error.message || 'SYSTEM_ERROR'
+          'ngnzWithdrawal.failureReason': error.message || 'SYSTEM_ERROR',
+
+          // Update receipt details for system error
+          'receiptDetails.providerStatus': 'FAILED',
+          'receiptDetails.additionalFields.failureReason': error.message,
+          'receiptDetails.additionalFields.errorType': 'SYSTEM_ERROR',
+          'receiptDetails.additionalFields.failedAt': formatDate(new Date()),
         }
       }
     );
@@ -1065,6 +1131,9 @@ router.post('/withdraw', async (req, res) => {
     const endTime = new Date();
 
     if (obiexResult.success) {
+      // Get the updated transaction with receipt details
+      const updatedTransaction = await Transaction.findById(withdrawalResult.transaction._id);
+      
       // Create successful withdrawal audit
       await createAuditEntry({
         userId,
@@ -1135,7 +1204,10 @@ router.post('/withdraw', async (req, res) => {
           authValidation: {
             twoFactorValidated: true,
             passwordPinValidated: true
-          }
+          },
+          
+          // NEW: Include formatted receipt data for frontend modal
+          receiptData: updatedTransaction ? updatedTransaction.getReceiptData() : null
         }
       });
     } else {
@@ -1362,6 +1434,94 @@ router.get('/status/:withdrawalId', async (req, res) => {
       error: err.stack,
       userId: req.user?.id,
       withdrawalId: req.params?.withdrawalId
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// GET TRANSACTION RECEIPT DATA FOR FRONTEND MODAL
+router.get('/receipt/:transactionId', async (req, res) => {
+  const systemContext = getSystemContext(req);
+  
+  try {
+    const userId = req.user.id;
+    const { transactionId } = req.params;
+
+    const transaction = await Transaction.findOne({
+      $or: [
+        { _id: transactionId, userId },
+        { reference: transactionId, userId },
+        { obiexTransactionId: transactionId, userId }
+      ]
+    });
+
+    if (!transaction) {
+      // Simple audit for not found
+      setImmediate(async () => {
+        await createAuditEntry({
+          userId,
+          eventType: 'USER_ACTION',
+          status: 'FAILED',
+          source: 'API_ENDPOINT',
+          action: 'Transaction Receipt Not Found',
+          description: `Transaction receipt request failed - transaction not found: ${transactionId}`,
+          errorDetails: {
+            message: 'Transaction not found',
+            code: 'TRANSACTION_NOT_FOUND'
+          },
+          systemContext,
+          tags: ['receipt', 'transaction', 'not-found']
+        });
+      });
+
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+
+    // Simple audit for receipt access
+    setImmediate(async () => {
+      await createAuditEntry({
+        userId,
+        transactionId: transaction._id,
+        eventType: 'USER_ACTION',
+        status: 'SUCCESS',
+        source: 'API_ENDPOINT',
+        action: 'Access Transaction Receipt',
+        description: `Retrieved transaction receipt for ${transactionId}`,
+        systemContext,
+        tags: ['receipt', 'transaction', 'access']
+      });
+    });
+
+    return res.json({
+      success: true,
+      data: transaction.getReceiptData(),
+      raw: {
+        // Include raw transaction data that your frontend might need for fallback
+        _id: transaction._id,
+        transactionId: transaction.obiexTransactionId,
+        reference: transaction.reference,
+        status: transaction.status,
+        amount: transaction.amount,
+        currency: transaction.currency,
+        ngnzWithdrawal: transaction.ngnzWithdrawal,
+        metadata: transaction.metadata,
+        createdAt: transaction.createdAt,
+        completedAt: transaction.completedAt
+      }
+    });
+
+  } catch (err) {
+    logger.error('Transaction receipt endpoint error', {
+      error: err.stack,
+      userId: req.user?.id,
+      transactionId: req.params?.transactionId
     });
 
     return res.status(500).json({
