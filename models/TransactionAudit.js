@@ -156,7 +156,7 @@ const transactionAuditSchema = new mongoose.Schema({
     provider: String,
     swapType: {
       type: String,
-      enum: ['CRYPTO_TO_CRYPTO', 'CRYPTO_TO_FIAT', 'CRYPTO_TO_NGNX', 'INTERNAL', 'OBIEX']
+      enum: ['CRYPTO_TO_CRYPTO', 'CRYPTO_TO_FIAT', 'CRYPTO_TO_NGNX', 'INTERNAL', 'OBIEX', 'OFFRAMP']
     }
   },
   
