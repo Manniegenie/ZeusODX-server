@@ -1,118 +1,49 @@
+// routes/deposits.js
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const QRCode = require('qrcode'); // npm install qrcode
 const User = require('../models/user');
-const { generateWalletBySchemaKey } = require("../utils/generatewallets"); // Import single wallet generation utility
-const logger = require('../utils/logger'); // Import logger
+const logger = require('../utils/logger');
 
-// Mapping between token/network combinations and schema wallet keys (DOGE removed)
-const WALLET_KEY_MAPPING = {
-  // Bitcoin
-  'BTC_BTC': 'BTC_BTC',
-  'BTC_BITCOIN': 'BTC_BTC',
-  
-  // Ethereum
-  'ETH_ETH': 'ETH_ETH',
-  'ETH_ETHEREUM': 'ETH_ETH',
-  
-  // Solana
-  'SOL_SOL': 'SOL_SOL',
-  'SOL_SOLANA': 'SOL_SOL',
-  
-  // USDT variants
-  'USDT_ETH': 'USDT_ETH',
-  'USDT_ETHEREUM': 'USDT_ETH',
-  'USDT_ERC20': 'USDT_ETH',
-  'USDT_TRX': 'USDT_TRX',
-  'USDT_TRON': 'USDT_TRX',
-  'USDT_TRC20': 'USDT_TRX',
-  'USDT_BSC': 'USDT_BSC',
-  'USDT_BEP20': 'USDT_BSC',
-  'USDT_BINANCE': 'USDT_BSC',
-  
-  // USDC variants
-  'USDC_ETH': 'USDC_ETH',
-  'USDC_ETHEREUM': 'USDC_ETH',
-  'USDC_ERC20': 'USDC_ETH',
-  'USDC_BSC': 'USDC_BSC',
-  'USDC_BEP20': 'USDC_BSC',
-  'USDC_BINANCE': 'USDC_BSC',
-  
-  // BNB variants
-  'BNB_ETH': 'BNB_ETH',
-  'BNB_ETHEREUM': 'BNB_ETH',
-  'BNB_ERC20': 'BNB_ETH',
-  'BNB_BSC': 'BNB_BSC',
-  'BNB_BEP20': 'BNB_BSC',
-  'BNB_BINANCE': 'BNB_BSC',
-  
-  // Polygon (MATIC)
-  'MATIC_ETH': 'MATIC_ETH',
-  'MATIC_ETHEREUM': 'MATIC_ETH',
-  'MATIC_ERC20': 'MATIC_ETH',
-  'MATIC_POLYGON': 'MATIC_ETH',
-  
-  // Avalanche
-  'AVAX_BSC': 'AVAX_BSC',
-  'AVAX_BEP20': 'AVAX_BSC',
-  'AVAX_BINANCE': 'AVAX_BSC',
-  'AVAX_AVALANCHE': 'AVAX_BSC',
-  
-  // NGNB (no network suffix in schema)
-  'NGNB_NGNB': 'NGNB',
-  'NGNB': 'NGNB',
+// Import utils from your generatewallets util
+const {
+  generateWalletBySchemaKey,
+  getSchemaKeyFromNetworkId,
+  getAvailableNetworks,
+  CURRENCY_NETWORK_TO_SCHEMA
+} = require('../utils/generatewallets');
+
+// Helper: build a supported tokens map dynamically from getAvailableNetworks
+const buildSupportedTokens = () => {
+  const map = {};
+  // CURRENCY_NETWORK_TO_SCHEMA keys are like "ETH_ARBITRUM"
+  Object.keys(CURRENCY_NETWORK_TO_SCHEMA).forEach(key => {
+    const [currency, network] = key.split('_');
+    if (!map[currency]) map[currency] = new Set();
+    map[currency].add(network);
+  });
+  // convert sets to arrays
+  return Object.fromEntries(Object.entries(map).map(([k, set]) => [k, Array.from(set)]));
 };
 
-// Supported tokens and their networks (DOGE removed to match utility)
-const SUPPORTED_TOKENS = {
-  'BTC': ['BTC', 'BITCOIN'],
-  'ETH': ['ETH', 'ETHEREUM'],
-  'SOL': ['SOL', 'SOLANA'],
-  'USDT': ['ETH', 'ETHEREUM', 'ERC20', 'TRX', 'TRON', 'TRC20', 'BSC', 'BEP20', 'BINANCE'],
-  'USDC': ['ETH', 'ETHEREUM', 'ERC20', 'BSC', 'BEP20', 'BINANCE'],
-  'BNB': ['ETH', 'ETHEREUM', 'ERC20', 'BSC', 'BEP20', 'BINANCE'],
-  'MATIC': ['ETH', 'ETHEREUM', 'ERC20', 'POLYGON'],
-  'AVAX': ['BSC', 'BEP20', 'BINANCE', 'AVALANCHE'],
-  'NGNB': ['NGNB', ''] // NGNB can be without network or with NGNB as network
-};
+const SUPPORTED_TOKENS = buildSupportedTokens();
 
-// Helper function to get the correct wallet key from schema
-function getWalletKey(tokenSymbol, network) {
-  const key1 = `${tokenSymbol}_${network}`;
-  const key2 = tokenSymbol; // For tokens like NGNB that don't have network suffix
-  
-  return WALLET_KEY_MAPPING[key1] || WALLET_KEY_MAPPING[key2] || null;
-}
-
-// Helper function to validate token and network combination
-function isValidTokenNetworkCombo(tokenSymbol, network) {
-  const supportedNetworks = SUPPORTED_TOKENS[tokenSymbol];
-  if (!supportedNetworks) return false;
-  
-  // Special case for NGNB
-  if (tokenSymbol === 'NGNB') {
-    return network === 'NGNB' || network === '';
-  }
-  
-  return supportedNetworks.includes(network);
-}
-
-// Function to generate a single wallet for a specific token/network
-const generateSingleWalletForUser = async (userId, email, walletKey) => {
+// Function to generate a single wallet for a specific token/network and save to user
+const generateSingleWalletForUser = async (userId, email, schemaKey) => {
   try {
-    logger.info('Starting single wallet generation', { 
-      userId, 
-      email, 
-      walletKey 
+    logger.info('Starting single wallet generation', {
+      userId,
+      email,
+      schemaKey
     });
 
-    // Generate the wallet using the new utility function
-    const walletData = await generateWalletBySchemaKey(email, userId, walletKey);
+    // Generate wallet using util
+    const walletData = await generateWalletBySchemaKey(email, userId, schemaKey);
 
-    // Update user with the specific wallet address
+    // Update user with the specific wallet address (save under wallets.<schemaKey>)
     const updateData = {
-      [`wallets.${walletKey}`]: walletData
+      [`wallets.${schemaKey}`]: walletData
     };
 
     await User.findByIdAndUpdate(userId, updateData);
@@ -120,17 +51,16 @@ const generateSingleWalletForUser = async (userId, email, walletKey) => {
     logger.info('Single wallet generation completed successfully', {
       userId,
       email,
-      walletKey,
+      schemaKey,
       address: walletData.address
     });
 
     return walletData;
-
   } catch (error) {
     logger.error('Single wallet generation failed', {
       userId,
       email,
-      walletKey,
+      schemaKey,
       error: error.message,
       stack: error.stack
     });
@@ -162,7 +92,7 @@ router.post(
       .notEmpty()
       .withMessage('Network is required.')
       .custom((value, { req }) => {
-        // Allow alphanumeric characters and underscores for network names
+        // allow letters, numbers, underscores
         if (!/^[A-Za-z0-9_]+$/.test(value)) {
           throw new Error('Network must contain only letters, numbers, and underscores.');
         }
@@ -173,11 +103,21 @@ router.post(
       .toUpperCase()
       .custom((value, { req }) => {
         const tokenSymbol = req.body.tokenSymbol?.toUpperCase();
-        if (tokenSymbol && !isValidTokenNetworkCombo(tokenSymbol, value)) {
-          const supportedNetworks = SUPPORTED_TOKENS[tokenSymbol] || [];
-          throw new Error(`Invalid network ${value} for token ${tokenSymbol}. Supported networks: ${supportedNetworks.join(', ')}`);
+        if (!tokenSymbol) return true;
+
+        // Use getSchemaKeyFromNetworkId (which will throw if unsupported) for validation
+        try {
+          // If this throws, it's an unsupported combo
+          const schemaKey = getSchemaKeyFromNetworkId(tokenSymbol, value);
+          // Ensure schemaKey exists in your canonical map (redundant but explicit)
+          if (!CURRENCY_NETWORK_TO_SCHEMA[schemaKey]) {
+            throw new Error(`Unsupported network ${value} for token ${tokenSymbol}`);
+          }
+          return true;
+        } catch (err) {
+          const supported = SUPPORTED_TOKENS[tokenSymbol] || [];
+          throw new Error(`Invalid network ${value} for token ${tokenSymbol}. Supported networks: ${supported.join(', ')}`);
         }
-        return true;
       }),
   ],
   async (req, res) => {
@@ -212,41 +152,43 @@ router.post(
         });
       }
 
-      // 2. Get the correct wallet key from schema mapping
-      const walletKey = getWalletKey(tokenSymbol, network);
-      
-      if (!walletKey) {
+      // 2. Determine schemaKey using the canonical util
+      let schemaKey;
+      try {
+        schemaKey = getSchemaKeyFromNetworkId(tokenSymbol, network);
+      } catch (err) {
+        logger.warn('Invalid token/network combo attempted', { tokenSymbol, network, userId });
         return res.status(400).json({
           success: false,
           message: `Invalid token/network combination: ${tokenSymbol}/${network}`,
-          supportedCombinations: Object.keys(WALLET_KEY_MAPPING)
+          supportedNetworks: SUPPORTED_TOKENS[tokenSymbol] || []
         });
       }
 
-      let wallet = user.wallets[walletKey];
+      // 3. Check if wallet exists on user model
+      let wallet = user.wallets?.[schemaKey];
 
-      // 3. Check if wallet exists and has an address
-      if (!wallet || !wallet.address) {
-        // Generate wallet on-demand
+      const wasPresentBefore = !!(wallet && wallet.address);
+
+      // 4. If missing or no address, generate on-demand
+      if (!wasPresentBefore) {
         logger.info('Wallet address not found, generating on-demand', {
           userId,
           tokenSymbol,
           network,
-          walletKey
+          schemaKey
         });
 
         try {
-          // Generate the wallet for this specific token/network
-          wallet = await generateSingleWalletForUser(userId, user.email, walletKey);
-          
+          wallet = await generateSingleWalletForUser(userId, user.email, schemaKey);
+
           logger.info('Wallet generated successfully on-demand', {
             userId,
             tokenSymbol,
             network,
-            walletKey,
+            schemaKey,
             address: wallet.address
           });
-
         } catch (generationError) {
           logger.error('Failed to generate wallet on-demand', {
             userId,
@@ -263,7 +205,7 @@ router.post(
         }
       }
 
-      // 4. At this point, we should have a valid wallet
+      // 5. At this point, we should have a valid wallet
       if (!wallet || !wallet.address) {
         return res.status(500).json({
           success: false,
@@ -271,10 +213,9 @@ router.post(
         });
       }
 
-      // 5. Generate QR code for the wallet address
+      // 6. Generate QR code for the wallet address (best-effort)
       let qrCodeData = null;
       try {
-        // Generate QR code as base64 data URL
         qrCodeData = await QRCode.toDataURL(wallet.address, {
           type: 'image/png',
           quality: 0.92,
@@ -287,17 +228,17 @@ router.post(
         });
       } catch (qrError) {
         logger.error('QR code generation failed:', qrError);
-        // Continue without QR code rather than failing the request
+        // don't fail the request
       }
 
-      // 6. Create response data with QR code
+      // 7. Prepare response
       const responseData = {
         token: tokenSymbol,
         network: wallet.network || network,
         address: wallet.address,
         walletReferenceId: wallet.walletReferenceId || null,
-        walletKey: walletKey, // Include the actual schema key used
-        generatedOnDemand: !user.wallets[walletKey] || !user.wallets[walletKey].address, // Indicate if this was generated on-demand
+        walletKey: schemaKey, // canonical schema key used
+        generatedOnDemand: !wasPresentBefore, // true if we generated it now
         qrCode: qrCodeData ? {
           dataUrl: qrCodeData,
           format: 'base64',
@@ -305,7 +246,6 @@ router.post(
         } : null
       };
 
-      // 7. Return deposit address info with QR code
       return res.status(200).json({
         success: true,
         message: 'Deposit address retrieved successfully.',
@@ -327,11 +267,11 @@ router.post(
   }
 );
 
-// GET: List all supported tokens and networks
+// GET: List all supported tokens and networks (derived from canonical util)
 router.get('/supported-tokens', (req, res) => {
-  const supportedCombinations = Object.keys(WALLET_KEY_MAPPING).map(key => {
-    const [token, network] = key.includes('_') ? key.split('_') : [key, ''];
-    return { token, network, walletKey: WALLET_KEY_MAPPING[key] };
+  const supportedCombinations = Object.keys(CURRENCY_NETWORK_TO_SCHEMA).map(key => {
+    const [token, network] = key.split('_');
+    return { token, network, walletKey: CURRENCY_NETWORK_TO_SCHEMA[key] };
   });
 
   return res.status(200).json({
@@ -339,8 +279,8 @@ router.get('/supported-tokens', (req, res) => {
     message: 'Supported token/network combinations retrieved successfully.',
     data: {
       supportedTokens: SUPPORTED_TOKENS,
-      supportedCombinations: supportedCombinations,
-      walletKeyMapping: WALLET_KEY_MAPPING
+      supportedCombinations,
+      walletKeyMapping: CURRENCY_NETWORK_TO_SCHEMA
     }
   });
 });
@@ -358,7 +298,7 @@ router.get('/wallet-status', async (req, res) => {
 
   try {
     const user = await User.findById(userId).select('wallets username');
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -366,16 +306,16 @@ router.get('/wallet-status', async (req, res) => {
       });
     }
 
-    // Get status of all wallets
+    // Get status of all wallets based on canonical mapping
     const walletStatus = {};
     const generatedWallets = [];
     const pendingWallets = [];
 
-    Object.keys(WALLET_KEY_MAPPING).forEach(key => {
-      const walletKey = WALLET_KEY_MAPPING[key];
-      const wallet = user.wallets[walletKey];
-      
-      if (wallet && wallet.address && wallet.address !== null) {
+    Object.keys(CURRENCY_NETWORK_TO_SCHEMA).forEach(key => {
+      const walletKey = CURRENCY_NETWORK_TO_SCHEMA[key];
+      const wallet = user.wallets?.[walletKey];
+
+      if (wallet && wallet.address) {
         walletStatus[key] = {
           status: 'generated',
           address: wallet.address,
@@ -398,16 +338,15 @@ router.get('/wallet-status', async (req, res) => {
       success: true,
       message: 'Wallet status retrieved successfully.',
       data: {
-        userId: userId,
+        userId,
         username: user.username,
         walletsGenerated: generatedWallets.length,
-        totalPossibleWallets: Object.keys(WALLET_KEY_MAPPING).length,
-        generatedWallets: generatedWallets,
-        pendingWallets: pendingWallets,
-        walletStatus: walletStatus
+        totalPossibleWallets: Object.keys(CURRENCY_NETWORK_TO_SCHEMA).length,
+        generatedWallets,
+        pendingWallets,
+        walletStatus
       }
     });
-
   } catch (err) {
     logger.error('Error fetching wallet status:', err);
     return res.status(500).json({
@@ -463,16 +402,15 @@ router.post(
         success: true,
         message: 'QR code generated successfully.',
         data: {
-          address: address,
+          address,
           qrCode: {
             dataUrl: qrCodeData,
             format: 'base64',
             type: 'image/png',
-            size: size
+            size
           }
         }
       });
-
     } catch (err) {
       logger.error('QR code generation error:', err);
       return res.status(500).json({

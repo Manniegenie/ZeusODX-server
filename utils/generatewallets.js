@@ -3,7 +3,7 @@ const logger = require('../utils/logger');
 const { validateObiexConfig } = require('../utils/obiexAuth');
 
 const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 1000; // 1 second
+const RETRY_DELAY_MS = 3000; // 3 second
 
 // Retry wrapper with exponential backoff and jitter
 const retryWithBackoff = async (fn, retries = MAX_RETRIES, delay = RETRY_DELAY_MS) => {
@@ -98,13 +98,17 @@ const generateSingleWallet = async (email, userId, currency, network) => {
   }
 };
 
-// Mapping for currency/network to schema keys (same as in your deposit route)
+// Mapping for currency/network to schema keys (updated with additional ETH networks)
 const CURRENCY_NETWORK_TO_SCHEMA = {
-  // Bitcoin
-  'BTC_BTC': 'BTC_BTC',
+  // Bitcoin variants
+  'BTC_BTC': 'BTC_BTC',           // Bitcoin mainnet
+  'BTC_BSC': 'BTC_BSC',           // Bitcoin on BSC (BEP20)
   
-  // Ethereum
-  'ETH_ETH': 'ETH_ETH',
+  // Ethereum variants
+  'ETH_ETH': 'ETH_ETH',           // Ethereum mainnet
+  'ETH_ARBITRUM': 'ETH_ARBITRUM', // Ethereum on Arbitrum One
+  'ETH_BASE': 'ETH_BASE',         // Ethereum on Base
+  'ETH_BSC': 'ETH_BSC',           // Ethereum on BSC (BEP20)
   
   // Solana
   'SOL_SOL': 'SOL_SOL',
@@ -113,10 +117,17 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   'USDT_ETH': 'USDT_ETH',
   'USDT_TRX': 'USDT_TRX',
   'USDT_BSC': 'USDT_BSC',
+  'USDT_ARBITRUM': 'USDT_ARBITRUM', // USDT on Arbitrum
+  'USDT_BASE': 'USDT_BASE',         // USDT on Base
   
   // USDC variants
-  'USDC_ETH': 'USDC_ETH',
-  'USDC_BSC': 'USDC_BSC',
+  'USDC_ETH': 'USDC_ETH',           // USDC on Ethereum
+  'USDC_BSC': 'USDC_BSC',           // USDC on BSC
+  'USDC_ARBITRUM': 'USDC_ARBITRUM', // USDC on Arbitrum
+  'USDC_BASE': 'USDC_BASE',         // USDC on Base
+  'USDC_AVAX': 'USDC_AVAX',         // USDC on Avalanche C-Chain
+  'USDC_POLYGON': 'USDC_POLYGON',   // USDC on Polygon (MATIC)
+  'USDC_SOL': 'USDC_SOL',           // USDC on Solana
   
   // BNB variants
   'BNB_ETH': 'BNB_ETH',
@@ -124,9 +135,11 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   
   // Polygon (MATIC)
   'MATIC_ETH': 'MATIC_ETH',
+  'MATIC_ARBITRUM': 'MATIC_ARBITRUM', // MATIC on Arbitrum (if supported)
   
   // Avalanche
   'AVAX_BSC': 'AVAX_BSC',
+  'AVAX_ARBITRUM': 'AVAX_ARBITRUM',   // AVAX on Arbitrum (if supported)
 };
 
 // Function to get the correct currency/network for obiex from schema key
@@ -142,6 +155,47 @@ const getCurrencyNetworkFromSchema = (schemaKey) => {
   const [currency, network] = currencyNetwork.split('_');
   
   return { currency, network };
+};
+
+// Helper function to get schema key from network ID (for frontend integration)
+const getSchemaKeyFromNetworkId = (currency, networkId) => {
+  const networkMap = {
+    'ethereum': 'ETH',
+    'arbitrum': 'ARBITRUM', 
+    'base': 'BASE',
+    'bsc': 'BSC',
+    'avax': 'AVAX',
+    'polygon': 'POLYGON',
+    'solana': 'SOL'
+  };
+  
+  const network = networkMap[networkId.toLowerCase()] || networkId.toUpperCase();
+  const schemaKey = `${currency.toUpperCase()}_${network}`;
+  
+  if (!CURRENCY_NETWORK_TO_SCHEMA[schemaKey]) {
+    throw new Error(`Unsupported network: ${networkId} for currency: ${currency}`);
+  }
+  
+  return CURRENCY_NETWORK_TO_SCHEMA[schemaKey];
+};
+
+// Function to get available networks for a currency
+const getAvailableNetworks = (currency) => {
+  const currencyUpper = currency.toUpperCase();
+  const availableNetworks = [];
+  
+  Object.keys(CURRENCY_NETWORK_TO_SCHEMA).forEach(key => {
+    const [curr, network] = key.split('_');
+    if (curr === currencyUpper) {
+      availableNetworks.push({
+        currency: curr,
+        network: network,
+        schemaKey: CURRENCY_NETWORK_TO_SCHEMA[key]
+      });
+    }
+  });
+  
+  return availableNetworks;
 };
 
 // Main function to generate wallet by schema key (for use in deposit route)
@@ -168,8 +222,29 @@ const generateWalletBySchemaKey = async (email, userId, schemaKey) => {
   }
 };
 
+// Function to generate wallet by network ID (for frontend routes like /deposits/eth-arbitrum)
+const generateWalletByNetworkId = async (email, userId, currency, networkId) => {
+  try {
+    const schemaKey = getSchemaKeyFromNetworkId(currency, networkId);
+    return await generateWalletBySchemaKey(email, userId, schemaKey);
+  } catch (error) {
+    logger.error('Error generating wallet by network ID', {
+      currency,
+      networkId,
+      email,
+      userId,
+      error: error.message
+    });
+    throw error;
+  }
+};
+
 module.exports = {
   generateSingleWallet,
   generateWalletBySchemaKey,
-  getCurrencyNetworkFromSchema
+  generateWalletByNetworkId,
+  getCurrencyNetworkFromSchema,
+  getSchemaKeyFromNetworkId,
+  getAvailableNetworks,
+  CURRENCY_NETWORK_TO_SCHEMA
 };

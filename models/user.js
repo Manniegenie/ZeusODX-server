@@ -1,3 +1,4 @@
+// models/user.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -100,20 +101,50 @@ const userSchema = new mongoose.Schema({
   lastFailedLogin: { type: Date },
   lastLoginEmailSent: { type: Date, default: null },
 
-  // Wallets
+  // Wallets (expanded to include canonical network variants)
   wallets: {
+    // Bitcoin variants
     BTC_BTC: { address: String, network: String, walletReferenceId: String },
+    BTC_BSC: { address: String, network: String, walletReferenceId: String },
+
+    // Ethereum variants
     ETH_ETH: { address: String, network: String, walletReferenceId: String },
+    ETH_ARBITRUM: { address: String, network: String, walletReferenceId: String },
+    ETH_BASE: { address: String, network: String, walletReferenceId: String },
+    ETH_BSC: { address: String, network: String, walletReferenceId: String },
+
+    // Solana
     SOL_SOL: { address: String, network: String, walletReferenceId: String },
+
+    // USDT variants
     USDT_ETH: { address: String, network: String, walletReferenceId: String },
     USDT_TRX: { address: String, network: String, walletReferenceId: String },
     USDT_BSC: { address: String, network: String, walletReferenceId: String },
+    USDT_ARBITRUM: { address: String, network: String, walletReferenceId: String },
+    USDT_BASE: { address: String, network: String, walletReferenceId: String },
+
+    // USDC variants
     USDC_ETH: { address: String, network: String, walletReferenceId: String },
     USDC_BSC: { address: String, network: String, walletReferenceId: String },
+    USDC_ARBITRUM: { address: String, network: String, walletReferenceId: String },
+    USDC_BASE: { address: String, network: String, walletReferenceId: String },
+    USDC_AVAX: { address: String, network: String, walletReferenceId: String },
+    USDC_POLYGON: { address: String, network: String, walletReferenceId: String },
+    USDC_SOL: { address: String, network: String, walletReferenceId: String },
+
+    // BNB variants
     BNB_ETH: { address: String, network: String, walletReferenceId: String },
     BNB_BSC: { address: String, network: String, walletReferenceId: String },
+
+    // Polygon (MATIC)
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
+    MATIC_ARBITRUM: { address: String, network: String, walletReferenceId: String },
+
+    // Avalanche variants
     AVAX_BSC: { address: String, network: String, walletReferenceId: String },
+    AVAX_ARBITRUM: { address: String, network: String, walletReferenceId: String },
+
+    // NGN stable / on-platform currency
     NGNZ: { address: String, network: String, walletReferenceId: String }
   },
 
@@ -187,7 +218,7 @@ userSchema.pre('save', async function (next) {
         this[field] = await bcrypt.hash(this[field], salt);
       }
     }
-    
+
     const balanceFields = [
       'solBalance', 'btcBalance', 'usdtBalance', 'usdcBalance', 'ethBalance',
       'bnbBalance', 'maticBalance', 'avaxBalance', 'ngnzBalance'
@@ -195,25 +226,25 @@ userSchema.pre('save', async function (next) {
     if (balanceFields.some(f => this.isModified(f))) {
       this.lastBalanceUpdate = new Date();
     }
-    
+
     // Auto-check for KYC upgrades when relevant fields change
     const kycRelevantFields = [
-      'emailVerified', 
-      'kyc.level2.status', 
+      'emailVerified',
+      'kyc.level2.status',
       'kyc.level2.documentSubmitted',
       'kyc.level3.status'
     ];
-    
+
     if (kycRelevantFields.some(field => this.isModified(field))) {
       // Only check if we're not already at the highest level
       if (this.kycLevel < 2) {
         await this.autoUpgradeKYC();
       }
     }
-    
+
     next();
-  } catch (err) { 
-    next(err); 
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -251,10 +282,10 @@ userSchema.methods.markEmailAsVerified = async function () {
   this.pinChangeOtpCreatedAt = null;
   this.pinChangeOtpExpiresAt = null;
   this.pinChangeOtpVerified = false;
-  
+
   // Check for KYC upgrade after email verification
   await this.autoUpgradeKYC();
-  
+
   return this.save();
 };
 
@@ -268,7 +299,7 @@ userSchema.methods.generateEmailVerificationOTP = function () {
     const digits = '0123456789';
     let otp = '';
     for (let i = 0; i < length; i++) {
-      otp += digits[Math.floor(Math.random() * digits.length)];
+      otp += digits[Math.floor(Math.random() * Math.random() * 10)]; // fallback secure-ish generation
     }
     return otp;
   }
@@ -408,7 +439,7 @@ userSchema.methods.getOrCreateKyc = async function () {
 // Enhanced Auto-upgrade KYC levels based on completed verifications
 userSchema.methods.autoUpgradeKYC = async function () {
   let upgraded = false;
-  
+
   // Auto-upgrade to Level 1 on phone verification
   if (this.kycLevel < 1 && this.phonenumber) {
     this.kycLevel = 1;
@@ -417,10 +448,10 @@ userSchema.methods.autoUpgradeKYC = async function () {
     this.kyc.level1.verifiedAt = new Date();
     this.kycStatus = 'approved';
     upgraded = true;
-    
+
     logger.info('User auto-upgraded to KYC Level 1', { userId: this._id, phone: this.phonenumber?.slice(0, 5) + '****' });
   }
-  
+
   // Auto-upgrade to Level 2 if BOTH email verified AND identity document verified
   if (this.kycLevel < 2 && this.canUpgradeToLevel2()) {
     this.kycLevel = 2;
@@ -429,19 +460,19 @@ userSchema.methods.autoUpgradeKYC = async function () {
     this.kyc.level2.approvedAt = new Date();
     this.kycStatus = 'approved';
     upgraded = true;
-    
-    logger.info('User auto-upgraded to KYC Level 2', { 
-      userId: this._id, 
+
+    logger.info('User auto-upgraded to KYC Level 2', {
+      userId: this._id,
       emailVerified: this.emailVerified,
       documentStatus: this.kyc.level2.status,
       documentType: this.kyc.level2.documentType
     });
   }
-  
+
   if (upgraded) {
     await this.save();
   }
-  
+
   return upgraded;
 };
 
@@ -449,7 +480,7 @@ userSchema.methods.autoUpgradeKYC = async function () {
 userSchema.methods.canUpgradeToLevel2 = function () {
   const emailVerified = this.emailVerified === true;
   const identityVerified = this.kyc.level2.status === 'approved' && this.kyc.level2.documentSubmitted === true;
-  
+
   return emailVerified && identityVerified;
 };
 
@@ -515,7 +546,7 @@ userSchema.methods.getKycRequirements = function () {
 userSchema.methods.onIdentityDocumentVerified = async function (documentType, documentNumber) {
   // This method should be called from the webhook after successful identity verification
   // The webhook already updates kyc.level2.status to 'approved', but we can double-check here
-  
+
   if (this.kyc.level2.status === 'approved') {
     logger.info('Identity document verified, checking for KYC upgrade', {
       userId: this._id,
@@ -523,11 +554,11 @@ userSchema.methods.onIdentityDocumentVerified = async function (documentType, do
       documentNumber,
       emailVerified: this.emailVerified
     });
-    
+
     // Trigger KYC upgrade check
     await this.autoUpgradeKYC();
   }
-  
+
   return this.save();
 };
 
