@@ -223,6 +223,17 @@ function formatStatus(status, type = 'token') {
 }
 
 function formatAmount(amount, currency, type = '', isNegative = false) {
+  // ONLY CHANGE: Handle SWAP transactions differently - use database amount sign
+  if (type === 'SWAP') {
+    const sign = amount < 0 ? '-' : '+';
+    const absAmount = Math.abs(amount);
+    if (currency === 'NGNB' || currency === 'NGNZ') {
+      return `${sign}₦${absAmount.toLocaleString()}`;
+    }
+    return `${sign}${absAmount} ${currency}`;
+  }
+  
+  // Keep original logic for all other transaction types
   const sign = isNegative ? '-' : '+';
   if (currency === 'NGNB' || currency === 'NGNZ') {
     return `${sign}₦${Math.abs(amount).toLocaleString()}`;
@@ -308,6 +319,7 @@ router.post('/token-specific', async (req, res) => {
     ]);
 
     const formattedTokenTransactions = transactions.map(tx => {
+      // Keep original isNegative logic - no changes
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
       const createdAtISO = new Date(tx.createdAt).toISOString();
       
@@ -416,6 +428,7 @@ router.post('/all-tokens', async (req, res) => {
     ]);
 
     const formattedAllTokens = transactions.map(tx => {
+      // Keep original isNegative logic - no changes
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
       const createdAtISO = new Date(tx.createdAt).toISOString();
       
@@ -687,6 +700,7 @@ router.post('/complete-history', async (req, res) => {
         Transaction.countDocuments(tokenFilter)
       ]);
       const formattedTokens = tokenTxs.map(tx => {
+        // Keep original isNegative logic
         const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
         const createdAtISO = new Date(tx.createdAt).toISOString();
         
