@@ -4,7 +4,7 @@ const Transaction = require('../models/transaction');
 const BillTransaction = require('../models/billstransaction');
 const logger = require('../utils/logger');
 
-// ----------------- helpers added (updated) -----------------
+// ----------------- helpers added (updated for NGNZ) -----------------
 function firstTruthy(...vals) {
   for (const v of vals) {
     if (v !== undefined && v !== null && `${v}`.trim() !== '') return v;
@@ -141,7 +141,6 @@ function formatTransactionWithReceipt(tx, isNegative = false) {
 
   return baseTransaction;
 }
-
 // ------------------------------------------------------
 
 // Helper function to build date range filter
@@ -223,7 +222,7 @@ function formatStatus(status, type = 'token') {
 }
 
 function formatAmount(amount, currency, type = '', isNegative = false) {
-  // ONLY CHANGE: Handle SWAP transactions differently - use database amount sign
+  // Handle SWAP transactions - use database amount sign
   if (type === 'SWAP') {
     const sign = amount < 0 ? '-' : '+';
     const absAmount = Math.abs(amount);
@@ -233,7 +232,7 @@ function formatAmount(amount, currency, type = '', isNegative = false) {
     return `${sign}${absAmount} ${currency}`;
   }
   
-  // Keep original logic for all other transaction types
+  // Original logic for other transactions
   const sign = isNegative ? '-' : '+';
   if (currency === 'NGNB' || currency === 'NGNZ') {
     return `${sign}₦${Math.abs(amount).toLocaleString()}`;
@@ -279,27 +278,15 @@ router.post('/token-specific', async (req, res) => {
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
 
-    const filter = { 
-      userId: userId, 
-      currency: currency.toUpperCase(),
-      type: { $ne: 'OBIEX_SWAP' } // Exclude OBIEX_SWAP transactions
-    };
+    const filter = { userId: userId, currency: currency.toUpperCase() };
     Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
 
     if (type) {
       switch (type.toUpperCase()) {
-        case 'DEPOSIT': 
-          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'], $ne: 'OBIEX_SWAP' }; 
-          break;
-        case 'WITHDRAWAL': 
-          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'], $ne: 'OBIEX_SWAP' }; 
-          break;
-        case 'SWAP': 
-          filter.type = 'SWAP'; 
-          break;
-        case 'GIFTCARD':
-          filter.type = 'GIFTCARD';
-          break;
+        case 'DEPOSIT': filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] }; break;
+        case 'WITHDRAWAL': filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] }; break;
+        case 'SWAP': filter.type = 'SWAP'; break;
+        case 'GIFTCARD': filter.type = 'GIFTCARD'; break;
       }
     }
     if (status) {
@@ -319,7 +306,6 @@ router.post('/token-specific', async (req, res) => {
     ]);
 
     const formattedTokenTransactions = transactions.map(tx => {
-      // Keep original isNegative logic - no changes
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
       const createdAtISO = new Date(tx.createdAt).toISOString();
       
@@ -340,9 +326,22 @@ router.post('/token-specific', async (req, res) => {
           details: shapeGiftCardDetails(tx.toObject())
         };
       }
+
+      // Check if it's an NGNZ withdrawal to use enhanced formatter
+      if (tx.isNGNZWithdrawal && tx.type === 'WITHDRAWAL') {
+        return formatTransactionWithReceipt(tx.toObject(), isNegative);
+      }
       
-      // Use enhanced formatter for other transactions
-      return formatTransactionWithReceipt(tx.toObject(), isNegative);
+      // Original simple formatting for regular transactions
+      return {
+        id: tx._id,
+        type: formatTransactionType(tx.type),
+        status: formatStatus(tx.status),
+        amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
+        date: formatDate(tx.createdAt),      // human-readable, Lagos time
+        createdAt: createdAtISO,             // raw ISO for client-side TZ formatting/sorting
+        details: shapeTokenDetails(tx.toObject())
+      };
     });
 
     return res.status(200).json({
@@ -389,26 +388,15 @@ router.post('/all-tokens', async (req, res) => {
     const dateFrom = body.dateFrom || defaultRange.dateFrom;
     const dateTo = body.dateTo || defaultRange.dateTo;
 
-    const filter = { 
-      userId: userId,
-      type: { $ne: 'OBIEX_SWAP' } // Exclude OBIEX_SWAP transactions
-    };
+    const filter = { userId: userId };
     Object.assign(filter, buildDateRangeFilter(dateFrom, dateTo));
 
     if (type) {
       switch (type.toUpperCase()) {
-        case 'DEPOSIT': 
-          filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'], $ne: 'OBIEX_SWAP' }; 
-          break;
-        case 'WITHDRAWAL': 
-          filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'], $ne: 'OBIEX_SWAP' }; 
-          break;
-        case 'SWAP': 
-          filter.type = 'SWAP'; 
-          break;
-        case 'GIFTCARD':
-          filter.type = 'GIFTCARD';
-          break;
+        case 'DEPOSIT': filter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'] }; break;
+        case 'WITHDRAWAL': filter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'] }; break;
+        case 'SWAP': filter.type = 'SWAP'; break;
+        case 'GIFTCARD': filter.type = 'GIFTCARD'; break;
       }
     }
     if (status) {
@@ -428,7 +416,6 @@ router.post('/all-tokens', async (req, res) => {
     ]);
 
     const formattedAllTokens = transactions.map(tx => {
-      // Keep original isNegative logic - no changes
       const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
       const createdAtISO = new Date(tx.createdAt).toISOString();
       
@@ -446,9 +433,22 @@ router.post('/all-tokens', async (req, res) => {
           details: shapeGiftCardDetails(tx.toObject())
         };
       }
+
+      // Check if it's an NGNZ withdrawal to use enhanced formatter
+      if (tx.isNGNZWithdrawal && tx.type === 'WITHDRAWAL') {
+        return formatTransactionWithReceipt(tx.toObject(), isNegative);
+      }
       
-      // Use enhanced formatter for other transactions
-      return formatTransactionWithReceipt(tx.toObject(), isNegative);
+      // Original simple formatting for regular transactions
+      return {
+        id: tx._id,
+        type: formatTransactionType(tx.type),
+        status: formatStatus(tx.status),
+        amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
+        date: formatDate(tx.createdAt),      // Lagos
+        createdAt: createdAtISO,             // ISO
+        details: shapeTokenDetails(tx.toObject())
+      };
     });
 
     return res.status(200).json({
@@ -646,7 +646,7 @@ router.post('/gift-cards', async (req, res) => {
   }
 });
 
-// POST /api/transactions/complete-history - Get ALL transactions (tokens + utilities + gift cards combined)
+// POST /api/transactions/complete-history - Get ALL transactions (tokens + utilities combined)
 router.post('/complete-history', async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -670,11 +670,7 @@ router.post('/complete-history', async (req, res) => {
     let totalCount = 0;
 
     const dateRangeFilter = buildDateRangeFilter(dateFrom, dateTo);
-    const tokenFilter = { 
-      userId: userId, 
-      type: { $ne: 'OBIEX_SWAP' }, // Exclude OBIEX_SWAP transactions
-      ...dateRangeFilter 
-    };
+    const tokenFilter = { userId: userId, ...dateRangeFilter };
     const billFilter  = { userId: userId, ...dateRangeFilter };
 
     if (status) {
@@ -700,7 +696,6 @@ router.post('/complete-history', async (req, res) => {
         Transaction.countDocuments(tokenFilter)
       ]);
       const formattedTokens = tokenTxs.map(tx => {
-        // Keep original isNegative logic
         const isNegative = tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'GIFTCARD';
         const createdAtISO = new Date(tx.createdAt).toISOString();
         
@@ -718,9 +713,21 @@ router.post('/complete-history', async (req, res) => {
             details: shapeGiftCardDetails(tx.toObject())
           };
         }
+
+        // Check if it's an NGNZ withdrawal to use enhanced formatter
+        if (tx.isNGNZWithdrawal && tx.type === 'WITHDRAWAL') {
+          return formatTransactionWithReceipt(tx.toObject(), isNegative);
+        }
         
-        // Handle other token transactions with enhanced formatting
-        return formatTransactionWithReceipt(tx.toObject(), isNegative);
+        return {
+          id: tx._id,
+          type: formatTransactionType(tx.type),
+          status: formatStatus(tx.status),
+          amount: formatAmount(tx.amount, tx.currency, tx.type, isNegative),
+          date: formatDate(tx.createdAt),   // Lagos
+          createdAt: createdAtISO,          // ISO
+          details: shapeTokenDetails(tx.toObject())
+        };
       });
       allTransactions = [...allTransactions, ...formattedTokens];
       totalCount += tokenCount;
@@ -787,7 +794,7 @@ router.post('/complete-history', async (req, res) => {
   }
 });
 
-// New endpoint specifically for NGNZ withdrawal transactions with full receipt data
+// NGNZ withdrawal endpoint
 router.post('/ngnz-withdrawals', async (req, res) => {
   try {
     const userId = req.user?.id;
