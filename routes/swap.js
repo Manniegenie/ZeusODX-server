@@ -417,17 +417,18 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
       correlationId
     });
 
-    // Step 1: Crypto -> Stablecoin (e.g., BTC -> USDT)
+    // Get currency IDs
     const sourceId = await getCurrencyIdByCode(sourceCurrency);
     const intermediateId = await getCurrencyIdByCode(intermediateToken);
     const targetId = await getCurrencyIdByCode(targetCurrency);
     
-    // Create and accept quote for step 1: crypto -> stablecoin
+    // Step 1: Crypto -> Stablecoin (e.g., BTC -> USDT)
+    // Source: sourceCurrency (crypto), Target: intermediateToken (stablecoin), Side: SELL
     const step1QuoteResult = await createQuote({
-      sourceId,
-      targetId: intermediateId,
-      amount,
-      side: 'SELL'
+      sourceId,                    // Source crypto (e.g., BTC)
+      targetId: intermediateId,    // Target stablecoin (e.g., USDT)
+      amount,                      // Amount of source crypto to sell
+      side: 'SELL'                 // Selling crypto for stablecoin
     });
     
     if (!step1QuoteResult.success) {
@@ -453,11 +454,12 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
     });
     
     // Step 2: Stablecoin -> Crypto (e.g., USDT -> ETH)
+    // Source: targetCurrency (crypto), Target: intermediateToken (stablecoin), Side: BUY
     const step2QuoteResult = await createQuote({
-      sourceId: intermediateId,
-      targetId,
-      amount: intermediateAmount,
-      side: 'SELL'
+      sourceId: targetId,          // Target crypto (e.g., ETH)
+      targetId: intermediateId,    // Intermediate stablecoin (e.g., USDT)
+      amount: intermediateAmount,  // Amount of stablecoin to use
+      side: 'BUY'                  // Buying crypto with stablecoin
     });
     
     if (!step2QuoteResult.success) {
@@ -596,16 +598,35 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
  */
 async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, targetCurrency, amount, correlationId, systemContext, startTime) {
   try {
-    // Get currency IDs for Obiex
-    const sourceId = await getCurrencyIdByCode(sourceCurrency);
-    const targetId = await getCurrencyIdByCode(targetCurrency);
+    // Determine crypto and stablecoin for proper Obiex quote construction
+    const isCryptoToStablecoin = CRYPTOCURRENCIES.has(sourceCurrency.toUpperCase());
     
-    // Create and accept quote for the swap
+    let cryptoCode, stablecoinCode, quoteSide, quoteAmount;
+    
+    if (isCryptoToStablecoin) {
+      // Crypto → Stablecoin (e.g., BTC → USDT)
+      cryptoCode = sourceCurrency;
+      stablecoinCode = targetCurrency;
+      quoteSide = 'SELL'; // Selling crypto for stablecoin
+      quoteAmount = amount; // Amount of crypto to sell
+    } else {
+      // Stablecoin → Crypto (e.g., USDT → BTC)
+      cryptoCode = targetCurrency;
+      stablecoinCode = sourceCurrency;
+      quoteSide = 'BUY'; // Buying crypto with stablecoin
+      quoteAmount = amount; // Amount of stablecoin to use
+    }
+
+    // Get currency IDs for Obiex - crypto as source, stablecoin as target
+    const cryptoId = await getCurrencyIdByCode(cryptoCode);
+    const stablecoinId = await getCurrencyIdByCode(stablecoinCode);
+    
+    // Create and accept quote for the swap (crypto as source, stablecoin as target)
     const quoteResult = await createQuote({
-      sourceId,
-      targetId,
-      amount,
-      side: 'SELL'
+      sourceId: cryptoId,     // Always crypto
+      targetId: stablecoinId, // Always stablecoin
+      amount: quoteAmount,
+      side: quoteSide
     });
     
     if (!quoteResult.success) {
