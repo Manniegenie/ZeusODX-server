@@ -17,7 +17,7 @@ const CACHE_TTL = 30000; // 30 seconds
 const QUOTE_TTL = 30000; // 30 seconds for quotes
 const PRICE_CACHE_TTL = 5000; // 5 seconds for prices
 
-// Pre-compiled token validation - MAINTAINING ORIGINAL TOKEN_MAP STRUCTURE
+// Pre-compiled token validation
 const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX']);
 const TOKEN_MAP = {
   BTC: { name: 'Bitcoin', currency: 'btc' },
@@ -38,7 +38,7 @@ const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'AVAX']);
 const DEFAULT_STABLECOIN = 'USDT';
 
 /**
- * Validate swap pair - now supports crypto-to-crypto via stablecoin routing
+ * Validate swap pair - supports crypto-to-crypto via stablecoin routing
  */
 function validateSwapPair(from, to) {
   const fromUpper = from.toUpperCase();
@@ -70,7 +70,7 @@ function validateSwapPair(from, to) {
     return { success: true, swapType: 'DIRECT' };
   }
   
-  // NEW: Allow crypto to crypto swaps (will be routed through stablecoin)
+  // Allow crypto to crypto swaps (will be routed through stablecoin)
   if (fromIsCrypto && toIsCrypto) {
     return { 
       success: true, 
@@ -102,7 +102,7 @@ async function createCryptoToCryptoQuote(fromCurrency, toCurrency, amount) {
   const to = toCurrency.toUpperCase();
   const intermediate = DEFAULT_STABLECOIN;
   
-  // Step 1: Crypto -> Stablecoin (source is crypto, target is stablecoin)
+  // Step 1: Crypto -> Stablecoin
   const step1Result = await calculateCryptoExchange(from, intermediate, amount);
   if (!step1Result.success) {
     throw new Error(`Failed to calculate ${from} to ${intermediate} exchange`);
@@ -242,7 +242,6 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
           obiexData: obiexResult.data
         });
         
-        // Create success audit entry
         await createAuditEntry({
           userId,
           eventType: 'OBIEX_SWAP_COMPLETED',
@@ -277,7 +276,6 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
           tags: ['background', 'obiex', 'swap', 'success']
         });
         
-        // Optional: Create a record of the Obiex transaction
         await createObiexTransactionRecord(userId, swapId, obiexResult, 'CRYPTO_TO_NGNX', correlationId);
       } else {
         logger.error('Obiex crypto-to-NGNX swap failed', {
@@ -288,7 +286,6 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
           statusCode: obiexResult.statusCode
         });
         
-        // Create failure audit entry
         await createAuditEntry({
           userId,
           eventType: 'OBIEX_SWAP_FAILED',
@@ -327,7 +324,6 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
         });
       }
     } else if (quote.swapType === 'CRYPTO_TO_CRYPTO') {
-      // NEW: Handle crypto-to-crypto swaps via Obiex
       logger.info('Executing Obiex crypto-to-crypto swap in background', {
         userId,
         swapId,
@@ -340,7 +336,6 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
       
       await executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targetCurrency, amount, quote.intermediateToken, correlationId, systemContext, auditStartTime);
     } else {
-      // For regular crypto-to-stablecoin swaps, execute two separate Obiex operations
       logger.info('Executing Obiex crypto-to-stablecoin swap in background', {
         userId,
         swapId,
@@ -364,7 +359,6 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
       stack: error.stack
     });
     
-    // Create error audit entry
     await createAuditEntry({
       userId,
       eventType: 'OBIEX_SWAP_FAILED',
@@ -403,7 +397,7 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
 }
 
 /**
- * NEW: Execute crypto-to-crypto swap via Obiex (two-step process) with auditing
+ * Execute crypto-to-crypto swap via Obiex (two-step process) with auditing
  */
 async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targetCurrency, amount, intermediateToken, correlationId, systemContext, startTime) {
   try {
@@ -423,12 +417,11 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
     const targetId = await getCurrencyIdByCode(targetCurrency);
     
     // Step 1: Crypto -> Stablecoin (e.g., BTC -> USDT)
-    // Source: sourceCurrency (crypto), Target: intermediateToken (stablecoin), Side: SELL
     const step1QuoteResult = await createQuote({
-      sourceId,                    // Source crypto (e.g., BTC)
-      targetId: intermediateId,    // Target stablecoin (e.g., USDT)
-      amount,                      // Amount of source crypto to sell
-      side: 'SELL'                 // Selling crypto for stablecoin
+      sourceId,
+      targetId: intermediateId,
+      amount,
+      side: 'SELL'
     });
     
     if (!step1QuoteResult.success) {
@@ -454,12 +447,11 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
     });
     
     // Step 2: Stablecoin -> Crypto (e.g., USDT -> ETH)
-    // Source: targetCurrency (crypto), Target: intermediateToken (stablecoin), Side: BUY
     const step2QuoteResult = await createQuote({
-      sourceId: targetId,          // Target crypto (e.g., ETH)
-      targetId: intermediateId,    // Intermediate stablecoin (e.g., USDT)
-      amount: intermediateAmount,  // Amount of stablecoin to use
-      side: 'BUY'                  // Buying crypto with stablecoin
+      sourceId: targetId,
+      targetId: intermediateId,
+      amount: intermediateAmount,
+      side: 'BUY'
     });
     
     if (!step2QuoteResult.success) {
@@ -485,7 +477,6 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
         step2QuoteId: step2QuoteResult.quoteId
       });
       
-      // Create success audit entry
       await createAuditEntry({
         userId,
         eventType: 'OBIEX_SWAP_COMPLETED',
@@ -526,7 +517,6 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
         tags: ['background', 'obiex', 'swap', 'crypto-to-crypto', 'success']
       });
       
-      // Create a record of the Obiex transaction
       await createObiexTransactionRecord(userId, swapId, {
         step1QuoteId: step1QuoteResult.quoteId,
         step2QuoteId: step2QuoteResult.quoteId,
@@ -554,7 +544,6 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
       error: error.message
     });
     
-    // Create failure audit entry
     await createAuditEntry({
       userId,
       eventType: 'OBIEX_SWAP_FAILED',
@@ -607,24 +596,24 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
       // Crypto → Stablecoin (e.g., BTC → USDT)
       cryptoCode = sourceCurrency;
       stablecoinCode = targetCurrency;
-      quoteSide = 'SELL'; // Selling crypto for stablecoin
-      quoteAmount = amount; // Amount of crypto to sell
+      quoteSide = 'SELL';
+      quoteAmount = amount;
     } else {
       // Stablecoin → Crypto (e.g., USDT → BTC)
       cryptoCode = targetCurrency;
       stablecoinCode = sourceCurrency;
-      quoteSide = 'BUY'; // Buying crypto with stablecoin
-      quoteAmount = amount; // Amount of stablecoin to use
+      quoteSide = 'BUY';
+      quoteAmount = amount;
     }
 
     // Get currency IDs for Obiex - crypto as source, stablecoin as target
     const cryptoId = await getCurrencyIdByCode(cryptoCode);
     const stablecoinId = await getCurrencyIdByCode(stablecoinCode);
     
-    // Create and accept quote for the swap (crypto as source, stablecoin as target)
+    // Create and accept quote for the swap
     const quoteResult = await createQuote({
-      sourceId: cryptoId,     // Always crypto
-      targetId: stablecoinId, // Always stablecoin
+      sourceId: cryptoId,
+      targetId: stablecoinId,
       amount: quoteAmount,
       side: quoteSide
     });
@@ -648,7 +637,6 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
         obiexData: acceptResult.data
       });
       
-      // Create success audit entry
       await createAuditEntry({
         userId,
         eventType: 'OBIEX_SWAP_COMPLETED',
@@ -662,7 +650,7 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
           targetCurrency,
           sourceAmount: amount,
           provider: 'OBIEX',
-          swapType: 'CRYPTO_TO_STABLECOIN'
+          swapType: 'DIRECT'
         },
         obiexDetails: {
           obiexTransactionId: acceptResult.data?.id || acceptResult.data?.reference,
@@ -674,7 +662,7 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
         relatedEntities: {
           correlationId
         },
-        requestData: { sourceId, targetId, amount, side: 'SELL' },
+        requestData: { sourceId: cryptoId, targetId: stablecoinId, amount: quoteAmount, side: quoteSide },
         responseData: acceptResult.data,
         systemContext,
         timing: {
@@ -685,7 +673,6 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
         tags: ['background', 'obiex', 'swap', 'crypto-to-stablecoin', 'success']
       });
       
-      // Create a record of the Obiex transaction
       await createObiexTransactionRecord(userId, swapId, {
         quoteId: quoteResult.quoteId,
         quoteData: quoteResult.data,
@@ -709,7 +696,6 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
       error: error.message
     });
     
-    // Create failure audit entry
     await createAuditEntry({
       userId,
       eventType: 'OBIEX_SWAP_FAILED',
@@ -728,7 +714,7 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
         targetCurrency,
         sourceAmount: amount,
         provider: 'OBIEX',
-        swapType: 'CRYPTO_TO_STABLECOIN'
+        swapType: 'DIRECT'
       },
       relatedEntities: {
         correlationId
@@ -748,15 +734,15 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
 }
 
 /**
- * Create a transaction record for Obiex operations (optional) with auditing
+ * Create a transaction record for Obiex operations
  */
 async function createObiexTransactionRecord(userId, swapId, obiexResult, swapType, correlationId) {
   try {
     const obiexTransaction = new Transaction({
       userId,
       type: 'OBIEX_SWAP',
-      currency: 'MIXED', // Since it involves multiple currencies
-      amount: 0, // This is a tracking transaction
+      currency: 'MIXED',
+      amount: 0,
       status: 'SUCCESSFUL',
       source: 'OBIEX',
       reference: `OBIEX_${swapId}`,
@@ -781,7 +767,6 @@ async function createObiexTransactionRecord(userId, swapId, obiexResult, swapTyp
       obiexTransactionId: obiexTransaction._id
     });
     
-    // Create audit for transaction record creation
     await createAuditEntry({
       userId,
       transactionId: obiexTransaction._id,
@@ -809,7 +794,6 @@ async function createObiexTransactionRecord(userId, swapId, obiexResult, swapTyp
       error: error.message
     });
     
-    // Create audit for transaction record failure
     await createAuditEntry({
       userId,
       eventType: 'TRANSACTION_CREATED',
@@ -842,14 +826,12 @@ async function getCachedUserBalance(userId, currencies = []) {
     return cached.user;
   }
   
-  // Build select fields dynamically based on needed currencies
   const selectFields = ['_id', 'lastBalanceUpdate', 'portfolioLastUpdated'];
   if (currencies.length > 0) {
     currencies.forEach(currency => {
       selectFields.push(`${currency.toLowerCase()}Balance`);
     });
   } else {
-    // Select all balance fields if no specific currencies requested
     Object.values(TOKEN_MAP).forEach(token => {
       selectFields.push(`${token.currency}Balance`);
     });
@@ -857,11 +839,10 @@ async function getCachedUserBalance(userId, currencies = []) {
   
   const user = await User.findById(userId)
     .select(selectFields.join(' '))
-    .lean(); // Use lean for better performance
+    .lean();
   
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
-    // Auto-cleanup cache
     setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
   }
   
@@ -882,29 +863,35 @@ async function getCachedPrices(currencies) {
   const prices = await getPricesWithCache(currencies);
   priceCache.set(cacheKey, { prices, timestamp: Date.now() });
   
-  // Auto-cleanup cache
   setTimeout(() => priceCache.delete(cacheKey), PRICE_CACHE_TTL);
   
   return prices;
 }
 
-// MAINTAINING ORIGINAL VALIDATION FUNCTION SIGNATURE
+/**
+ * Validate user balance
+ */
 async function validateUserBalance(userId, currency, amount) {
   const user = await getCachedUserBalance(userId, [currency]);
   if (!user) return { success: false, message: 'User not found' };
+  
   const field = `${currency.toLowerCase()}Balance`;
-  const avail = user[field] || 0;
-  if (avail < amount) {
+  const available = user[field] || 0;
+  
+  if (available < amount) {
     return {
       success: false,
-      message: `Insufficient ${currency} balance. Available: ${avail}, Required: ${amount}`,
-      availableBalance: avail
+      message: `Insufficient ${currency} balance. Available: ${available}, Required: ${amount}`,
+      availableBalance: available
     };
   }
-  return { success: true, availableBalance: avail };
+  
+  return { success: true, availableBalance: available };
 }
 
-// MAINTAINING ORIGINAL FUNCTION SIGNATURE BUT OPTIMIZED
+/**
+ * Calculate crypto exchange rates
+ */
 async function calculateCryptoExchange(fromCurrency, toCurrency, amount) {
   const from = fromCurrency.toUpperCase();
   const to = toCurrency.toUpperCase();
@@ -929,7 +916,7 @@ async function calculateCryptoExchange(fromCurrency, toCurrency, amount) {
 }
 
 /**
- * NEW: Execute crypto-to-crypto swap with atomic balance updates, transaction creation, and comprehensive auditing
+ * Execute crypto-to-crypto swap with atomic balance updates
  */
 async function executeCryptoCryptoSwap(userId, quote, correlationId, systemContext) {
   const session = await mongoose.startSession();
@@ -939,26 +926,21 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
   try {
     const { sourceCurrency, targetCurrency, amount, amountReceived, intermediateToken, step1, step2 } = quote;
     
-    // Balance field names
     const fromKey = sourceCurrency.toLowerCase() + 'Balance';
     const toKey = targetCurrency.toLowerCase() + 'Balance';
-    
-    // Generate swap reference
     const swapReference = `CRYPTO_CRYPTO_SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // Get current balances for audit trail
     const userBefore = await User.findById(userId).select(`${fromKey} ${toKey}`).lean();
     
-    // Update balances atomically with balance validation
     const updatedUser = await User.findOneAndUpdate(
       { 
         _id: userId, 
-        [fromKey]: { $gte: amount } // Ensure sufficient balance
+        [fromKey]: { $gte: amount }
       },
       {
         $inc: {
-          [fromKey]: -amount,      // Deduct source currency
-          [toKey]: amountReceived  // Add target currency
+          [fromKey]: -amount,
+          [toKey]: amountReceived
         },
         $set: { 
           lastBalanceUpdate: new Date(),
@@ -976,15 +958,13 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       throw new Error(`Balance update failed - insufficient ${sourceCurrency} balance or user not found`);
     }
 
-    // Clear user cache
     userCache.delete(`user_balance_${userId}`);
 
-    // Create outgoing transaction (debit)
     const swapOutTransaction = new Transaction({
       userId,
       type: 'SWAP',
       currency: sourceCurrency,
-      amount: -amount, // Negative for outgoing
+      amount: -amount,
       status: 'SUCCESSFUL',
       source: 'INTERNAL',
       reference: swapReference,
@@ -1007,12 +987,11 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       }
     });
 
-    // Create incoming transaction (credit)
     const swapInTransaction = new Transaction({
       userId,
       type: 'SWAP',
       currency: targetCurrency,
-      amount: amountReceived, // Positive for incoming
+      amount: amountReceived,
       status: 'SUCCESSFUL',
       source: 'INTERNAL',
       reference: swapReference,
@@ -1035,11 +1014,9 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       }
     });
 
-    // Save both transactions
     await swapOutTransaction.save({ session });
     await swapInTransaction.save({ session });
 
-    // Commit everything
     await session.commitTransaction();
     session.endSession();
     
@@ -1055,15 +1032,11 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       sourceAmount: amount,
       targetAmount: amountReceived,
       overallExchangeRate: amountReceived / amount,
-      newFromBalance: updatedUser[fromKey],
-      newToBalance: updatedUser[toKey],
       outTransactionId: swapOutTransaction._id,
       inTransactionId: swapInTransaction._id
     });
     
-    // Create comprehensive audit entries
     await Promise.all([
-      // Balance update audit
       createAuditEntry({
         userId,
         eventType: 'BALANCE_UPDATED',
@@ -1110,7 +1083,6 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
         tags: ['balance-update', 'swap', 'internal', 'crypto-to-crypto']
       }),
       
-      // Swap completion audit
       createAuditEntry({
         userId,
         eventType: 'SWAP_COMPLETED',
@@ -1164,7 +1136,6 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       quote
     });
     
-    // Create failure audit entry
     await createAuditEntry({
       userId,
       eventType: 'SWAP_FAILED',
@@ -1204,7 +1175,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
 }
 
 /**
- * Execute crypto-to-stablecoin swap with atomic balance updates, transaction creation, and comprehensive auditing
+ * Execute crypto-to-stablecoin swap with atomic balance updates
  */
 async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
   const session = await mongoose.startSession();
@@ -1214,26 +1185,21 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
   try {
     const { sourceCurrency, targetCurrency, amount, amountReceived, type } = quote;
     
-    // Balance field names
     const fromKey = sourceCurrency.toLowerCase() + 'Balance';
     const toKey = targetCurrency.toLowerCase() + 'Balance';
-    
-    // Generate swap reference
     const swapReference = `CRYPTO_SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // Get current balances for audit trail
     const userBefore = await User.findById(userId).select(`${fromKey} ${toKey}`).lean();
     
-    // 1. Update balances atomically with balance validation (like webhook does)
     const updatedUser = await User.findOneAndUpdate(
       { 
         _id: userId, 
-        [fromKey]: { $gte: amount } // Ensure sufficient balance
+        [fromKey]: { $gte: amount }
       },
       {
         $inc: {
-          [fromKey]: -amount,      // Deduct source currency
-          [toKey]: amountReceived  // Add target currency
+          [fromKey]: -amount,
+          [toKey]: amountReceived
         },
         $set: { 
           lastBalanceUpdate: new Date(),
@@ -1251,15 +1217,13 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       throw new Error(`Balance update failed - insufficient ${sourceCurrency} balance or user not found`);
     }
 
-    // Clear user cache
     userCache.delete(`user_balance_${userId}`);
 
-    // 2. Create outgoing transaction (debit) - MAINTAINING ORIGINAL STRUCTURE
     const swapOutTransaction = new Transaction({
       userId,
       type: 'SWAP',
       currency: sourceCurrency,
-      amount: -amount, // Negative for outgoing
+      amount: -amount,
       status: 'SUCCESSFUL',
       source: 'INTERNAL',
       reference: swapReference,
@@ -1279,12 +1243,11 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       }
     });
 
-    // 3. Create incoming transaction (credit) - MAINTAINING ORIGINAL STRUCTURE
     const swapInTransaction = new Transaction({
       userId,
       type: 'SWAP',
       currency: targetCurrency,
-      amount: amountReceived, // Positive for incoming
+      amount: amountReceived,
       status: 'SUCCESSFUL',
       source: 'INTERNAL',
       reference: swapReference,
@@ -1304,11 +1267,9 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       }
     });
 
-    // 4. Save both transactions (could be optimized with insertMany but maintaining original logic)
     await swapOutTransaction.save({ session });
     await swapInTransaction.save({ session });
 
-    // 5. Commit everything
     await session.commitTransaction();
     session.endSession();
     
@@ -1323,15 +1284,11 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       sourceAmount: amount,
       targetAmount: amountReceived,
       exchangeRate: amountReceived / amount,
-      newFromBalance: updatedUser[fromKey],
-      newToBalance: updatedUser[toKey],
       outTransactionId: swapOutTransaction._id,
       inTransactionId: swapInTransaction._id
     });
     
-    // Create comprehensive audit entries
     await Promise.all([
-      // Balance update audit
       createAuditEntry({
         userId,
         eventType: 'BALANCE_UPDATED',
@@ -1362,7 +1319,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           targetAmount: amountReceived,
           exchangeRate: amountReceived / amount,
           provider: 'INTERNAL_EXCHANGE',
-          swapType: 'CRYPTO_TO_STABLECOIN'
+          swapType: 'DIRECT'
         },
         relatedEntities: {
           correlationId,
@@ -1377,14 +1334,13 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
         tags: ['balance-update', 'swap', 'internal']
       }),
       
-      // Swap completion audit
       createAuditEntry({
         userId,
         eventType: 'SWAP_COMPLETED',
         status: 'SUCCESS',
         source: 'INTERNAL_SWAP',
         action: 'Complete Internal Swap',
-        description: `Successfully completed internal crypto-to-stablecoin swap`,
+        description: `Successfully completed internal crypto swap`,
         swapDetails: {
           swapId: swapReference,
           sourceCurrency,
@@ -1393,7 +1349,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           targetAmount: amountReceived,
           exchangeRate: amountReceived / amount,
           provider: 'INTERNAL_EXCHANGE',
-          swapType: 'CRYPTO_TO_STABLECOIN'
+          swapType: 'DIRECT'
         },
         relatedEntities: {
           correlationId,
@@ -1408,7 +1364,6 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
         tags: ['swap', 'internal', 'completed', 'success']
       }),
       
-      // Transaction creation audits
       createAuditEntry({
         userId,
         transactionId: swapOutTransaction._id,
@@ -1473,7 +1428,6 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       quote
     });
     
-    // Create failure audit entry
     await createAuditEntry({
       userId,
       eventType: 'SWAP_FAILED',
@@ -1491,7 +1445,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
         targetCurrency: quote.targetCurrency,
         sourceAmount: quote.amount,
         provider: 'INTERNAL_EXCHANGE',
-        swapType: 'CRYPTO_TO_STABLECOIN'
+        swapType: 'DIRECT'
       },
       relatedEntities: {
         correlationId
@@ -1512,7 +1466,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
   }
 }
 
-// UPDATED QUOTE ENDPOINT WITH CRYPTO-TO-CRYPTO SUPPORT
+// POST /swap/quote - Create swap quote
 router.post('/quote', async (req, res) => {
   const correlationId = generateCorrelationId();
   const systemContext = getSystemContext(req);
@@ -1522,7 +1476,6 @@ router.post('/quote', async (req, res) => {
     const { from, to, amount, side } = req.body;
     const userId = req.user?.id;
     
-    // Create audit for quote request
     await createAuditEntry({
       userId,
       eventType: 'QUOTE_CREATED',
@@ -1541,27 +1494,8 @@ router.post('/quote', async (req, res) => {
       tags: ['quote', 'request']
     });
     
-    // Validation - MAINTAINING ORIGINAL ERROR MESSAGES
+    // Validation
     if (!from || !to || !amount || !side) {
-      await createAuditEntry({
-        userId,
-        eventType: 'QUOTE_CREATED',
-        status: 'FAILED',
-        source: 'API_ENDPOINT',
-        action: 'Failed Quote Validation',
-        description: 'Quote request failed validation - missing required fields',
-        errorDetails: {
-          message: 'Missing required fields: from, to, amount, side',
-          code: 'VALIDATION_ERROR'
-        },
-        requestData: { from, to, amount, side },
-        relatedEntities: {
-          correlationId
-        },
-        systemContext,
-        tags: ['quote', 'validation', 'failed']
-      });
-      
       return res.status(400).json({ 
         success: false, 
         message: 'Missing required fields: from, to, amount, side' 
@@ -1569,25 +1503,6 @@ router.post('/quote', async (req, res) => {
     }
     
     if (typeof amount !== 'number' || amount <= 0) {
-      await createAuditEntry({
-        userId,
-        eventType: 'QUOTE_CREATED',
-        status: 'FAILED',
-        source: 'API_ENDPOINT',
-        action: 'Failed Quote Validation',
-        description: 'Quote request failed validation - invalid amount',
-        errorDetails: {
-          message: 'Invalid amount. Must be a positive number.',
-          code: 'INVALID_AMOUNT'
-        },
-        requestData: { from, to, amount, side },
-        relatedEntities: {
-          correlationId
-        },
-        systemContext,
-        tags: ['quote', 'validation', 'failed']
-      });
-      
       return res.status(400).json({ 
         success: false, 
         message: 'Invalid amount. Must be a positive number.' 
@@ -1595,53 +1510,14 @@ router.post('/quote', async (req, res) => {
     }
     
     if (!['BUY', 'SELL'].includes(side)) {
-      await createAuditEntry({
-        userId,
-        eventType: 'QUOTE_CREATED',
-        status: 'FAILED',
-        source: 'API_ENDPOINT',
-        action: 'Failed Quote Validation',
-        description: 'Quote request failed validation - invalid side',
-        errorDetails: {
-          message: 'Invalid side. Must be BUY or SELL.',
-          code: 'INVALID_SIDE'
-        },
-        requestData: { from, to, amount, side },
-        relatedEntities: {
-          correlationId
-        },
-        systemContext,
-        tags: ['quote', 'validation', 'failed']
-      });
-      
       return res.status(400).json({ 
         success: false, 
         message: 'Invalid side. Must be BUY or SELL.' 
       });
     }
 
-    // NEW: Validate swap pair - now supports crypto-to-crypto
     const pairValidation = validateSwapPair(from, to);
     if (!pairValidation.success) {
-      await createAuditEntry({
-        userId,
-        eventType: 'QUOTE_CREATED',
-        status: 'FAILED',
-        source: 'API_ENDPOINT',
-        action: 'Failed Swap Pair Validation',
-        description: `Invalid swap pair: ${from} to ${to}`,
-        errorDetails: {
-          message: pairValidation.message,
-          code: 'INVALID_SWAP_PAIR'
-        },
-        requestData: { from, to, amount, side },
-        relatedEntities: {
-          correlationId
-        },
-        systemContext,
-        tags: ['quote', 'validation', 'swap-pair', 'failed']
-      });
-      
       return res.status(400).json({ 
         success: false, 
         message: pairValidation.message 
@@ -1650,10 +1526,9 @@ router.post('/quote', async (req, res) => {
 
     let payload;
     const id = `crypto_swap_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const expiresAt = new Date(Date.now() + 30000).toISOString(); // 30 seconds
+    const expiresAt = new Date(Date.now() + 30000).toISOString();
 
     if (pairValidation.swapType === 'CRYPTO_TO_CRYPTO') {
-      // NEW: Handle crypto-to-crypto quote creation
       const cryptoQuote = await createCryptoToCryptoQuote(from, to, amount);
       
       payload = {
@@ -1688,7 +1563,6 @@ router.post('/quote', async (req, res) => {
       });
       
     } else {
-      // Handle direct crypto-to-stablecoin or stablecoin-to-crypto swaps
       const result = await calculateCryptoExchange(from, to, amount);
       
       payload = {
@@ -1720,13 +1594,11 @@ router.post('/quote', async (req, res) => {
       });
     }
 
-    // OPTIMIZED CACHING WITH AUTO-CLEANUP
     quoteCache.set(id, payload);
     setTimeout(() => quoteCache.delete(id), 30000);
     
     const endTime = new Date();
 
-    // Create successful quote audit
     await createAuditEntry({
       userId,
       eventType: 'QUOTE_CREATED',
@@ -1759,7 +1631,6 @@ router.post('/quote', async (req, res) => {
       tags: ['quote', 'created', 'success', payload.swapType?.toLowerCase()]
     });
 
-    // MAINTAINING ORIGINAL RESPONSE STRUCTURE
     return res.json({
       success: true,
       message: `${pairValidation.swapType === 'CRYPTO_TO_CRYPTO' ? 'Crypto-to-crypto' : 'Crypto'} swap quote created successfully`,
@@ -1771,7 +1642,6 @@ router.post('/quote', async (req, res) => {
     
     logger.error('POST /swap/quote error', { error: err.stack, correlationId });
     
-    // Create error audit entry
     await createAuditEntry({
       userId: req.user?.id,
       eventType: 'QUOTE_CREATED',
@@ -1807,7 +1677,7 @@ router.post('/quote', async (req, res) => {
   }
 });
 
-// ENHANCED SWAP EXECUTION ENDPOINT WITH CRYPTO-TO-CRYPTO SUPPORT AND OBIEX INTEGRATION
+// POST /swap/quote/:quoteId - Execute swap
 router.post('/quote/:quoteId', async (req, res) => {
   const systemContext = getSystemContext(req);
   const startTime = new Date();
@@ -1817,10 +1687,8 @@ router.post('/quote/:quoteId', async (req, res) => {
     const userId = req.user.id;
     const quote = quoteCache.get(quoteId);
     
-    // Use existing correlation ID from quote or generate new one
     const correlationId = quote?.correlationId || generateCorrelationId();
 
-    // Create audit for quote acceptance attempt
     await createAuditEntry({
       userId,
       eventType: 'QUOTE_ACCEPTED',
@@ -1841,30 +1709,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       tags: ['quote', 'acceptance', 'pending']
     });
 
-    // MAINTAINING ORIGINAL ERROR HANDLING
     if (!quote) {
-      await createAuditEntry({
-        userId,
-        eventType: 'QUOTE_ACCEPTED',
-        status: 'FAILED',
-        source: 'API_ENDPOINT',
-        action: 'Quote Not Found',
-        description: `Quote ${quoteId} not found or expired`,
-        errorDetails: {
-          message: 'Quote not found or expired',
-          code: 'QUOTE_NOT_FOUND'
-        },
-        swapDetails: {
-          quoteId
-        },
-        relatedEntities: {
-          correlationId
-        },
-        systemContext,
-        riskLevel: 'LOW',
-        tags: ['quote', 'not-found']
-      });
-      
       return res.status(404).json({ 
         success: false, 
         message: 'Quote not found or expired' 
@@ -1873,68 +1718,14 @@ router.post('/quote/:quoteId', async (req, res) => {
 
     if (new Date() > new Date(quote.expiresAt)) {
       quoteCache.delete(quoteId);
-      
-      await createAuditEntry({
-        userId,
-        eventType: 'QUOTE_EXPIRED',
-        status: 'FAILED',
-        source: 'API_ENDPOINT',
-        action: 'Quote Expired',
-        description: `Quote ${quoteId} has expired`,
-        errorDetails: {
-          message: 'Quote has expired',
-          code: 'QUOTE_EXPIRED'
-        },
-        swapDetails: {
-          quoteId,
-          expiresAt: quote.expiresAt
-        },
-        relatedEntities: {
-          correlationId
-        },
-        systemContext,
-        tags: ['quote', 'expired']
-      });
-      
       return res.status(410).json({ 
         success: false, 
         message: 'Quote has expired' 
       });
     }
 
-    // Validate user balance - OPTIMIZED WITH CACHING
     const validation = await validateUserBalance(userId, quote.sourceCurrency, quote.amount);
     if (!validation.success) {
-      await createAuditEntry({
-        userId,
-        eventType: 'BALANCE_SYNC',
-        status: 'FAILED',
-        source: 'API_ENDPOINT',
-        action: 'Insufficient Balance',
-        description: `Insufficient balance for swap: ${validation.message}`,
-        errorDetails: {
-          message: validation.message,
-          code: 'INSUFFICIENT_BALANCE'
-        },
-        financialImpact: {
-          currency: quote.sourceCurrency,
-          amount: quote.amount,
-          balanceBefore: validation.availableBalance
-        },
-        swapDetails: {
-          quoteId,
-          sourceCurrency: quote.sourceCurrency,
-          requiredAmount: quote.amount,
-          availableAmount: validation.availableBalance
-        },
-        relatedEntities: {
-          correlationId
-        },
-        systemContext,
-        riskLevel: 'LOW',
-        tags: ['balance', 'insufficient', 'validation']
-      });
-      
       return res.status(400).json({
         success: false,
         message: validation.message,
@@ -1947,17 +1738,13 @@ router.post('/quote/:quoteId', async (req, res) => {
 
     let swapResult;
 
-    // NEW: Handle different swap types
     if (quote.swapType === 'CRYPTO_TO_CRYPTO') {
-      // Execute crypto-to-crypto swap
       swapResult = await executeCryptoCryptoSwap(userId, quote, correlationId, systemContext);
     } else {
-      // Execute direct swap (crypto-to-stablecoin or stablecoin-to-crypto)
       swapResult = await executeCryptoSwap(userId, quote, correlationId, systemContext);
     }
 
-    // *** Execute Obiex swap in background ***
-    // This runs asynchronously and won't block the response
+    // Execute Obiex swap in background
     setImmediate(() => {
       executeObiexSwapBackground(userId, quote, swapResult.swapId, correlationId, systemContext);
     });
@@ -1972,12 +1759,10 @@ router.post('/quote/:quoteId', async (req, res) => {
       swapInTransactionId: swapResult.swapInTransaction._id
     });
 
-    // Clean up quote from cache
     quoteCache.delete(quoteId);
     
     const endTime = new Date();
 
-    // Create successful quote acceptance audit
     await createAuditEntry({
       userId,
       eventType: 'QUOTE_ACCEPTED',
@@ -2010,7 +1795,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       tags: ['quote', 'accepted', 'success', 'obiex-initiated', quote.swapType?.toLowerCase()]
     });
 
-    // ENHANCED RESPONSE PAYLOAD STRUCTURE
     const responsePayload = {
       swapId: swapResult.swapId,
       quoteId,
@@ -2025,7 +1809,6 @@ router.post('/quote/:quoteId', async (req, res) => {
         provider: quote.provider,
         swapType: quote.swapType,
         intermediateToken: quote.intermediateToken,
-        // NEW: Include step details for crypto-to-crypto swaps
         ...(quote.swapType === 'CRYPTO_TO_CRYPTO' && {
           step1Details: quote.step1,
           step2Details: quote.step2,
@@ -2050,7 +1833,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       }
     };
 
-    // MAINTAINING ORIGINAL RESPONSE STRUCTURE WITH ENHANCED MESSAGE
     return res.json({
       success: true,
       message: `${quote.swapType === 'CRYPTO_TO_CRYPTO' ? 'Crypto-to-crypto' : 'Crypto'} swap completed successfully, Obiex swap initiated in background`,
@@ -2068,7 +1850,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       correlationId
     });
     
-    // Create comprehensive error audit
     await createAuditEntry({
       userId: req.user?.id,
       eventType: 'SWAP_FAILED',
@@ -2106,7 +1887,7 @@ router.post('/quote/:quoteId', async (req, res) => {
   }
 });
 
-// MAINTAINING ORIGINAL TOKENS ENDPOINT STRUCTURE WITH BASIC AUDITING
+// GET /swap/tokens - Get supported tokens
 router.get('/tokens', (req, res) => {
   const systemContext = getSystemContext(req);
   
@@ -2117,7 +1898,6 @@ router.get('/tokens', (req, res) => {
       currency: info.currency
     }));
     
-    // Simple audit for tokens request
     setImmediate(async () => {
       await createAuditEntry({
         userId: req.user?.id,
@@ -2141,7 +1921,6 @@ router.get('/tokens', (req, res) => {
   } catch (err) {
     logger.error('GET /swap/tokens error', { error: err.stack });
     
-    // Error audit for tokens request
     setImmediate(async () => {
       await createAuditEntry({
         userId: req.user?.id,
