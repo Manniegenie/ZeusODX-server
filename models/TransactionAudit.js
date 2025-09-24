@@ -1,3 +1,4 @@
+// transactionauditmodel.js
 const mongoose = require('mongoose');
 
 const transactionAuditSchema = new mongoose.Schema({
@@ -157,7 +158,16 @@ const transactionAuditSchema = new mongoose.Schema({
     provider: String,
     swapType: {
       type: String,
-      enum: ['CRYPTO_TO_CRYPTO', 'CRYPTO_TO_FIAT', 'CRYPTO_TO_NGNX', 'INTERNAL', 'OBIEX', 'OFFRAMP', 'NGNZ_TO_BANK']
+      enum: [
+        'CRYPTO_TO_CRYPTO',
+        'CRYPTO_TO_FIAT',
+        'CRYPTO_TO_NGNX',
+        'INTERNAL',
+        'OBIEX',
+        'OFFRAMP',
+        'NGNZ_TO_BANK',
+        'DIRECT' // <-- ADDED to accept "DIRECT" swapType values from logs
+      ]
     }
   },
   
@@ -296,9 +306,19 @@ transactionAuditSchema.index({ status: 1, riskLevel: 1, flagged: 1 });
 transactionAuditSchema.pre('save', function(next) {
   this.updatedAt = new Date();
   
-  // Calculate duration if endTime is set
-  if (this.timing.endTime && this.timing.startTime) {
-    this.timing.duration = this.timing.endTime - this.timing.startTime;
+  // Calculate duration if endTime is set.
+  // Use Date coercion so string timestamps won't break subtraction.
+  if (this.timing && this.timing.endTime && this.timing.startTime) {
+    try {
+      const start = new Date(this.timing.startTime);
+      const end = new Date(this.timing.endTime);
+      if (!isNaN(start) && !isNaN(end)) {
+        this.timing.duration = end - start;
+      }
+    } catch (e) {
+      // If anything goes wrong, don't block save — leave duration undefined.
+      // Optionally log here.
+    }
   }
   
   next();
@@ -347,7 +367,7 @@ transactionAuditSchema.statics.getAuditStats = function(userId, timeRange = '24h
     '30d': 30 * 24 * 60 * 60 * 1000
   };
   
-  const since = new Date(Date.now() - timeRanges[timeRange]);
+  const since = new Date(Date.now() - (timeRanges[timeRange] || timeRanges['24h']));
   const query = { createdAt: { $gte: since } };
   if (userId) query.userId = userId;
   
@@ -391,7 +411,11 @@ transactionAuditSchema.methods.unflag = function() {
 transactionAuditSchema.methods.setEndTime = function(endTime = new Date()) {
   this.timing.endTime = endTime;
   if (this.timing.startTime) {
-    this.timing.duration = endTime - this.timing.startTime;
+    const start = new Date(this.timing.startTime);
+    const end = new Date(endTime);
+    if (!isNaN(start) && !isNaN(end)) {
+      this.timing.duration = end - start;
+    }
   }
   return this.save();
 };
