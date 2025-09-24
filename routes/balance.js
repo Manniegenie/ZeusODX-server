@@ -1,21 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
-const { getPricesWithCache, SUPPORTED_TOKENS, getOfframpRate } = require('../services/portfolio');
+const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 const logger = require('../utils/logger');
 
 /**
- * OPTIMIZED: Calculate USD balances on-demand using cached prices
+ * UPDATED: Calculate USD balances using portfolio service with automatic markdown
  * @param {Object} user - User document with token balances
  * @returns {Promise<Object>} Object with calculated USD balances and total
  */
 async function calculateUSDBalances(user) {
   try {
-    // Get all supported tokens
+    // Get all supported tokens from portfolio service
     const tokens = Object.keys(SUPPORTED_TOKENS);
     
-    // Get current prices with offramp rate for NGNZ
-    const prices = await getPricesWithCache(tokens, 'portfolio');
+    // Get current prices with automatic markdown application from portfolio service
+    const prices = await getPricesWithCache(tokens);
     
     const calculatedBalances = {};
     let totalPortfolioUSD = 0;
@@ -30,7 +30,7 @@ async function calculateUSDBalances(user) {
       const tokenAmount = user[balanceField] || 0;
       const tokenPrice = prices[token] || 0;
       
-      // Calculate USD value
+      // Calculate USD value (prices already include markdown from portfolio service)
       const usdValue = tokenAmount * tokenPrice;
       
       // Store calculated USD balance
@@ -39,25 +39,32 @@ async function calculateUSDBalances(user) {
       // Add to total portfolio
       totalPortfolioUSD += usdValue;
       
+      // Get token info for logging
+      const tokenInfo = SUPPORTED_TOKENS[token];
+      const hasMarkdown = tokenInfo && !tokenInfo.isStablecoin && !tokenInfo.isNairaPegged;
+      
       logger.debug(`Calculated USD balance for ${token}`, {
         tokenAmount,
         tokenPrice,
         usdValue: calculatedBalances[usdBalanceField],
-        usingDynamicRate: token === 'NGNZ'
+        isStablecoin: tokenInfo?.isStablecoin || false,
+        isNairaPegged: tokenInfo?.isNairaPegged || false,
+        markdownApplied: hasMarkdown
       });
     }
     
     // Set total portfolio balance
     calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
     
-    logger.debug('Calculated total portfolio balance', { 
+    logger.debug('Calculated total portfolio balance with markdown-adjusted prices', { 
       totalPortfolioUSD: calculatedBalances.totalPortfolioBalance,
-      tokensProcessed: tokens.length
+      tokensProcessed: tokens.length,
+      markdownAppliedByPortfolioService: true
     });
     
     return calculatedBalances;
   } catch (error) {
-    logger.error('Error calculating USD balances', { error: error.message });
+    logger.error('Error calculating USD balances with portfolio service', { error: error.message });
     
     // Return zeros if calculation fails
     const fallbackBalances = {};
@@ -90,38 +97,21 @@ router.post('/balance', async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid "types" array in request body' });
     }
 
-    // FIXED: Complete list of allowed balance fields (using NGNZ not NGNB)
-    const allowedFields = [
-      // SOL balances
-      'solBalance', 'solBalanceUSD', 'solPendingBalance',
-      
-      // BTC balances
-      'btcBalance', 'btcBalanceUSD', 'btcPendingBalance',
-      
-      // USDT balances
-      'usdtBalance', 'usdtBalanceUSD', 'usdtPendingBalance',
-      
-      // USDC balances
-      'usdcBalance', 'usdcBalanceUSD', 'usdcPendingBalance',
-      
-      // ETH balances
-      'ethBalance', 'ethBalanceUSD', 'ethPendingBalance',
-      
-      // BNB balances
-      'bnbBalance', 'bnbBalanceUSD', 'bnbPendingBalance',
-      
-      // MATIC balances
-      'maticBalance', 'maticBalanceUSD', 'maticPendingBalance',
-      
-      // AVAX balances
-      'avaxBalance', 'avaxBalanceUSD', 'avaxPendingBalance',
-      
-      // NGNZ balances (FIXED: was ngnbBalance)
-      'ngnzBalance', 'ngnzBalanceUSD', 'ngnzPendingBalance',
-      
-      // Total portfolio
-      'totalPortfolioBalance'
-    ];
+    // Build allowed fields dynamically from SUPPORTED_TOKENS (from portfolio service)
+    const allowedFields = [];
+    
+    // Add balance fields for each supported token
+    for (const token of Object.keys(SUPPORTED_TOKENS)) {
+      const tokenLower = token.toLowerCase();
+      allowedFields.push(
+        `${tokenLower}Balance`,
+        `${tokenLower}BalanceUSD`,
+        `${tokenLower}PendingBalance`
+      );
+    }
+    
+    // Add total portfolio balance
+    allowedFields.push('totalPortfolioBalance');
 
     let finalFields = [];
 
@@ -137,7 +127,7 @@ router.post('/balance', async (req, res) => {
       finalFields = types;
     }
 
-    // OPTIMIZED: Only fetch token balances and pending balances from database
+    // Categorize requested fields
     const tokenFields = [];
     const usdFields = [];
     const pendingFields = [];
@@ -171,7 +161,7 @@ router.post('/balance', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // OPTIMIZED: Calculate USD balances on-demand if needed
+    // Calculate USD balances on-demand if needed (with automatic markdown from portfolio service)
     let calculatedUSDBalances = {};
     if (usdFields.length > 0 || needsTotalPortfolio) {
       calculatedUSDBalances = await calculateUSDBalances(user);
@@ -182,7 +172,7 @@ router.post('/balance', async (req, res) => {
     
     for (const field of finalFields) {
       if (field.endsWith('BalanceUSD') || field === 'totalPortfolioBalance') {
-        // Use calculated USD value
+        // Use calculated USD value (includes markdown from portfolio service)
         response[field] = calculatedUSDBalances[field] || 0;
       } else {
         // Use value from database (token balances, pending balances)
@@ -195,16 +185,19 @@ router.post('/balance', async (req, res) => {
       calculatedAt: new Date().toISOString(),
       usdValuesCalculated: usdFields.length > 0 || needsTotalPortfolio,
       portfolioCalculated: needsTotalPortfolio,
+      markdownAppliedByPortfolioService: usdFields.length > 0 || needsTotalPortfolio,
       lastBalanceUpdate: user.lastBalanceUpdate,
-      portfolioLastUpdated: user.portfolioLastUpdated
+      portfolioLastUpdated: user.portfolioLastUpdated,
+      supportedTokens: Object.keys(SUPPORTED_TOKENS).length
     };
 
-    logger.info('Balances fetched with dynamic USD calculations', { 
+    logger.info('Balances fetched with portfolio service markdown-adjusted USD calculations', { 
       userId, 
       requestedFields: finalFields,
       tokenFieldsFromDB: tokenFields.length,
       usdFieldsCalculated: usdFields.length,
-      totalPortfolioCalculated: needsTotalPortfolio
+      totalPortfolioCalculated: needsTotalPortfolio,
+      markdownApplied: usdFields.length > 0 || needsTotalPortfolio
     });
 
     return res.status(200).json({
@@ -212,11 +205,45 @@ router.post('/balance', async (req, res) => {
       _metadata: metadata
     });
   } catch (error) {
-    logger.error('Error fetching balances with USD calculations', {
+    logger.error('Error fetching balances with portfolio service USD calculations', {
       userId: req.user?.id || 'unknown',
       error: error.message,
       stack: error.stack
     });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/balance/supported-tokens - Get list of supported tokens
+router.get('/supported-tokens', (req, res) => {
+  try {
+    const tokens = Object.entries(SUPPORTED_TOKENS).map(([code, info]) => ({
+      code,
+      isStablecoin: info.isStablecoin || false,
+      isNairaPegged: info.isNairaPegged || false,
+      supportedByJob: info.supportedByJob || false,
+      balanceField: `${code.toLowerCase()}Balance`,
+      usdBalanceField: `${code.toLowerCase()}BalanceUSD`,
+      pendingBalanceField: `${code.toLowerCase()}PendingBalance`
+    }));
+
+    logger.info('Supported tokens retrieved from portfolio service', { 
+      tokenCount: tokens.length,
+      tokens: tokens.map(t => t.code)
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: tokens,
+      total: tokens.length,
+      _metadata: {
+        source: 'portfolio_service',
+        markdownSupported: true,
+        retrievedAt: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching supported tokens', { error: error.message });
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

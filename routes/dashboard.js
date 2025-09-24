@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 const dashboardCache = new Map();
 const priceChangeCache = new Map();
 const DASHBOARD_CACHE_TTL = 30000; // 30 seconds
-const PRICE_CHANGE_CACHE_TTL = 300000; // 5 minutes
+const PRICE_CHANGE_CACHE_TTL = 30000; // 5 minutes
 
 /**
  * Get cached user data with only required fields
