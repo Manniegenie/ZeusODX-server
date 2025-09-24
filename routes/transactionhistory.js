@@ -655,7 +655,7 @@ router.post('/complete-history', async (req, res) => {
     const body = req.body || {};
     const {
       transactionType = 'all',
-      type, // ADDED: Handle the type parameter from frontend
+      type, // Handle the type parameter from frontend
       status,
       page = 1,
       limit = 20,
@@ -678,7 +678,7 @@ router.post('/complete-history', async (req, res) => {
     };
     const billFilter  = { userId: userId, ...dateRangeFilter };
 
-    // ADDED: Handle specific type filtering (Deposit, Transfer/Withdrawal, Swap, etc.)
+    // Handle specific type filtering (Deposit, Transfer/Withdrawal, Swap, etc.)
     if (type) {
       switch (type.toUpperCase()) {
         case 'DEPOSIT': 
@@ -713,11 +713,15 @@ router.post('/complete-history', async (req, res) => {
       }
     }
 
-    // UPDATED: Only fetch tokens if we're not filtering for bill-only types
-    const shouldFetchTokens = !type || ['DEPOSIT', 'WITHDRAWAL', 'SWAP', 'GIFTCARD'].includes(type.toUpperCase());
-    // UPDATED: Only fetch bills if we're not filtering for token-only types OR if filtering for bill types
+    // FIXED: More exclusive logic for what to fetch
     const billCategories = ['AIRTIME', 'DATA', 'CABLE', 'ELECTRICITY'];
-    const shouldFetchBills = !type || billCategories.includes(type.toUpperCase()) || transactionType === 'all';
+    
+    // Only fetch tokens if we're not filtering for bill-only types
+    const shouldFetchTokens = !type || ['DEPOSIT', 'WITHDRAWAL', 'SWAP', 'GIFTCARD'].includes(type.toUpperCase());
+    
+    // FIXED: Only fetch bills if specifically requesting bills or no type filter
+    // Do NOT fetch bills when filtering for specific token types like DEPOSIT/WITHDRAWAL
+    const shouldFetchBills = !type || billCategories.includes(type.toUpperCase());
 
     if ((transactionType === 'all' || transactionType === 'token') && shouldFetchTokens) {
       const [tokenTxs, tokenCount] = await Promise.all([
