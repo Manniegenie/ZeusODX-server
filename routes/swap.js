@@ -34,8 +34,11 @@ const TOKEN_MAP = {
 const STABLECOINS = new Set(['USDT', 'USDC']);
 const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'AVAX']);
 
+// Default stablecoin for routing crypto-to-crypto swaps
+const DEFAULT_STABLECOIN = 'USDT';
+
 /**
- * Validate swap pair - only allow crypto to stablecoin and vice versa
+ * Validate swap pair - now supports crypto-to-crypto via stablecoin routing
  */
 function validateSwapPair(from, to) {
   const fromUpper = from.toUpperCase();
@@ -62,16 +65,18 @@ function validateSwapPair(from, to) {
   const fromIsCrypto = CRYPTOCURRENCIES.has(fromUpper);
   const toIsCrypto = CRYPTOCURRENCIES.has(toUpper);
   
-  // Only allow crypto to stablecoin or stablecoin to crypto
+  // Allow crypto to stablecoin or stablecoin to crypto (direct swaps)
   if ((fromIsCrypto && toIsStablecoin) || (fromIsStablecoin && toIsCrypto)) {
-    return { success: true };
+    return { success: true, swapType: 'DIRECT' };
   }
   
-  // Block crypto to crypto swaps
+  // NEW: Allow crypto to crypto swaps (will be routed through stablecoin)
   if (fromIsCrypto && toIsCrypto) {
-    return {
-      success: false,
-      message: 'Direct crypto-to-crypto swaps are not supported. Please swap through a stablecoin (USDT or USDC)'
+    return { 
+      success: true, 
+      swapType: 'CRYPTO_TO_CRYPTO',
+      routingRequired: true,
+      intermediateToken: DEFAULT_STABLECOIN
     };
   }
   
@@ -85,7 +90,60 @@ function validateSwapPair(from, to) {
   
   return {
     success: false,
-    message: 'Invalid swap pair. Only crypto-to-stablecoin and stablecoin-to-crypto swaps are allowed'
+    message: 'Invalid swap pair'
+  };
+}
+
+/**
+ * Create two-step quote for crypto-to-crypto swaps
+ */
+async function createCryptoToCryptoQuote(fromCurrency, toCurrency, amount) {
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  const intermediate = DEFAULT_STABLECOIN;
+  
+  // Step 1: Crypto -> Stablecoin (source is crypto, target is stablecoin)
+  const step1Result = await calculateCryptoExchange(from, intermediate, amount);
+  if (!step1Result.success) {
+    throw new Error(`Failed to calculate ${from} to ${intermediate} exchange`);
+  }
+  
+  // Step 2: Stablecoin -> Crypto
+  const step2Result = await calculateCryptoExchange(intermediate, to, step1Result.receiveAmount);
+  if (!step2Result.success) {
+    throw new Error(`Failed to calculate ${intermediate} to ${to} exchange`);
+  }
+  
+  // Calculate overall exchange rate
+  const overallRate = step2Result.receiveAmount / amount;
+  
+  return {
+    success: true,
+    step1: {
+      fromCurrency: from,
+      toCurrency: intermediate,
+      amount: amount,
+      receiveAmount: step1Result.receiveAmount,
+      rate: step1Result.exchangeRate,
+      fromPrice: step1Result.fromPrice,
+      toPrice: step1Result.toPrice
+    },
+    step2: {
+      fromCurrency: intermediate,
+      toCurrency: to,
+      amount: step1Result.receiveAmount,
+      receiveAmount: step2Result.receiveAmount,
+      rate: step2Result.exchangeRate,
+      fromPrice: step2Result.fromPrice,
+      toPrice: step2Result.toPrice
+    },
+    overall: {
+      fromCurrency: from,
+      toCurrency: to,
+      amount: amount,
+      receiveAmount: step2Result.receiveAmount,
+      rate: overallRate
+    }
   };
 }
 
@@ -131,7 +189,7 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
   const auditStartTime = new Date();
   
   try {
-    const { sourceCurrency, targetCurrency, amount } = quote;
+    const { sourceCurrency, targetCurrency, amount, swapType } = quote;
     
     // Create initial audit entry
     await createAuditEntry({
@@ -147,7 +205,7 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
         targetCurrency,
         sourceAmount: amount,
         provider: 'OBIEX',
-        swapType: targetCurrency.toUpperCase() === 'NGNX' ? 'CRYPTO_TO_NGNX' : 'CRYPTO_TO_STABLECOIN'
+        swapType: targetCurrency.toUpperCase() === 'NGNX' ? 'CRYPTO_TO_NGNX' : swapType
       },
       relatedEntities: {
         correlationId
@@ -159,7 +217,7 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
       tags: ['background', 'obiex', 'swap']
     });
     
-    // Check if this is a crypto-to-NGNX swap
+    // Handle different swap types
     if (targetCurrency.toUpperCase() === 'NGNX') {
       logger.info('Executing Obiex crypto-to-NGNX swap in background', {
         userId,
@@ -268,8 +326,21 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
           tags: ['background', 'obiex', 'swap', 'failed', 'error']
         });
       }
+    } else if (quote.swapType === 'CRYPTO_TO_CRYPTO') {
+      // NEW: Handle crypto-to-crypto swaps via Obiex
+      logger.info('Executing Obiex crypto-to-crypto swap in background', {
+        userId,
+        swapId,
+        sourceCurrency,
+        targetCurrency,
+        amount,
+        correlationId,
+        intermediateToken: quote.intermediateToken
+      });
+      
+      await executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targetCurrency, amount, quote.intermediateToken, correlationId, systemContext, auditStartTime);
     } else {
-      // For crypto-to-stablecoin swaps, execute two separate Obiex operations
+      // For regular crypto-to-stablecoin swaps, execute two separate Obiex operations
       logger.info('Executing Obiex crypto-to-stablecoin swap in background', {
         userId,
         swapId,
@@ -327,6 +398,195 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
       flagged: true,
       flagReason: 'Critical error in background Obiex swap',
       tags: ['background', 'obiex', 'swap', 'critical-error']
+    });
+  }
+}
+
+/**
+ * NEW: Execute crypto-to-crypto swap via Obiex (two-step process) with auditing
+ */
+async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targetCurrency, amount, intermediateToken, correlationId, systemContext, startTime) {
+  try {
+    logger.info('Starting Obiex crypto-to-crypto swap', {
+      userId,
+      swapId,
+      sourceCurrency,
+      targetCurrency,
+      intermediateToken,
+      amount,
+      correlationId
+    });
+
+    // Step 1: Crypto -> Stablecoin (e.g., BTC -> USDT)
+    const sourceId = await getCurrencyIdByCode(sourceCurrency);
+    const intermediateId = await getCurrencyIdByCode(intermediateToken);
+    const targetId = await getCurrencyIdByCode(targetCurrency);
+    
+    // Create and accept quote for step 1: crypto -> stablecoin
+    const step1QuoteResult = await createQuote({
+      sourceId,
+      targetId: intermediateId,
+      amount,
+      side: 'SELL'
+    });
+    
+    if (!step1QuoteResult.success) {
+      throw new Error(`Obiex step 1 quote creation failed: ${JSON.stringify(step1QuoteResult.error)}`);
+    }
+    
+    const step1AcceptResult = await acceptQuote(step1QuoteResult.quoteId);
+    if (!step1AcceptResult.success) {
+      throw new Error(`Obiex step 1 quote acceptance failed: ${JSON.stringify(step1AcceptResult.error)}`);
+    }
+    
+    const intermediateAmount = step1AcceptResult.data?.amountReceived || step1AcceptResult.data?.amount;
+    
+    logger.info('Obiex crypto-to-crypto step 1 completed', {
+      userId,
+      swapId,
+      step: 1,
+      from: sourceCurrency,
+      to: intermediateToken,
+      amountIn: amount,
+      amountOut: intermediateAmount,
+      correlationId
+    });
+    
+    // Step 2: Stablecoin -> Crypto (e.g., USDT -> ETH)
+    const step2QuoteResult = await createQuote({
+      sourceId: intermediateId,
+      targetId,
+      amount: intermediateAmount,
+      side: 'SELL'
+    });
+    
+    if (!step2QuoteResult.success) {
+      throw new Error(`Obiex step 2 quote creation failed: ${JSON.stringify(step2QuoteResult.error)}`);
+    }
+    
+    const step2AcceptResult = await acceptQuote(step2QuoteResult.quoteId);
+    const auditEndTime = new Date();
+    
+    if (step2AcceptResult.success) {
+      const finalAmount = step2AcceptResult.data?.amountReceived || step2AcceptResult.data?.amount;
+      
+      logger.info('Obiex crypto-to-crypto swap completed successfully', {
+        userId,
+        swapId,
+        sourceCurrency,
+        targetCurrency,
+        intermediateToken,
+        sourceAmount: amount,
+        finalAmount,
+        correlationId,
+        step1QuoteId: step1QuoteResult.quoteId,
+        step2QuoteId: step2QuoteResult.quoteId
+      });
+      
+      // Create success audit entry
+      await createAuditEntry({
+        userId,
+        eventType: 'OBIEX_SWAP_COMPLETED',
+        status: 'SUCCESS',
+        source: 'OBIEX_API',
+        action: 'Complete Crypto-to-Crypto Swap',
+        description: `Successfully completed Obiex crypto-to-crypto swap via ${intermediateToken}`,
+        swapDetails: {
+          swapId,
+          sourceCurrency,
+          targetCurrency,
+          intermediateToken,
+          sourceAmount: amount,
+          finalAmount,
+          provider: 'OBIEX',
+          swapType: 'CRYPTO_TO_CRYPTO'
+        },
+        obiexDetails: {
+          step1QuoteId: step1QuoteResult.quoteId,
+          step2QuoteId: step2QuoteResult.quoteId,
+          step1Response: step1AcceptResult.data,
+          step2Response: step2AcceptResult.data,
+          obiexOperationType: 'CRYPTO_TO_CRYPTO_ROUTING'
+        },
+        relatedEntities: {
+          correlationId
+        },
+        responseData: {
+          step1: step1AcceptResult.data,
+          step2: step2AcceptResult.data
+        },
+        systemContext,
+        timing: {
+          startTime,
+          endTime: auditEndTime,
+          duration: auditEndTime - startTime
+        },
+        tags: ['background', 'obiex', 'swap', 'crypto-to-crypto', 'success']
+      });
+      
+      // Create a record of the Obiex transaction
+      await createObiexTransactionRecord(userId, swapId, {
+        step1QuoteId: step1QuoteResult.quoteId,
+        step2QuoteId: step2QuoteResult.quoteId,
+        step1Data: step1AcceptResult.data,
+        step2Data: step2AcceptResult.data,
+        intermediateToken,
+        sourceAmount: amount,
+        finalAmount
+      }, 'CRYPTO_TO_CRYPTO', correlationId);
+      
+    } else {
+      throw new Error(`Obiex step 2 quote acceptance failed: ${JSON.stringify(step2AcceptResult.error)}`);
+    }
+    
+  } catch (error) {
+    const auditEndTime = new Date();
+    
+    logger.error('Obiex crypto-to-crypto swap failed', {
+      userId,
+      swapId,
+      sourceCurrency,
+      targetCurrency,
+      amount,
+      correlationId,
+      error: error.message
+    });
+    
+    // Create failure audit entry
+    await createAuditEntry({
+      userId,
+      eventType: 'OBIEX_SWAP_FAILED',
+      status: 'FAILED',
+      source: 'OBIEX_API',
+      action: 'Failed Crypto-to-Crypto Swap',
+      description: `Obiex crypto-to-crypto swap failed: ${error.message}`,
+      errorDetails: {
+        message: error.message,
+        code: 'OBIEX_CRYPTO_CRYPTO_ERROR',
+        stack: error.stack
+      },
+      swapDetails: {
+        swapId,
+        sourceCurrency,
+        targetCurrency,
+        intermediateToken,
+        sourceAmount: amount,
+        provider: 'OBIEX',
+        swapType: 'CRYPTO_TO_CRYPTO'
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime: auditEndTime,
+        duration: auditEndTime - startTime
+      },
+      riskLevel: 'MEDIUM',
+      flagged: true,
+      flagReason: 'Obiex crypto-to-crypto swap operation failed',
+      tags: ['background', 'obiex', 'swap', 'crypto-to-crypto', 'failed']
     });
   }
 }
@@ -648,6 +908,281 @@ async function calculateCryptoExchange(fromCurrency, toCurrency, amount) {
 }
 
 /**
+ * NEW: Execute crypto-to-crypto swap with atomic balance updates, transaction creation, and comprehensive auditing
+ */
+async function executeCryptoCryptoSwap(userId, quote, correlationId, systemContext) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  const startTime = new Date();
+  
+  try {
+    const { sourceCurrency, targetCurrency, amount, amountReceived, intermediateToken, step1, step2 } = quote;
+    
+    // Balance field names
+    const fromKey = sourceCurrency.toLowerCase() + 'Balance';
+    const toKey = targetCurrency.toLowerCase() + 'Balance';
+    
+    // Generate swap reference
+    const swapReference = `CRYPTO_CRYPTO_SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Get current balances for audit trail
+    const userBefore = await User.findById(userId).select(`${fromKey} ${toKey}`).lean();
+    
+    // Update balances atomically with balance validation
+    const updatedUser = await User.findOneAndUpdate(
+      { 
+        _id: userId, 
+        [fromKey]: { $gte: amount } // Ensure sufficient balance
+      },
+      {
+        $inc: {
+          [fromKey]: -amount,      // Deduct source currency
+          [toKey]: amountReceived  // Add target currency
+        },
+        $set: { 
+          lastBalanceUpdate: new Date(),
+          portfolioLastUpdated: new Date()
+        }
+      },
+      { 
+        new: true, 
+        runValidators: true, 
+        session 
+      }
+    );
+
+    if (!updatedUser) {
+      throw new Error(`Balance update failed - insufficient ${sourceCurrency} balance or user not found`);
+    }
+
+    // Clear user cache
+    userCache.delete(`user_balance_${userId}`);
+
+    // Create outgoing transaction (debit)
+    const swapOutTransaction = new Transaction({
+      userId,
+      type: 'SWAP',
+      currency: sourceCurrency,
+      amount: -amount, // Negative for outgoing
+      status: 'SUCCESSFUL',
+      source: 'INTERNAL',
+      reference: swapReference,
+      obiexTransactionId: `${swapReference}_OUT`,
+      narration: `Crypto-to-Crypto Swap: ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency} (via ${intermediateToken})`,
+      completedAt: new Date(),
+      metadata: {
+        swapDirection: 'OUT',
+        swapType: 'CRYPTO_TO_CRYPTO',
+        exchangeRate: amountReceived / amount,
+        relatedTransactionRef: swapReference,
+        fromCurrency: sourceCurrency,
+        toCurrency: targetCurrency,
+        fromAmount: amount,
+        toAmount: amountReceived,
+        intermediateToken,
+        step1Details: step1,
+        step2Details: step2,
+        correlationId
+      }
+    });
+
+    // Create incoming transaction (credit)
+    const swapInTransaction = new Transaction({
+      userId,
+      type: 'SWAP',
+      currency: targetCurrency,
+      amount: amountReceived, // Positive for incoming
+      status: 'SUCCESSFUL',
+      source: 'INTERNAL',
+      reference: swapReference,
+      obiexTransactionId: `${swapReference}_IN`,
+      narration: `Crypto-to-Crypto Swap: ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency} (via ${intermediateToken})`,
+      completedAt: new Date(),
+      metadata: {
+        swapDirection: 'IN',
+        swapType: 'CRYPTO_TO_CRYPTO',
+        exchangeRate: amountReceived / amount,
+        relatedTransactionRef: swapReference,
+        fromCurrency: sourceCurrency,
+        toCurrency: targetCurrency,
+        fromAmount: amount,
+        toAmount: amountReceived,
+        intermediateToken,
+        step1Details: step1,
+        step2Details: step2,
+        correlationId
+      }
+    });
+
+    // Save both transactions
+    await swapOutTransaction.save({ session });
+    await swapInTransaction.save({ session });
+
+    // Commit everything
+    await session.commitTransaction();
+    session.endSession();
+    
+    const endTime = new Date();
+
+    logger.info('Crypto-to-crypto swap executed successfully', {
+      userId,
+      swapReference,
+      correlationId,
+      sourceCurrency,
+      targetCurrency,
+      intermediateToken,
+      sourceAmount: amount,
+      targetAmount: amountReceived,
+      overallExchangeRate: amountReceived / amount,
+      newFromBalance: updatedUser[fromKey],
+      newToBalance: updatedUser[toKey],
+      outTransactionId: swapOutTransaction._id,
+      inTransactionId: swapInTransaction._id
+    });
+    
+    // Create comprehensive audit entries
+    await Promise.all([
+      // Balance update audit
+      createAuditEntry({
+        userId,
+        eventType: 'BALANCE_UPDATED',
+        status: 'SUCCESS',
+        source: 'INTERNAL_SWAP',
+        action: 'Update User Balances',
+        description: `Updated balances for crypto-to-crypto swap: ${sourceCurrency} and ${targetCurrency}`,
+        beforeState: {
+          [fromKey]: userBefore[fromKey],
+          [toKey]: userBefore[toKey]
+        },
+        afterState: {
+          [fromKey]: updatedUser[fromKey],
+          [toKey]: updatedUser[toKey]
+        },
+        financialImpact: {
+          currency: sourceCurrency,
+          amount: -amount,
+          balanceBefore: userBefore[fromKey],
+          balanceAfter: updatedUser[fromKey],
+          exchangeRate: amountReceived / amount
+        },
+        swapDetails: {
+          swapId: swapReference,
+          sourceCurrency,
+          targetCurrency,
+          intermediateToken,
+          sourceAmount: amount,
+          targetAmount: amountReceived,
+          exchangeRate: amountReceived / amount,
+          provider: 'INTERNAL_EXCHANGE',
+          swapType: 'CRYPTO_TO_CRYPTO'
+        },
+        relatedEntities: {
+          correlationId,
+          relatedTransactionIds: [swapOutTransaction._id, swapInTransaction._id]
+        },
+        systemContext,
+        timing: {
+          startTime,
+          endTime,
+          duration: endTime - startTime
+        },
+        tags: ['balance-update', 'swap', 'internal', 'crypto-to-crypto']
+      }),
+      
+      // Swap completion audit
+      createAuditEntry({
+        userId,
+        eventType: 'SWAP_COMPLETED',
+        status: 'SUCCESS',
+        source: 'INTERNAL_SWAP',
+        action: 'Complete Internal Crypto-to-Crypto Swap',
+        description: `Successfully completed internal crypto-to-crypto swap via ${intermediateToken}`,
+        swapDetails: {
+          swapId: swapReference,
+          sourceCurrency,
+          targetCurrency,
+          intermediateToken,
+          sourceAmount: amount,
+          targetAmount: amountReceived,
+          exchangeRate: amountReceived / amount,
+          provider: 'INTERNAL_EXCHANGE',
+          swapType: 'CRYPTO_TO_CRYPTO'
+        },
+        relatedEntities: {
+          correlationId,
+          relatedTransactionIds: [swapOutTransaction._id, swapInTransaction._id]
+        },
+        systemContext,
+        timing: {
+          startTime,
+          endTime,
+          duration: endTime - startTime
+        },
+        tags: ['swap', 'internal', 'completed', 'success', 'crypto-to-crypto']
+      })
+    ]);
+
+    return {
+      user: updatedUser,
+      swapOutTransaction,
+      swapInTransaction,
+      swapId: swapReference
+    };
+
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    
+    const endTime = new Date();
+    
+    logger.error('Crypto-to-crypto swap execution failed', {
+      error: err.message,
+      stack: err.stack,
+      userId,
+      correlationId,
+      quote
+    });
+    
+    // Create failure audit entry
+    await createAuditEntry({
+      userId,
+      eventType: 'SWAP_FAILED',
+      status: 'FAILED',
+      source: 'INTERNAL_SWAP',
+      action: 'Failed Internal Crypto-to-Crypto Swap',
+      description: `Internal crypto-to-crypto swap failed: ${err.message}`,
+      errorDetails: {
+        message: err.message,
+        code: 'INTERNAL_CRYPTO_CRYPTO_SWAP_ERROR',
+        stack: err.stack
+      },
+      swapDetails: {
+        sourceCurrency: quote.sourceCurrency,
+        targetCurrency: quote.targetCurrency,
+        sourceAmount: quote.amount,
+        provider: 'INTERNAL_EXCHANGE',
+        swapType: 'CRYPTO_TO_CRYPTO'
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
+      riskLevel: 'HIGH',
+      flagged: true,
+      flagReason: 'Internal crypto-to-crypto swap execution failed',
+      tags: ['swap', 'internal', 'failed', 'critical-error', 'crypto-to-crypto']
+    });
+    
+    throw err;
+  }
+}
+
+/**
  * Execute crypto-to-stablecoin swap with atomic balance updates, transaction creation, and comprehensive auditing
  */
 async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
@@ -956,7 +1491,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
   }
 }
 
-// UPDATED QUOTE ENDPOINT WITH SWAP PAIR VALIDATION
+// UPDATED QUOTE ENDPOINT WITH CRYPTO-TO-CRYPTO SUPPORT
 router.post('/quote', async (req, res) => {
   const correlationId = generateCorrelationId();
   const systemContext = getSystemContext(req);
@@ -1064,7 +1599,7 @@ router.post('/quote', async (req, res) => {
       });
     }
 
-    // NEW: Validate swap pair - only allow crypto to stablecoin and vice versa
+    // NEW: Validate swap pair - now supports crypto-to-crypto
     const pairValidation = validateSwapPair(from, to);
     if (!pairValidation.success) {
       await createAuditEntry({
@@ -1092,39 +1627,77 @@ router.post('/quote', async (req, res) => {
       });
     }
 
-    // Calculate crypto exchange rate - OPTIMIZED WITH CACHING
-    const result = await calculateCryptoExchange(from, to, amount);
-    
+    let payload;
     const id = `crypto_swap_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const expiresAt = new Date(Date.now() + 30000).toISOString(); // 30 seconds
 
-    // MAINTAINING ORIGINAL PAYLOAD STRUCTURE
-    const payload = {
-      id,
-      amount,
-      amountReceived: result.receiveAmount,
-      rate: result.exchangeRate,
-      side,
-      sourceCurrency: from.toUpperCase(),
-      targetCurrency: to.toUpperCase(),
-      provider: 'INTERNAL_EXCHANGE',
-      type: 'CRYPTO_TO_STABLECOIN',
-      expiresAt,
-      fromPrice: result.fromPrice,
-      toPrice: result.toPrice,
-      correlationId // Add correlation ID to payload
-    };
+    if (pairValidation.swapType === 'CRYPTO_TO_CRYPTO') {
+      // NEW: Handle crypto-to-crypto quote creation
+      const cryptoQuote = await createCryptoToCryptoQuote(from, to, amount);
+      
+      payload = {
+        id,
+        amount,
+        amountReceived: cryptoQuote.overall.receiveAmount,
+        rate: cryptoQuote.overall.rate,
+        side,
+        sourceCurrency: from.toUpperCase(),
+        targetCurrency: to.toUpperCase(),
+        provider: 'INTERNAL_EXCHANGE',
+        type: 'CRYPTO_TO_CRYPTO',
+        swapType: 'CRYPTO_TO_CRYPTO',
+        intermediateToken: pairValidation.intermediateToken,
+        expiresAt,
+        correlationId,
+        step1: cryptoQuote.step1,
+        step2: cryptoQuote.step2,
+        overall: cryptoQuote.overall
+      };
 
-    logger.info('Crypto swap quote created', {
-      sourceAmount: amount,
-      sourceCurrency: from.toUpperCase(),
-      targetAmount: result.receiveAmount,
-      targetCurrency: to.toUpperCase(),
-      exchangeRate: result.exchangeRate,
-      fromPrice: result.fromPrice,
-      toPrice: result.toPrice,
-      correlationId
-    });
+      logger.info('Crypto-to-crypto swap quote created', {
+        sourceAmount: amount,
+        sourceCurrency: from.toUpperCase(),
+        targetAmount: cryptoQuote.overall.receiveAmount,
+        targetCurrency: to.toUpperCase(),
+        intermediateToken: pairValidation.intermediateToken,
+        step1Rate: cryptoQuote.step1.rate,
+        step2Rate: cryptoQuote.step2.rate,
+        overallRate: cryptoQuote.overall.rate,
+        correlationId
+      });
+      
+    } else {
+      // Handle direct crypto-to-stablecoin or stablecoin-to-crypto swaps
+      const result = await calculateCryptoExchange(from, to, amount);
+      
+      payload = {
+        id,
+        amount,
+        amountReceived: result.receiveAmount,
+        rate: result.exchangeRate,
+        side,
+        sourceCurrency: from.toUpperCase(),
+        targetCurrency: to.toUpperCase(),
+        provider: 'INTERNAL_EXCHANGE',
+        type: 'CRYPTO_TO_STABLECOIN',
+        swapType: 'DIRECT',
+        expiresAt,
+        fromPrice: result.fromPrice,
+        toPrice: result.toPrice,
+        correlationId
+      };
+
+      logger.info('Direct crypto swap quote created', {
+        sourceAmount: amount,
+        sourceCurrency: from.toUpperCase(),
+        targetAmount: result.receiveAmount,
+        targetCurrency: to.toUpperCase(),
+        exchangeRate: result.exchangeRate,
+        fromPrice: result.fromPrice,
+        toPrice: result.toPrice,
+        correlationId
+      });
+    }
 
     // OPTIMIZED CACHING WITH AUTO-CLEANUP
     quoteCache.set(id, payload);
@@ -1147,10 +1720,11 @@ router.post('/quote', async (req, res) => {
         sourceCurrency: from.toUpperCase(),
         targetCurrency: to.toUpperCase(),
         sourceAmount: amount,
-        targetAmount: result.receiveAmount,
-        exchangeRate: result.exchangeRate,
+        targetAmount: payload.amountReceived,
+        exchangeRate: payload.rate,
         provider: 'INTERNAL_EXCHANGE',
-        swapType: 'CRYPTO_TO_STABLECOIN'
+        swapType: payload.swapType,
+        intermediateToken: payload.intermediateToken
       },
       relatedEntities: {
         correlationId
@@ -1161,13 +1735,13 @@ router.post('/quote', async (req, res) => {
         endTime,
         duration: endTime - startTime
       },
-      tags: ['quote', 'created', 'success']
+      tags: ['quote', 'created', 'success', payload.swapType?.toLowerCase()]
     });
 
     // MAINTAINING ORIGINAL RESPONSE STRUCTURE
     return res.json({
       success: true,
-      message: 'Crypto swap quote created successfully',
+      message: `${pairValidation.swapType === 'CRYPTO_TO_CRYPTO' ? 'Crypto-to-crypto' : 'Crypto'} swap quote created successfully`,
       data: { data: payload, ...payload }
     });
 
@@ -1212,7 +1786,7 @@ router.post('/quote', async (req, res) => {
   }
 });
 
-// ENHANCED SWAP EXECUTION ENDPOINT WITH OBIEX INTEGRATION AND COMPREHENSIVE AUDITING
+// ENHANCED SWAP EXECUTION ENDPOINT WITH CRYPTO-TO-CRYPTO SUPPORT AND OBIEX INTEGRATION
 router.post('/quote/:quoteId', async (req, res) => {
   const systemContext = getSystemContext(req);
   const startTime = new Date();
@@ -1350,19 +1924,28 @@ router.post('/quote/:quoteId', async (req, res) => {
       });
     }
 
-    // Execute swap directly (like your webhook does) - NO SERVICE LAYER
-    const swapResult = await executeCryptoSwap(userId, quote, correlationId, systemContext);
+    let swapResult;
 
-    // *** NEW: Execute Obiex swap in background ***
+    // NEW: Handle different swap types
+    if (quote.swapType === 'CRYPTO_TO_CRYPTO') {
+      // Execute crypto-to-crypto swap
+      swapResult = await executeCryptoCryptoSwap(userId, quote, correlationId, systemContext);
+    } else {
+      // Execute direct swap (crypto-to-stablecoin or stablecoin-to-crypto)
+      swapResult = await executeCryptoSwap(userId, quote, correlationId, systemContext);
+    }
+
+    // *** Execute Obiex swap in background ***
     // This runs asynchronously and won't block the response
     setImmediate(() => {
       executeObiexSwapBackground(userId, quote, swapResult.swapId, correlationId, systemContext);
     });
 
-    logger.info('Crypto swap completed, Obiex swap initiated in background', { 
+    logger.info(`${quote.swapType === 'CRYPTO_TO_CRYPTO' ? 'Crypto-to-crypto' : 'Crypto'} swap completed, Obiex swap initiated in background`, { 
       userId, 
       quoteId, 
       correlationId,
+      swapType: quote.swapType,
       swapId: swapResult.swapId,
       swapOutTransactionId: swapResult.swapOutTransaction._id,
       swapInTransactionId: swapResult.swapInTransaction._id
@@ -1390,7 +1973,8 @@ router.post('/quote/:quoteId', async (req, res) => {
         targetAmount: quote.amountReceived,
         exchangeRate: quote.rate,
         provider: 'INTERNAL_EXCHANGE',
-        swapType: 'CRYPTO_TO_STABLECOIN'
+        swapType: quote.swapType,
+        intermediateToken: quote.intermediateToken
       },
       relatedEntities: {
         correlationId,
@@ -1402,14 +1986,14 @@ router.post('/quote/:quoteId', async (req, res) => {
         endTime,
         duration: endTime - startTime
       },
-      tags: ['quote', 'accepted', 'success', 'obiex-initiated']
+      tags: ['quote', 'accepted', 'success', 'obiex-initiated', quote.swapType?.toLowerCase()]
     });
 
-    // MAINTAINING ORIGINAL RESPONSE PAYLOAD STRUCTURE
+    // ENHANCED RESPONSE PAYLOAD STRUCTURE
     const responsePayload = {
       swapId: swapResult.swapId,
       quoteId,
-      correlationId, // Include correlation ID in response
+      correlationId,
       status: 'SUCCESSFUL',
       swapDetails: {
         sourceCurrency: quote.sourceCurrency,
@@ -1418,7 +2002,14 @@ router.post('/quote/:quoteId', async (req, res) => {
         targetAmount: quote.amountReceived,
         exchangeRate: quote.rate,
         provider: quote.provider,
-        swapType: quote.type
+        swapType: quote.swapType,
+        intermediateToken: quote.intermediateToken,
+        // NEW: Include step details for crypto-to-crypto swaps
+        ...(quote.swapType === 'CRYPTO_TO_CRYPTO' && {
+          step1Details: quote.step1,
+          step2Details: quote.step2,
+          overallDetails: quote.overall
+        })
       },
       transactions: {
         swapId: swapResult.swapId,
@@ -1431,7 +2022,6 @@ router.post('/quote/:quoteId', async (req, res) => {
         [quote.sourceCurrency.toLowerCase()]: swapResult.user[`${quote.sourceCurrency.toLowerCase()}Balance`],
         [quote.targetCurrency.toLowerCase()]: swapResult.user[`${quote.targetCurrency.toLowerCase()}Balance`]
       },
-      // NEW: Indicate that Obiex swap is running in background
       obiexSwapInitiated: true,
       audit: {
         correlationId,
@@ -1439,10 +2029,10 @@ router.post('/quote/:quoteId', async (req, res) => {
       }
     };
 
-    // MAINTAINING ORIGINAL RESPONSE STRUCTURE
+    // MAINTAINING ORIGINAL RESPONSE STRUCTURE WITH ENHANCED MESSAGE
     return res.json({
       success: true,
-      message: 'Crypto swap completed successfully, Obiex swap initiated in background',
+      message: `${quote.swapType === 'CRYPTO_TO_CRYPTO' ? 'Crypto-to-crypto' : 'Crypto'} swap completed successfully, Obiex swap initiated in background`,
       data: { data: responsePayload, ...responsePayload }
     });
 
