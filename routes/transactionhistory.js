@@ -655,6 +655,7 @@ router.post('/complete-history', async (req, res) => {
     const body = req.body || {};
     const {
       transactionType = 'all',
+      type, // ADDED: Handle the type parameter from frontend
       status,
       page = 1,
       limit = 20,
@@ -677,6 +678,24 @@ router.post('/complete-history', async (req, res) => {
     };
     const billFilter  = { userId: userId, ...dateRangeFilter };
 
+    // ADDED: Handle specific type filtering (Deposit, Transfer/Withdrawal, Swap, etc.)
+    if (type) {
+      switch (type.toUpperCase()) {
+        case 'DEPOSIT': 
+          tokenFilter.type = { $in: ['DEPOSIT', 'INTERNAL_TRANSFER_RECEIVED'], $ne: 'OBIEX_SWAP' }; 
+          break;
+        case 'WITHDRAWAL': 
+          tokenFilter.type = { $in: ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'], $ne: 'OBIEX_SWAP' }; 
+          break;
+        case 'SWAP': 
+          tokenFilter.type = 'SWAP'; 
+          break;
+        case 'GIFTCARD':
+          tokenFilter.type = 'GIFTCARD';
+          break;
+      }
+    }
+
     if (status) {
       switch (status.toLowerCase()) {
         case 'successful':
@@ -694,7 +713,13 @@ router.post('/complete-history', async (req, res) => {
       }
     }
 
-    if (transactionType === 'all' || transactionType === 'token') {
+    // UPDATED: Only fetch tokens if we're not filtering for bill-only types
+    const shouldFetchTokens = !type || ['DEPOSIT', 'WITHDRAWAL', 'SWAP', 'GIFTCARD'].includes(type.toUpperCase());
+    // UPDATED: Only fetch bills if we're not filtering for token-only types OR if filtering for bill types
+    const billCategories = ['AIRTIME', 'DATA', 'CABLE', 'ELECTRICITY'];
+    const shouldFetchBills = !type || billCategories.includes(type.toUpperCase()) || transactionType === 'all';
+
+    if ((transactionType === 'all' || transactionType === 'token') && shouldFetchTokens) {
       const [tokenTxs, tokenCount] = await Promise.all([
         Transaction.find(tokenFilter),
         Transaction.countDocuments(tokenFilter)
@@ -726,7 +751,7 @@ router.post('/complete-history', async (req, res) => {
       totalCount += tokenCount;
     }
 
-    if (transactionType === 'all' || transactionType === 'utility') {
+    if ((transactionType === 'all' || transactionType === 'utility') && shouldFetchBills) {
       const [billTxs, billCount] = await Promise.all([
         BillTransaction.find(billFilter).lean(),
         BillTransaction.countDocuments(billFilter)
