@@ -1,4 +1,13 @@
-// app/routes/giftcard.js (complete version with better email error handling)
+// Rate calculation with vanilla type support and Apple/iTunes handling
+async function calculateAmountToReceive(cardType, country, cardValue, cardFormat, vanillaType = null) {
+  const options = {};
+  if (cardType === 'VANILLA' && vanillaType) {
+    options.vanillaType = vanillaType;
+  }
+
+  // For Apple cards, try both APPLE and APPLE/ITUNES in the database
+  let rate;
+  if (cardType ===// app/routes/giftcard.js (complete version with better email error handling)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -18,9 +27,10 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Gift Card Types Mapping for Frontend Display
+// Gift Card Types Mapping for Frontend Display - Updated to handle Apple/iTunes
 const GIFTCARD_TYPES = {
   'APPLE': 'Apple',
+  'APPLE/ITUNES': 'Apple/iTunes', // Add this for database compatibility
   'STEAM': 'Steam',
   'NORDSTROM': 'Nordstrom',
   'MACY': "Macy's",
@@ -304,9 +314,23 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     const errors = [];
 
-    // Basic input validations (fast, synchronous)
-    if (!cardType || !GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(String(cardType).toUpperCase())) {
-      errors.push('Invalid or missing card type');
+    // Enhanced card type validation to handle Apple/iTunes case
+    let isValidCardType = false;
+    if (cardType) {
+      const normalizedInputCardType = String(cardType).toUpperCase();
+      
+      // Check if it matches any supported type directly
+      if (GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(normalizedInputCardType)) {
+        isValidCardType = true;
+      }
+      // Special handling for Apple cards - accept both APPLE and APPLE/ITUNES
+      else if (normalizedInputCardType === 'APPLE' || normalizedInputCardType === 'APPLE/ITUNES') {
+        isValidCardType = true;
+      }
+    }
+
+    if (!isValidCardType) {
+      errors.push(`Invalid or missing card type: ${cardType}. Supported types: ${GIFTCARD_CONFIG.SUPPORTED_TYPES.join(', ')}`);
     }
     if (!cardFormat || !GIFTCARD_CONFIG.SUPPORTED_FORMATS.includes(String(cardFormat).toUpperCase())) {
       errors.push('Invalid or missing card format');
@@ -355,12 +379,28 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     if (errors.length > 0) return badRequest(errors);
 
-    // Normalize
-    const normalizedCardType = String(cardType).toUpperCase();
+    // Normalize - with Apple/iTunes handling
+    let normalizedCardType = String(cardType).toUpperCase();
+    
+    // Special handling for Apple cards - normalize APPLE to APPLE for consistency
+    // (Your rate system might store APPLE/ITUNES but we'll normalize to APPLE in submissions)
+    if (normalizedCardType === 'APPLE/ITUNES') {
+      normalizedCardType = 'APPLE';
+    }
+    
     const normalizedCardFormat = String(cardFormat).toUpperCase();
     const normalizedCountry = String(country).toUpperCase();
     const normalizedCurrency = (currency || 'USD').toUpperCase();
     const normalizedVanillaType = vanillaType || null;
+
+    logger.info('Normalized submission data', {
+      originalCardType: cardType,
+      normalizedCardType,
+      normalizedCardFormat,
+      normalizedCountry,
+      normalizedCurrency,
+      normalizedVanillaType
+    });
 
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });

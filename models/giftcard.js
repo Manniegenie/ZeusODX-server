@@ -4,10 +4,15 @@ const giftCardSchema = new mongoose.Schema({
   // REMOVED index: true since we have compound index { userId: 1, status: 1 }
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   
-  // UPDATED: Fixed cardType enum to match endpoint exactly
+  // UPDATED: Fixed cardType enum to include APPLE/ITUNES variant
   cardType: {
     type: String, required: true,
-    enum: ['APPLE', 'STEAM', 'NORDSTROM', 'MACY', 'NIKE', 'GOOGLE_PLAY', 'AMAZON', 'VISA', 'VANILLA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS', 'SEPHORA', 'FOOTLOCKER', 'XBOX', 'EBAY']
+    enum: [
+      'APPLE', 'APPLE/ITUNES', // Both variants for compatibility
+      'STEAM', 'NORDSTROM', 'MACY', 'NIKE', 'GOOGLE_PLAY', 'AMAZON', 
+      'VISA', 'VANILLA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS', 'SEPHORA', 
+      'FOOTLOCKER', 'XBOX', 'EBAY'
+    ]
   },
   
   // Keep index: true - not covered by compound indexes
