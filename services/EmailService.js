@@ -1,4 +1,4 @@
-// src/services/EmailService.js (Fixed syntax errors)
+// src/services/EmailService.js (Full code with simplified sendGiftcardSubmissionEmail)
 const brevo = require('@getbrevo/brevo');
 require('dotenv').config();
 
@@ -304,8 +304,8 @@ async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
 }
 
 /**
- * NEW: sendGiftcardSubmissionEmail
- * Rich payload for giftcard submission templates
+ * SIMPLIFIED: sendGiftcardSubmissionEmail
+ * Expects pre-formatted amount and date from the route
  */
 async function sendGiftcardSubmissionEmail(
   to,
@@ -315,12 +315,13 @@ async function sendGiftcardSubmissionEmail(
   cardFormat,
   country,
   cardValue,
-  expectedAmount,
+  expectedAmount,        // Pre-formatted: "₦1,500.00"
   expectedCurrency,
   rateDisplay,
   totalImages = 0,
   imageUrls = [],
-  reference = ''
+  reference = '',
+  submissionDate = ''     // Pre-formatted: "January 15, 2025"
 ) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_SUBMISSION);
@@ -335,10 +336,8 @@ async function sendGiftcardSubmissionEmail(
       giftcardType: String(giftcardType || ''),
       cardFormat: String(cardFormat || ''),
       country: String(country || ''),
-      cardValue: formatNumber(cardValue),
-      cardValueWithCurrency: formatCurrency(cardValue, 'USD'), // Gift cards are typically USD
-      expectedAmount: formatNumber(expectedAmount),
-      expectedAmountWithCurrency: formatCurrency(expectedAmount, expectedCurrency),
+      cardValue: String(cardValue || '0'),
+      expectedAmount: String(expectedAmount || '₦0.00'),    // Already formatted
       expectedCurrency: String(expectedCurrency || 'NGN'),
       rateDisplay: String(rateDisplay || ''),
       totalImages: String(totalImages || 0),
@@ -346,7 +345,11 @@ async function sendGiftcardSubmissionEmail(
       submissionUrl,
       appDeepLink,
       reference: String(reference || ''),
-      submissionDate: formatDate(new Date()),
+      submissionDate: String(submissionDate || new Date().toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      })),  // Use provided date or fallback
       companyName: String(COMPANY_NAME),
       supportEmail: String(SUPPORT_EMAIL)
     };
@@ -482,7 +485,7 @@ module.exports = {
   sendUtilityEmail,              // legacy/simple helper
   sendUtilityTransactionEmail,   // new generic helper (rich)
   sendGiftcardEmail,
-  sendGiftcardSubmissionEmail,
+  sendGiftcardSubmissionEmail,   // SIMPLIFIED - expects pre-formatted data
   sendKycEmail,
   sendLoginEmail,
   sendSignupEmail,
