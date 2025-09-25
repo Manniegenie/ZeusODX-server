@@ -1,4 +1,4 @@
-// app/routes/giftcard.js (performance-updated with better email error handling)
+// app/routes/giftcard.js (complete version with better email error handling)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -18,16 +18,51 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// Gift Card Types Mapping for Frontend Display
+const GIFTCARD_TYPES = {
+  'APPLE': 'Apple',
+  'STEAM': 'Steam',
+  'NORDSTROM': 'Nordstrom',
+  'MACY': "Macy's",
+  'NIKE': 'Nike',
+  'GOOGLE_PLAY': 'Google Play',
+  'AMAZON': 'Amazon',
+  'VISA': 'Visa',
+  'VANILLA': 'Vanilla',
+  'RAZOR_GOLD': 'Razor Gold',
+  'AMERICAN_EXPRESS': 'American Express',
+  'SEPHORA': 'Sephora',
+  'FOOTLOCKER': 'Foot Locker',
+  'XBOX': 'Xbox',
+  'EBAY': 'eBay'
+};
+
+// Countries mapping
+const COUNTRIES = {
+  'US': 'United States',
+  'CANADA': 'Canada',
+  'AUSTRALIA': 'Australia',
+  'SWITZERLAND': 'Switzerland'
+};
+
+// Card formats
+const CARD_FORMATS = {
+  'PHYSICAL': 'Physical Card',
+  'E_CODE': 'E-Code'
+};
+
+// Vanilla types (for VANILLA cards only)
+const VANILLA_TYPES = {
+  '4097': 'Vanilla 4097',
+  '4118': 'Vanilla 4118'
+};
+
 // Gift card config
 const GIFTCARD_CONFIG = {
-  SUPPORTED_TYPES: [
-    'APPLE', 'STEAM', 'NORDSTROM', 'MACY', 'NIKE', 'GOOGLE_PLAY',
-    'AMAZON', 'VISA', 'VANILLA', 'RAZOR_GOLD', 'AMERICAN_EXPRESS',
-    'SEPHORA', 'FOOTLOCKER', 'XBOX', 'EBAY'
-  ],
-  SUPPORTED_FORMATS: ['PHYSICAL', 'E_CODE'],
-  SUPPORTED_COUNTRIES: ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'],
-  SUPPORTED_VANILLA_TYPES: ['4097', '4118'],
+  SUPPORTED_TYPES: Object.keys(GIFTCARD_TYPES),
+  SUPPORTED_FORMATS: Object.keys(CARD_FORMATS),
+  SUPPORTED_COUNTRIES: Object.keys(COUNTRIES),
+  SUPPORTED_VANILLA_TYPES: Object.keys(VANILLA_TYPES),
   MAX_PENDING_SUBMISSIONS: 5,
   MAX_IMAGES: 20,
   STATUS: { PENDING: 'PENDING' }
@@ -143,6 +178,109 @@ async function safelySendGiftcardEmail(user, giftCard, transaction, rateCalculat
     };
   }
 }
+
+// ---------------------------
+// GET /giftcard/types - Get supported gift card types
+// ---------------------------
+router.get('/types', (req, res) => {
+  try {
+    const giftcardOptions = Object.entries(GIFTCARD_TYPES).map(([value, label]) => ({
+      value,
+      label
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        types: giftcardOptions,
+        countries: Object.entries(COUNTRIES).map(([value, label]) => ({ value, label })),
+        formats: Object.entries(CARD_FORMATS).map(([value, label]) => ({ value, label })),
+        vanillaTypes: Object.entries(VANILLA_TYPES).map(([value, label]) => ({ value, label }))
+      },
+      message: 'Gift card types retrieved successfully'
+    });
+  } catch (error) {
+    logger.error('Error fetching gift card types', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gift card types'
+    });
+  }
+});
+
+// ---------------------------
+// GET /giftcard/rates - Get gift card rates (public endpoint)
+// ---------------------------
+router.get('/rates', async (req, res) => {
+  try {
+    const { country, cardType, vanillaType } = req.query;
+    
+    const query = { isActive: true };
+    
+    if (country) {
+      if (!GIFTCARD_CONFIG.SUPPORTED_COUNTRIES.includes(country.toUpperCase())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid country'
+        });
+      }
+      query.country = country.toUpperCase();
+    }
+    
+    if (cardType) {
+      if (!GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(cardType.toUpperCase())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid card type'
+        });
+      }
+      query.cardType = cardType.toUpperCase();
+    }
+
+    if (vanillaType) {
+      if (!GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.includes(vanillaType)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid vanilla type'
+        });
+      }
+      query.vanillaType = vanillaType;
+    }
+
+    const rates = await GiftCardPrice.find(query)
+      .sort({ country: 1, cardType: 1, vanillaType: 1 })
+      .lean();
+
+    const formattedRates = rates.map(rate => ({
+      id: rate._id,
+      cardType: rate.cardType,
+      cardTypeName: GIFTCARD_TYPES[rate.cardType] || rate.cardType,
+      country: rate.country,
+      countryName: COUNTRIES[rate.country] || rate.country,
+      rate: rate.rate,
+      rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`,
+      physicalRate: rate.physicalRate,
+      ecodeRate: rate.ecodeRate,
+      minAmount: rate.minAmount,
+      maxAmount: rate.maxAmount,
+      vanillaType: rate.vanillaType,
+      vanillaTypeName: rate.vanillaType ? VANILLA_TYPES[rate.vanillaType] : null
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: formattedRates,
+      message: 'Gift card rates retrieved successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error fetching gift card rates', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gift card rates'
+    });
+  }
+});
 
 // ---------------------------
 // Gift card submission route
@@ -366,11 +504,14 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       submissionId: giftCard._id,
       transactionId: transaction._id,
       cardType: normalizedCardType,
+      cardTypeName: GIFTCARD_TYPES[normalizedCardType],
       cardFormat: normalizedCardFormat,
+      cardFormatName: CARD_FORMATS[normalizedCardFormat],
       cardRange,
       cardValue: cardVal,
       currency: normalizedCurrency,
       country: normalizedCountry,
+      countryName: COUNTRIES[normalizedCountry],
       expectedAmountToReceive: rateCalculation.amountToReceive,
       rate: rateCalculation.rateDisplay,
       totalImages: imageUrls.length,
@@ -378,7 +519,10 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       status: giftCard.status,
       submittedAt: giftCard.createdAt
     };
-    if (normalizedCardType === 'VANILLA' && normalizedVanillaType) responseData.vanillaType = normalizedVanillaType;
+    if (normalizedCardType === 'VANILLA' && normalizedVanillaType) {
+      responseData.vanillaType = normalizedVanillaType;
+      responseData.vanillaTypeName = VANILLA_TYPES[normalizedVanillaType];
+    }
 
     // FIRE & FORGET: send notification email asynchronously (non-blocking)
     // We intentionally do not await this so the HTTP response is faster.
@@ -422,6 +566,113 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     }
 
     return res.status(500).json({ success: false, message: 'Submission failed', error: err.message });
+  }
+});
+
+// ---------------------------
+// GET /giftcard/:id - Get gift card details
+// ---------------------------
+router.get('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const giftCard = await GiftCard.findOne({ _id: id, userId }).lean();
+    
+    if (!giftCard) {
+      return res.status(404).json({ success: false, message: 'Gift card not found' });
+    }
+
+    const responseData = {
+      ...giftCard,
+      cardTypeName: GIFTCARD_TYPES[giftCard.cardType],
+      cardFormatName: CARD_FORMATS[giftCard.cardFormat],
+      countryName: COUNTRIES[giftCard.country],
+      vanillaTypeName: giftCard.vanillaType ? VANILLA_TYPES[giftCard.vanillaType] : null
+    };
+
+    res.status(200).json({
+      success: true,
+      data: responseData,
+      message: 'Gift card retrieved successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error fetching gift card', { 
+      giftCardId: req.params.id, 
+      userId: req.user?.id,
+      error: error.message 
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gift card'
+    });
+  }
+});
+
+// ---------------------------
+// GET /giftcard - Get user's gift cards
+// ---------------------------
+router.get('/', async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const { status, page = 1, limit = 10 } = req.query;
+    const query = { userId };
+    
+    if (status) {
+      query.status = status.toUpperCase();
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const [giftCards, total] = await Promise.all([
+      GiftCard.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      GiftCard.countDocuments(query)
+    ]);
+
+    const formattedGiftCards = giftCards.map(card => ({
+      ...card,
+      cardTypeName: GIFTCARD_TYPES[card.cardType],
+      cardFormatName: CARD_FORMATS[card.cardFormat],
+      countryName: COUNTRIES[card.country],
+      vanillaTypeName: card.vanillaType ? VANILLA_TYPES[card.vanillaType] : null
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        giftCards: formattedGiftCards,
+        pagination: {
+          currentPage: pageNum,
+          totalPages: Math.ceil(total / limitNum),
+          totalGiftCards: total,
+          limit: limitNum
+        }
+      },
+      message: 'Gift cards retrieved successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error fetching user gift cards', { 
+      userId: req.user?.id,
+      error: error.message 
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gift cards'
+    });
   }
 });
 
