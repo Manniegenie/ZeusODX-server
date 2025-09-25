@@ -135,9 +135,9 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   'BNB_BSC': 'BNB_BSC',
   
   // Polygon (MATIC)
-  'MATIC_ETH': 'MATIC_ETH',
+  'POL_ETH': 'POL_ETH',
   'POL_ARBITRUM': 'POL_ARBITRUM',
-  'MATIC_BSC': 'MATIC_BSC', // MATIC on Arbitrum (if supported)
+  'POL_BSC': 'POL_BSC', // MATIC on Arbitrum (if supported)
   
   // Avalanche
   'AVAX_BSC': 'AVAX_BSC',
