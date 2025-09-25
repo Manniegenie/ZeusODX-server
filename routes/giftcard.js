@@ -63,7 +63,6 @@ const GIFTCARD_CONFIG = {
   SUPPORTED_FORMATS: Object.keys(CARD_FORMATS),
   SUPPORTED_COUNTRIES: Object.keys(COUNTRIES),
   SUPPORTED_VANILLA_TYPES: Object.keys(VANILLA_TYPES),
-  MAX_PENDING_SUBMISSIONS: 5,
   MAX_IMAGES: 20,
   STATUS: { PENDING: 'PENDING' }
 };
@@ -262,21 +261,12 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    // Fetch user and pending count
-    logger.debug('Fetching user and pending submissions', { userId });
-    const [user, pendingCount] = await Promise.all([
-      User.findById(userId).lean().exec(),
-      GiftCard.countDocuments({ userId, status: { $in: ['PENDING', 'REVIEWING'] } })
-    ]);
-
+    // Fetch user
+    logger.debug('Fetching user', { userId });
+    const user = await User.findById(userId).lean().exec();
     if (!user) {
       logger.error('User not found', { userId });
       return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    if (pendingCount >= GIFTCARD_CONFIG.MAX_PENDING_SUBMISSIONS) {
-      logger.warn('Too many pending submissions', { userId, pendingCount });
-      return res.status(400).json({ success: false, message: `Maximum ${GIFTCARD_CONFIG.MAX_PENDING_SUBMISSIONS} pending submissions allowed` });
     }
 
     // Image uploads: run concurrently (if PHYSICAL)
