@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema({
   passwordpin: { type: String },
   transactionpin: { type: String },
   securitypin: { type: String },
+  expoPushToken: { type: String, default: null },
 
   // OTP fields (used for both pin changes and email verification)
   pinChangeOtp: { type: String, default: null },
