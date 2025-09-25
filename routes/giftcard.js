@@ -17,7 +17,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Gift Card Types Mapping for Frontend Display - Updated to handle Apple/iTunes
+// Gift Card Types Mapping for Frontend Display
 const GIFTCARD_TYPES = {
   'APPLE': 'Apple',
   'APPLE/ITUNES': 'Apple/iTunes',
@@ -81,7 +81,7 @@ const upload = multer({
   }
 });
 
-// Cloudinary upload helper (returns a Promise)
+// Cloudinary upload helper
 function uploadToCloudinary(fileBuffer) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream({
@@ -105,15 +105,15 @@ async function calculateAmountToReceive(cardType, country, cardValue, cardFormat
     options.vanillaType = vanillaType;
   }
 
+  logger.debug('Fetching rate for card', { cardType, country, vanillaType, options });
   const rate = await GiftCardPrice.getRateByCardTypeAndCountry(cardType, country, options);
   if (!rate) {
-    let errorMessage = `Rate not found for ${cardType} in ${country}`;
-    if (cardType === 'VANILLA' && vanillaType) {
-      errorMessage += ` with vanilla type ${vanillaType}`;
-    }
+    const errorMessage = `Rate not found for ${cardType} in ${country}${cardType === 'VANILLA' && vanillaType ? ` with vanilla type ${vanillaType}` : ''}`;
+    logger.error(errorMessage);
     throw new Error(errorMessage);
   }
   
+  logger.debug('Rate found', { rate: rate._id, minAmount: rate.minAmount, maxAmount: rate.maxAmount });
   return {
     ...rate.calculateAmount(cardValue, cardFormat),
     giftCardRateId: rate._id
@@ -174,108 +174,24 @@ async function safelySendGiftcardEmail(user, giftCard, transaction, rateCalculat
   }
 }
 
-// GET /giftcard/types - Get supported gift card types
-router.get('/types', (req, res) => {
-  try {
-    const giftcardOptions = Object.entries(GIFTCARD_TYPES).map(([value, label]) => ({
-      value,
-      label
-    }));
-
-    res.status(200).json({
-      success: true,
-      data: {
-        types: giftcardOptions,
-        countries: Object.entries(COUNTRIES).map(([value, label]) => ({ value, label })),
-        formats: Object.entries(CARD_FORMATS).map(([value, label]) => ({ value, label })),
-        vanillaTypes: Object.entries(VANILLA_TYPES).map(([value, label]) => ({ value, label }))
-      },
-      message: 'Gift card types retrieved successfully'
-    });
-  } catch (error) {
-    logger.error('Error fetching gift card types', { error: error.message });
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch gift card types'
-    });
-  }
-});
-
-// GET /giftcard/rates - Get gift card rates (public endpoint)
-router.get('/rates', async (req, res) => {
-  try {
-    const { country, cardType, vanillaType } = req.query;
-    
-    const query = { isActive: true };
-    
-    if (country) {
-      if (!GIFTCARD_CONFIG.SUPPORTED_COUNTRIES.includes(country.toUpperCase())) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid country'
-        });
-      }
-      query.country = country.toUpperCase();
-    }
-    
-    if (cardType) {
-      if (!GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(cardType.toUpperCase())) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid card type'
-        });
-      }
-      query.cardType = cardType.toUpperCase();
-    }
-
-    if (vanillaType) {
-      if (!GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.includes(vanillaType)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid vanilla type'
-        });
-      }
-      query.vanillaType = vanillaType;
-    }
-
-    const rates = await GiftCardPrice.find(query)
-      .sort({ country: 1, cardType: 1, vanillaType: 1 })
-      .lean();
-
-    const formattedRates = rates.map(rate => ({
-      id: rate._id,
-      cardType: rate.cardType,
-      cardTypeName: GIFTCARD_TYPES[rate.cardType] || rate.cardType,
-      country: rate.country,
-      countryName: COUNTRIES[rate.country] || rate.country,
-      rate: rate.rate,
-      rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`,
-      physicalRate: rate.physicalRate,
-      ecodeRate: rate.ecodeRate,
-      minAmount: rate.minAmount,
-      maxAmount: rate.maxAmount,
-      vanillaType: rate.vanillaType,
-      vanillaTypeName: rate.vanillaType ? VANILLA_TYPES[rate.vanillaType] : null
-    }));
-
-    res.status(200).json({
-      success: true,
-      data: formattedRates,
-      message: 'Gift card rates retrieved successfully'
-    });
-
-  } catch (error) {
-    logger.error('Error fetching gift card rates', { error: error.message });
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch gift card rates'
-    });
-  }
+// Debug middleware to log request details
+router.use('/submit', (req, res, next) => {
+  logger.debug('Incoming gift card submission request', {
+    body: req.body,
+    files: req.files ? req.files.map(f => ({ originalname: f.originalname, size: f.size, mimetype: f.mimetype })) : null,
+    userId: req.user?.id,
+    ip: req.ip,
+    userAgent: req.get('User-Agent')
+  });
+  next();
 });
 
 // POST /giftcard/submit - Gift card submission route
 router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), async (req, res) => {
-  const badRequest = (errors) => res.status(400).json({ success: false, message: 'Validation failed', errors });
+  const badRequest = (errors) => {
+    logger.error('Validation failed', { errors });
+    return res.status(400).json({ success: false, message: 'Validation failed', errors });
+  };
 
   try {
     const {
@@ -303,7 +219,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     const errors = [];
 
-    // Enhanced card type validation
+    // Validate only card type
     let isValidCardType = false;
     if (cardType) {
       const normalizedInputCardType = String(cardType).toUpperCase();
@@ -314,51 +230,6 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     if (!isValidCardType) {
       errors.push(`Invalid or missing card type: ${cardType}. Supported types: ${GIFTCARD_CONFIG.SUPPORTED_TYPES.join(', ')}`);
-    }
-
-    if (!cardFormat || !GIFTCARD_CONFIG.SUPPORTED_FORMATS.includes(String(cardFormat).toUpperCase())) {
-      errors.push('Invalid or missing card format');
-    }
-    if (!country || !GIFTCARD_CONFIG.SUPPORTED_COUNTRIES.includes(String(country).toUpperCase())) {
-      errors.push('Invalid or missing country');
-    }
-    if (!cardRange) {
-      errors.push('Card range is required');
-    }
-
-    // Vanilla type constraints
-    if (cardType && String(cardType).toUpperCase() === 'VANILLA') {
-      if (!vanillaType) {
-        errors.push('Vanilla type is required for VANILLA gift cards');
-      } else if (!GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.includes(String(vanillaType))) {
-        errors.push(`Vanilla type must be one of: ${GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.join(', ')}`);
-      }
-    } else if (vanillaType) {
-      errors.push('Vanilla type can only be specified for VANILLA gift cards');
-    }
-
-    // Card value validation (removed strict checks, but ensure it's present)
-    if (!cardValueRaw || typeof cardValueRaw !== 'string' || cardValueRaw.trim() === '') {
-      errors.push('Card value is required');
-    }
-    const cardVal = parseFloat(cardValueRaw);
-    if (isNaN(cardVal)) {
-      errors.push('Card value must be a valid number');
-    }
-
-    if (String(cardFormat).toUpperCase() === 'E_CODE') {
-      if (!eCode || eCode.length < 5 || eCode.length > 100) {
-        errors.push('E-code must be between 5 and 100 characters');
-      }
-    }
-
-    if (String(cardFormat).toUpperCase() === 'PHYSICAL') {
-      if (!req.files || req.files.length === 0) {
-        errors.push('At least one image is required for physical cards');
-      }
-      if (req.files && req.files.length > GIFTCARD_CONFIG.MAX_IMAGES) {
-        errors.push(`Maximum ${GIFTCARD_CONFIG.MAX_IMAGES} images allowed`);
-      }
     }
 
     if (errors.length > 0) return badRequest(errors);
@@ -373,6 +244,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     const normalizedCountry = String(country).toUpperCase();
     const normalizedCurrency = (currency || 'USD').toUpperCase();
     const normalizedVanillaType = vanillaType || null;
+    const cardVal = cardValueRaw ? parseFloat(cardValueRaw) : 0;
 
     logger.info('Normalized submission data', {
       originalCardType: cardType,
@@ -380,46 +252,66 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       normalizedCardFormat,
       normalizedCountry,
       normalizedCurrency,
-      normalizedVanillaType
+      normalizedVanillaType,
+      cardValue: cardVal
     });
 
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    if (!userId) {
+      logger.error('Unauthorized submission attempt');
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
 
     // Fetch user and pending count
+    logger.debug('Fetching user and pending submissions', { userId });
     const [user, pendingCount] = await Promise.all([
       User.findById(userId).lean().exec(),
       GiftCard.countDocuments({ userId, status: { $in: ['PENDING', 'REVIEWING'] } })
     ]);
 
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user) {
+      logger.error('User not found', { userId });
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
 
     if (pendingCount >= GIFTCARD_CONFIG.MAX_PENDING_SUBMISSIONS) {
+      logger.warn('Too many pending submissions', { userId, pendingCount });
       return res.status(400).json({ success: false, message: `Maximum ${GIFTCARD_CONFIG.MAX_PENDING_SUBMISSIONS} pending submissions allowed` });
     }
 
     // Image uploads: run concurrently (if PHYSICAL)
     let uploadPromise = Promise.resolve([]);
     if (normalizedCardFormat === 'PHYSICAL' && req.files && req.files.length > 0) {
-      const fileUploads = req.files.map((file) => uploadToCloudinary(file.buffer));
+      logger.debug('Starting image uploads', { fileCount: req.files.length });
+      const fileUploads = req.files.map((file, index) => uploadToCloudinary(file.buffer)
+        .catch(err => {
+          logger.error('Image upload failed', { index, error: err.message });
+          throw err;
+        })
+      );
       uploadPromise = Promise.allSettled(fileUploads).then(results => {
         const rejected = results.filter(r => r.status === 'rejected');
         if (rejected.length > 0) {
           rejected.forEach((r, i) => logger.error('Cloudinary upload error', { index: i, error: r.reason?.message || r.reason }));
           throw new Error('One or more image uploads failed');
         }
+        logger.debug('Image uploads completed', { uploadedCount: results.length });
         return results.map(r => r.value);
       });
     }
 
     // Rate calculation promise
+    logger.debug('Calculating rate', { cardType: normalizedCardType, country: normalizedCountry, cardValue: cardVal });
     const ratePromise = calculateAmountToReceive(
       normalizedCardType,
       normalizedCountry,
       cardVal,
       normalizedCardFormat,
       normalizedVanillaType
-    );
+    ).catch(err => {
+      logger.error('Rate calculation failed', { error: err.message });
+      throw err;
+    });
 
     // Run uploads + rate calc in parallel
     const [uploadedImages, rateCalculation] = await Promise.all([uploadPromise, ratePromise]);
@@ -427,6 +319,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     // Map results
     const imageUrls = (uploadedImages || []).map(img => img.secure_url);
     const imagePublicIds = (uploadedImages || []).map(img => img.public_id);
+    logger.debug('Image upload results', { imageUrls, imagePublicIds });
 
     // Build gift card document
     const giftCardData = {
@@ -461,6 +354,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     }
 
     // Persist gift card
+    logger.debug('Creating gift card document', { giftCardData });
     const giftCard = await GiftCard.create(giftCardData);
 
     // Create transaction
@@ -494,11 +388,13 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       transactionData.narration = `Gift card submission - ${normalizedCardType} ${normalizedVanillaType} ${normalizedCardFormat} (${normalizedCountry}) - Expected: ${rateCalculation.amountToReceive} ${rateCalculation.targetCurrency}`;
     }
 
+    logger.debug('Creating transaction', { transactionData });
     const transaction = await Transaction.create(transactionData);
 
     // Link transaction to gift card
     giftCard.transactionId = transaction._id;
     await giftCard.save();
+    logger.info('Gift card and transaction saved', { giftCardId: giftCard._id, transactionId: transaction._id });
 
     logger.info('Gift card submitted successfully', {
       userId,
@@ -539,6 +435,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     // Send email asynchronously
     setImmediate(async () => {
+      logger.debug('Sending gift card submission email', { userId, giftCardId: giftCard._id });
       const emailResult = await safelySendGiftcardEmail(user, giftCard, transaction, rateCalculation, imageUrls);
       
       if (emailResult.success) {
@@ -573,6 +470,88 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     }
 
     return res.status(500).json({ success: false, message: 'Submission failed', error: err.message });
+  }
+});
+
+// GET /giftcard/types - Get supported gift card types
+router.get('/types', (req, res) => {
+  try {
+    const giftcardOptions = Object.entries(GIFTCARD_TYPES).map(([value, label]) => ({
+      value,
+      label
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        types: giftcardOptions,
+        countries: Object.entries(COUNTRIES).map(([value, label]) => ({ value, label })),
+        formats: Object.entries(CARD_FORMATS).map(([value, label]) => ({ value, label })),
+        vanillaTypes: Object.entries(VANILLA_TYPES).map(([value, label]) => ({ value, label }))
+      },
+      message: 'Gift card types retrieved successfully'
+    });
+  } catch (error) {
+    logger.error('Error fetching gift card types', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gift card types'
+    });
+  }
+});
+
+// GET /giftcard/rates - Get gift card rates (public endpoint)
+router.get('/rates', async (req, res) => {
+  try {
+    const { country, cardType, vanillaType } = req.query;
+    
+    const query = { isActive: true };
+    
+    if (country) {
+      query.country = country.toUpperCase();
+    }
+    
+    if (cardType) {
+      query.cardType = cardType.toUpperCase();
+    }
+
+    if (vanillaType) {
+      query.vanillaType = vanillaType;
+    }
+
+    logger.debug('Fetching rates', { query });
+    const rates = await GiftCardPrice.find(query)
+      .sort({ country: 1, cardType: 1, vanillaType: 1 })
+      .lean();
+
+    const formattedRates = rates.map(rate => ({
+      id: rate._id,
+      cardType: rate.cardType,
+      cardTypeName: GIFTCARD_TYPES[rate.cardType] || rate.cardType,
+      country: rate.country,
+      countryName: COUNTRIES[rate.country] || rate.country,
+      rate: rate.rate,
+      rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`,
+      physicalRate: rate.physicalRate,
+      ecodeRate: rate.ecodeRate,
+      minAmount: rate.minAmount,
+      maxAmount: rate.maxAmount,
+      vanillaType: rate.vanillaType,
+      vanillaTypeName: rate.vanillaType ? VANILLA_TYPES[rate.vanillaType] : null
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: formattedRates,
+      message: 'Gift card rates retrieved successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error fetching gift card rates', { error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gift card rates'
+    });
   }
 });
 
