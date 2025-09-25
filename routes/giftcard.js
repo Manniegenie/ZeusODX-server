@@ -1,4 +1,4 @@
-// app/routes/giftcard.js (updated)
+// app/routes/giftcard.js (performance-updated)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -9,7 +9,7 @@ const GiftCard = require('../models/giftcard');
 const Transaction = require('../models/transaction');
 const GiftCardPrice = require('../models/giftcardPrice');
 const logger = require('../utils/logger');
-const { sendDepositEmail } = require('../services/EmailService'); // <-- email service import
+const { sendGiftcardSubmissionEmail } = require('../services/EmailService'); // correct helper
 
 // Cloudinary configuration
 cloudinary.config({
@@ -46,7 +46,7 @@ const upload = multer({
   }
 });
 
-// Cloudinary upload helper
+// Cloudinary upload helper (returns a Promise)
 function uploadToCloudinary(fileBuffer) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream({
@@ -89,14 +89,19 @@ async function calculateAmountToReceive(cardType, country, cardValue, cardFormat
   };
 }
 
+// ---------------------------
 // Gift card submission route
-router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
+// ---------------------------
+router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), async (req, res) => {
+  // Quick local helper for a 400 response
+  const badRequest = (errors) => res.status(400).json({ success: false, message: 'Validation failed', errors });
+
   try {
     const {
       cardType,
       cardFormat,
       cardRange,
-      cardValue, // This comes as string from form data
+      cardValue: cardValueRaw, // string from form-data
       currency,
       country,
       description,
@@ -106,102 +111,117 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
 
     const errors = [];
 
-    // Validate inputs
-    if (!GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(cardType?.toUpperCase())) {
-      errors.push('Invalid card type');
+    // Basic input validations (fast, synchronous)
+    if (!cardType || !GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(String(cardType).toUpperCase())) {
+      errors.push('Invalid or missing card type');
     }
-    if (!GIFTCARD_CONFIG.SUPPORTED_FORMATS.includes(cardFormat?.toUpperCase())) {
-      errors.push('Invalid card format');
+    if (!cardFormat || !GIFTCARD_CONFIG.SUPPORTED_FORMATS.includes(String(cardFormat).toUpperCase())) {
+      errors.push('Invalid or missing card format');
     }
-    if (!GIFTCARD_CONFIG.SUPPORTED_COUNTRIES.includes(country?.toUpperCase())) {
-      errors.push('Invalid country');
+    if (!country || !GIFTCARD_CONFIG.SUPPORTED_COUNTRIES.includes(String(country).toUpperCase())) {
+      errors.push('Invalid or missing country');
     }
     if (!cardRange) {
       errors.push('Card range is required');
     }
 
-    // Validate vanillaType for VANILLA cards
-    if (cardType && cardType.toUpperCase() === 'VANILLA') {
+    // Vanilla type constraints
+    if (cardType && String(cardType).toUpperCase() === 'VANILLA') {
       if (!vanillaType) {
         errors.push('Vanilla type is required for VANILLA gift cards');
-      } else if (!GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.includes(vanillaType)) {
+      } else if (!GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.includes(String(vanillaType))) {
         errors.push(`Vanilla type must be one of: ${GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.join(', ')}`);
       }
     } else if (vanillaType) {
       errors.push('Vanilla type can only be specified for VANILLA gift cards');
     }
 
-    // Validate cardValue as string first, then convert to number
-    if (!cardValue || typeof cardValue !== 'string' || cardValue.trim() === '') {
+    // cardValue validation & normalization early to allow parallel work
+    if (!cardValueRaw || typeof cardValueRaw !== 'string' || cardValueRaw.trim() === '') {
       errors.push('Card value is required');
-    } else {
-      const cardVal = parseFloat(cardValue);
-      if (isNaN(cardVal) || cardVal < 5 || cardVal > 2000) {
-        errors.push('Card value must be between $5 and $2000');
-      }
+    }
+    const cardVal = parseFloat(cardValueRaw);
+    if (isNaN(cardVal) || cardVal < 5 || cardVal > 2000) {
+      errors.push('Card value must be between $5 and $2000');
     }
 
-    if (cardFormat?.toUpperCase() === 'E_CODE') {
+    if (String(cardFormat).toUpperCase() === 'E_CODE') {
       if (!eCode || eCode.length < 5 || eCode.length > 100) {
         errors.push('E-code must be between 5 and 100 characters');
       }
     }
 
-    if (cardFormat?.toUpperCase() === 'PHYSICAL' && (!req.files || req.files.length === 0)) {
-      errors.push('At least one image is required for physical cards');
+    if (String(cardFormat).toUpperCase() === 'PHYSICAL') {
+      if (!req.files || req.files.length === 0) {
+        errors.push('At least one image is required for physical cards');
+      }
+      if (req.files && req.files.length > GIFTCARD_CONFIG.MAX_IMAGES) {
+        errors.push(`Maximum ${GIFTCARD_CONFIG.MAX_IMAGES} images allowed`);
+      }
     }
 
-    if (req.files && req.files.length > GIFTCARD_CONFIG.MAX_IMAGES) {
-      errors.push(`Maximum ${GIFTCARD_CONFIG.MAX_IMAGES} images allowed`);
-    }
-
-    if (errors.length > 0) {
-      return res.status(400).json({ success: false, message: 'Validation failed', errors });
-    }
+    if (errors.length > 0) return badRequest(errors);
 
     // Normalize
-    const normalizedCardType = cardType.toUpperCase();
-    const normalizedCardFormat = cardFormat.toUpperCase();
-    const normalizedCountry = country.toUpperCase();
-    const normalizedCurrency = currency?.toUpperCase() || 'USD';
+    const normalizedCardType = String(cardType).toUpperCase();
+    const normalizedCardFormat = String(cardFormat).toUpperCase();
+    const normalizedCountry = String(country).toUpperCase();
+    const normalizedCurrency = (currency || 'USD').toUpperCase();
     const normalizedVanillaType = vanillaType || null;
-    const cardVal = parseFloat(cardValue); // Convert to number after validation
 
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // Fetch user and pending count in parallel (both needed before heavy work)
+    const [user, pendingCount] = await Promise.all([
+      User.findById(userId).lean().exec(),
+      GiftCard.countDocuments({ userId, status: { $in: ['PENDING', 'REVIEWING'] } })
+    ]);
 
-    const pendingCount = await GiftCard.countDocuments({
-      userId,
-      status: { $in: ['PENDING', 'REVIEWING'] }
-    });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     if (pendingCount >= GIFTCARD_CONFIG.MAX_PENDING_SUBMISSIONS) {
       return res.status(400).json({ success: false, message: `Maximum ${GIFTCARD_CONFIG.MAX_PENDING_SUBMISSIONS} pending submissions allowed` });
     }
 
-    // Upload images
-    const uploadedImages = [];
-    for (const file of req.files) {
-      const result = await uploadToCloudinary(file.buffer);
-      uploadedImages.push(result);
+    // Prepare two independent async tasks that we can run in parallel:
+    // 1) upload images (if any)
+    // 2) calculate expected rate/amount
+
+    // Image uploads: run concurrently (if PHYSICAL)
+    let uploadPromise = Promise.resolve([]);
+    if (normalizedCardFormat === 'PHYSICAL' && req.files && req.files.length > 0) {
+      const fileUploads = req.files.map((file) => uploadToCloudinary(file.buffer));
+      // Use allSettled so we can log partial failures, but treat any rejection as failure for now
+      uploadPromise = Promise.allSettled(fileUploads).then(results => {
+        const rejected = results.filter(r => r.status === 'rejected');
+        if (rejected.length > 0) {
+          // Log individual errors for debugging
+          rejected.forEach((r, i) => logger.error('Cloudinary upload error', { index: i, error: r.reason?.message || r.reason }));
+          throw new Error('One or more image uploads failed');
+        }
+        // Map to results
+        return results.map(r => r.value);
+      });
     }
 
-    // Rate calculation with vanilla type support
-    const rateCalculation = await calculateAmountToReceive(
-      normalizedCardType, 
-      normalizedCountry, 
-      cardVal, 
+    // Rate calculation promise
+    const ratePromise = calculateAmountToReceive(
+      normalizedCardType,
+      normalizedCountry,
+      cardVal,
       normalizedCardFormat,
       normalizedVanillaType
     );
 
-    const imageUrls = uploadedImages.map(img => img.secure_url);
-    const imagePublicIds = uploadedImages.map(img => img.public_id);
+    // Run uploads + rate calc in parallel
+    const [uploadedImages, rateCalculation] = await Promise.all([uploadPromise, ratePromise]);
 
-    // Save gift card
+    // map results
+    const imageUrls = (uploadedImages || []).map(img => img.secure_url);
+    const imagePublicIds = (uploadedImages || []).map(img => img.public_id);
+
+    // Build gift card document (we create and then transaction)
     const giftCardData = {
       userId,
       cardType: normalizedCardType,
@@ -215,7 +235,7 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       imageUrls,
       imagePublicIds,
       totalImages: imageUrls.length,
-      status: 'PENDING',
+      status: GIFTCARD_CONFIG.STATUS.PENDING,
       expectedRate: rateCalculation.rate,
       expectedRateDisplay: rateCalculation.rateDisplay,
       expectedAmountToReceive: rateCalculation.amountToReceive,
@@ -229,14 +249,14 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       }
     };
 
-    // Add vanillaType for VANILLA cards
     if (normalizedCardType === 'VANILLA' && normalizedVanillaType) {
       giftCardData.vanillaType = normalizedVanillaType;
     }
 
+    // Persist gift card
     const giftCard = await GiftCard.create(giftCardData);
 
-    // Save transaction
+    // Create transaction referencing the giftCard
     const transactionData = {
       userId,
       type: 'GIFTCARD',
@@ -262,16 +282,16 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       narration: `Gift card submission - ${normalizedCardType} ${normalizedCardFormat} (${normalizedCountry}) - Expected: ${rateCalculation.amountToReceive} ${rateCalculation.targetCurrency}`
     };
 
-    // Add vanillaType for VANILLA cards
     if (normalizedCardType === 'VANILLA' && normalizedVanillaType) {
       transactionData.vanillaType = normalizedVanillaType;
-      // Update narration to include vanilla type
       transactionData.narration = `Gift card submission - ${normalizedCardType} ${normalizedVanillaType} ${normalizedCardFormat} (${normalizedCountry}) - Expected: ${rateCalculation.amountToReceive} ${rateCalculation.targetCurrency}`;
     }
 
     const transaction = await Transaction.create(transactionData);
 
+    // Link transaction id back to giftCard (no need to block further ops on this)
     giftCard.transactionId = transaction._id;
+    // Save without awaiting a fresh fetch — just update
     await giftCard.save();
 
     logger.info('Gift card submitted successfully', {
@@ -286,27 +306,7 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       expectedAmountToReceive: rateCalculation.amountToReceive
     });
 
-    // Send notification email to user (non-blocking; errors logged)
-    try {
-      if (user.email) {
-        // Re-using sendDepositEmail signature: (email, name, amount, currency, reference)
-        await sendDepositEmail(
-          user.email,
-          user.firstName || user.username || 'User',
-          rateCalculation.amountToReceive,
-          rateCalculation.targetCurrency,
-          transaction._id.toString()
-        );
-        logger.info(`Giftcard submission email sent to ${user.email}`, { userId, submissionId: giftCard._id });
-      } else {
-        logger.warn(`User ${user._id} has no email, skipping giftcard submission email`);
-      }
-    } catch (emailErr) {
-      // Log but don't fail the request if email fails
-      logger.error('Failed to send giftcard submission email', { error: emailErr.message, stack: emailErr.stack, userId, submissionId: giftCard._id });
-    }
-
-    // Prepare response data
+    // Respond to client immediately with essential data
     const responseData = {
       submissionId: giftCard._id,
       transactionId: transaction._id,
@@ -323,27 +323,60 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       status: giftCard.status,
       submittedAt: giftCard.createdAt
     };
+    if (normalizedCardType === 'VANILLA' && normalizedVanillaType) responseData.vanillaType = normalizedVanillaType;
 
-    // Add vanillaType to response for VANILLA cards
-    if (normalizedCardType === 'VANILLA' && normalizedVanillaType) {
-      responseData.vanillaType = normalizedVanillaType;
-    }
+    // FIRE & FORGET: send notification email asynchronously (non-blocking)
+    // We intentionally do not await this so the HTTP response is faster.
+    (async () => {
+      try {
+        if (user.email) {
+          await sendGiftcardSubmissionEmail(
+            user.email,
+            user.firstName || user.username || 'User',
+            giftCard._id.toString(),
+            normalizedCardType,
+            normalizedCardFormat,
+            normalizedCountry,
+            cardVal,
+            rateCalculation.amountToReceive,
+            rateCalculation.targetCurrency,
+            rateCalculation.rateDisplay,
+            imageUrls.length,
+            imageUrls.slice(0, 3),
+            transaction._id.toString()
+          );
+          logger.info('Giftcard submission email sent (async)', { userId: user._id, submissionId: giftCard._id });
+        } else {
+          logger.warn('User has no email; skipped giftcard submission email', { userId: user._id });
+        }
+      } catch (emailErr) {
+        logger.error('Async: Failed to send giftcard submission email', {
+          userId: user._id,
+          submissionId: giftCard._id,
+          error: emailErr.message,
+          stack: emailErr.stack
+        });
+      }
+    })();
 
-    res.status(201).json({
-      success: true,
-      message: 'Gift card submitted successfully',
-      data: responseData
-    });
+    return res.status(201).json({ success: true, message: 'Gift card submitted successfully', data: responseData });
 
-  } catch (error) {
-    logger.error('Gift card submission failed', {
+  } catch (err) {
+    // Centralized error logging
+    logger.error('Gift card submission failed (performance-updated route)', {
       userId: req.user?.id,
       cardType: req.body?.cardType,
       vanillaType: req.body?.vanillaType,
-      error: error.message,
-      stack: error.stack
+      error: err.message,
+      stack: err.stack
     });
-    res.status(500).json({ success: false, message: 'Submission failed', error: error.message });
+
+    // If cloudinary upload error bubbled up it will be caught here
+    if (err.message && err.message.toLowerCase().includes('upload')) {
+      return res.status(500).json({ success: false, message: 'Image upload failed', error: err.message });
+    }
+
+    return res.status(500).json({ success: false, message: 'Submission failed', error: err.message });
   }
 });
 
