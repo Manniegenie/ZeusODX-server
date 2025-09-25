@@ -1,4 +1,3 @@
-// app/routes/giftcard.js (complete version with proper syntax)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -113,10 +112,6 @@ async function calculateAmountToReceive(cardType, country, cardValue, cardFormat
       errorMessage += ` with vanilla type ${vanillaType}`;
     }
     throw new Error(errorMessage);
-  }
-  
-  if (!rate.isValidAmount(cardValue)) {
-    throw new Error(`Amount must be between $${rate.minAmount} and $${rate.maxAmount}`);
   }
   
   return {
@@ -342,13 +337,13 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       errors.push('Vanilla type can only be specified for VANILLA gift cards');
     }
 
-    // Card value validation
+    // Card value validation (removed strict checks, but ensure it's present)
     if (!cardValueRaw || typeof cardValueRaw !== 'string' || cardValueRaw.trim() === '') {
       errors.push('Card value is required');
     }
     const cardVal = parseFloat(cardValueRaw);
-    if (isNaN(cardVal) || cardVal < 5 || cardVal > 2000) {
-      errors.push('Card value must be between $5 and $2000');
+    if (isNaN(cardVal)) {
+      errors.push('Card value must be a valid number');
     }
 
     if (String(cardFormat).toUpperCase() === 'E_CODE') {
