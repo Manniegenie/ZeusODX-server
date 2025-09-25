@@ -1,4 +1,4 @@
-// services/emailService.js
+// src/services/EmailService.js
 const brevo = require('@getbrevo/brevo');
 require('dotenv').config();
 
@@ -83,7 +83,7 @@ async function sendEmailVerificationOTP(
     expiryMinutes: String(expiryMinutes),
     expiryTime: new Date(Date.now() + expiryMinutes * 60 * 1000).toLocaleString(),
 
-    // NEW: routing/branding params your template can use
+    // routing/branding params your template can use
     verifyUrl: String(extras.verifyUrl || verifyUrl),
     appDeepLink: String(extras.appDeepLink || appDeepLink),
     ctaText: String(extras.ctaText || 'Verify email'),
@@ -114,6 +114,25 @@ async function sendWithdrawalEmail(to, name, amount, currency, reference) {
   });
 }
 
+/**
+ * Simple utility email helper (keeps parity with earlier usage)
+ * signature: (to, name, utilityType, amount, reference)
+ */
+async function sendUtilityEmail(to, name, utilityType, amount, reference) {
+  return sendEmail({
+    to,
+    name,
+    templateId: parseInt(process.env.BREVO_TEMPLATE_UTILITY),
+    params: {
+      username: String(name || 'User'),
+      utilityType: String(utilityType || ''),
+      amount: String(amount ?? ''),
+      currency: String(process.env.DEFAULT_CURRENCY || 'NGN'),
+      reference: String(reference || '')
+    }
+  });
+}
+
 // Legacy/simple helper (keeps parity with earlier API usage)
 async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
   return sendEmail({
@@ -125,22 +144,7 @@ async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
 
 /**
  * NEW: sendGiftcardSubmissionEmail
- * Use this for giftcard submission notifications (rich payload for template)
- *
- * Params:
- *  - to (string)                : recipient email
- *  - name (string)              : recipient name
- *  - submissionId (string)      : giftcard submission DB id (ObjectId)
- *  - giftcardType (string)      : e.g. 'VANILLA', 'AMAZON', 'USDT' etc.
- *  - cardFormat (string)        : 'PHYSICAL' | 'E_CODE'
- *  - country (string)           : country code e.g. 'US'
- *  - cardValue (number|string)  : face value on card (number)
- *  - expectedAmount (number)    : amount user will receive (calculated)
- *  - expectedCurrency (string)  : currency of expectedAmount (e.g. 'NGN' or 'USD')
- *  - rateDisplay (string)       : human-readable rate (e.g. '85%')
- *  - totalImages (number)       : number of images uploaded
- *  - imageUrls (array<string>)  : small array of image urls (optional)
- *  - reference (string)         : transaction id or reference (optional)
+ * Rich payload for giftcard submission templates
  */
 async function sendGiftcardSubmissionEmail(
   to,
@@ -157,7 +161,6 @@ async function sendGiftcardSubmissionEmail(
   imageUrls = [],
   reference = ''
 ) {
-  // Build friendly links for template
   const submissionUrl = submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL;
   const appDeepLink = submissionId ? `${APP_DEEP_LINK}/giftcards/${submissionId}` : APP_DEEP_LINK;
 
@@ -172,7 +175,6 @@ async function sendGiftcardSubmissionEmail(
     expectedCurrency: String(expectedCurrency || ''),
     rateDisplay: String(rateDisplay || ''),
     totalImages: String(totalImages),
-    // Optional: include up to first 3 image urls for templates that support inline previews
     imageUrls: Array.isArray(imageUrls) ? imageUrls.slice(0, 3) : [],
     submissionUrl,
     appDeepLink,
@@ -188,11 +190,21 @@ async function sendGiftcardSubmissionEmail(
   });
 }
 
+/**
+ * NEW generic utility helper (rich)
+ * Use this for all utility-type transactions (airtime, cable, data, betting, etc.)
+ *
+ * options: {
+ *   utilityType, amount, currency, reference, status, date,
+ *   recipientPhone, provider, transactionId, account, additionalNote,
+ *   webUrl, appDeepLink
+ * }
+ */
 async function sendUtilityTransactionEmail(to, name, options = {}) {
   const {
     utilityType,
     amount,
-    currency = 'NGN',
+    currency = process.env.DEFAULT_CURRENCY || 'NGN',
     reference = '',
     status = 'PENDING',
     date = new Date().toLocaleString(),
@@ -205,7 +217,6 @@ async function sendUtilityTransactionEmail(to, name, options = {}) {
     appDeepLink
   } = options || {};
 
-  // build links (fallback to your global base urls)
   const viewUrl = webUrl || (reference ? `${APP_WEB_BASE_URL}/transactions/${reference}` : APP_WEB_BASE_URL);
   const deepLink = appDeepLink || (reference ? `${APP_DEEP_LINK}/transactions/${reference}` : APP_DEEP_LINK);
 
@@ -264,8 +275,8 @@ async function sendNINVerificationEmail(to, name, status, kycLevel, rejectionRea
 module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
-  sendUtilityEmail,              // existing simple helper
-  sendUtilityTransactionEmail,   // NEW generic utility helper
+  sendUtilityEmail,              // legacy/simple helper
+  sendUtilityTransactionEmail,   // new generic helper (rich)
   sendGiftcardEmail,
   sendGiftcardSubmissionEmail,
   sendKycEmail,
