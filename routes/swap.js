@@ -205,7 +205,11 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
         targetCurrency,
         sourceAmount: amount,
         provider: 'OBIEX',
-        swapType: targetCurrency.toUpperCase() === 'NGNX' ? 'CRYPTO_TO_NGNX' : swapType
+        swapType: targetCurrency.toUpperCase() === 'NGNX' ? 'CRYPTO_TO_NGNX' : swapType,
+        swapCategory: quote.swapCategory || 'CRYPTO_EXCHANGE',
+        swapPair: quote.swapPair || `${sourceCurrency}-${targetCurrency}`,
+        routingPath: quote.routingPath,
+        intermediateToken: quote.intermediateToken
       },
       relatedEntities: {
         correlationId
@@ -255,7 +259,9 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
             targetCurrency,
             sourceAmount: amount,
             provider: 'OBIEX',
-            swapType: 'CRYPTO_TO_NGNX'
+            swapType: 'CRYPTO_TO_NGNX',
+            swapCategory: quote.swapCategory || 'CRYPTO_EXCHANGE',
+            swapPair: quote.swapPair || `${sourceCurrency}-${targetCurrency}`
           },
           obiexDetails: {
             obiexTransactionId: obiexResult.data?.id || obiexResult.data?.reference,
@@ -305,7 +311,9 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
             targetCurrency,
             sourceAmount: amount,
             provider: 'OBIEX',
-            swapType: 'CRYPTO_TO_NGNX'
+            swapType: 'CRYPTO_TO_NGNX',
+            swapCategory: quote.swapCategory || 'CRYPTO_EXCHANGE',
+            swapPair: quote.swapPair || `${sourceCurrency}-${targetCurrency}`
           },
           relatedEntities: {
             correlationId
@@ -377,7 +385,9 @@ async function executeObiexSwapBackground(userId, quote, swapId, correlationId, 
         targetCurrency: quote.targetCurrency,
         sourceAmount: quote.amount,
         provider: 'OBIEX',
-        swapType: 'UNKNOWN'
+        swapType: quote.swapType || 'UNKNOWN',
+        swapCategory: quote.swapCategory || 'CRYPTO_EXCHANGE',
+        swapPair: quote.swapPair || `${quote.sourceCurrency}-${quote.targetCurrency}`
       },
       relatedEntities: {
         correlationId
@@ -492,7 +502,10 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
           sourceAmount: amount,
           finalAmount,
           provider: 'OBIEX',
-          swapType: 'CRYPTO_TO_CRYPTO'
+          swapType: 'CRYPTO_TO_CRYPTO',
+          swapCategory: 'CRYPTO_TO_CRYPTO_EXCHANGE',
+          swapPair: `${sourceCurrency}-${targetCurrency}`,
+          routingPath: `${sourceCurrency} → ${intermediateToken} → ${targetCurrency}`
         },
         obiexDetails: {
           step1QuoteId: step1QuoteResult.quoteId,
@@ -563,7 +576,9 @@ async function executeObiexCryptoCryptoSwap(userId, swapId, sourceCurrency, targ
         intermediateToken,
         sourceAmount: amount,
         provider: 'OBIEX',
-        swapType: 'CRYPTO_TO_CRYPTO'
+        swapType: 'CRYPTO_TO_CRYPTO',
+        swapCategory: 'CRYPTO_TO_CRYPTO_EXCHANGE',
+        swapPair: `${sourceCurrency}-${targetCurrency}`
       },
       relatedEntities: {
         correlationId
@@ -650,7 +665,9 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
           targetCurrency,
           sourceAmount: amount,
           provider: 'OBIEX',
-          swapType: 'DIRECT'
+          swapType: 'DIRECT',
+          swapCategory: 'CRYPTO_EXCHANGE',
+          swapPair: `${sourceCurrency}-${targetCurrency}`
         },
         obiexDetails: {
           obiexTransactionId: acceptResult.data?.id || acceptResult.data?.reference,
@@ -714,7 +731,9 @@ async function executeObiexCryptoStablecoinSwap(userId, swapId, sourceCurrency, 
         targetCurrency,
         sourceAmount: amount,
         provider: 'OBIEX',
-        swapType: 'DIRECT'
+        swapType: 'DIRECT',
+        swapCategory: 'CRYPTO_EXCHANGE',
+        swapPair: `${sourceCurrency}-${targetCurrency}`
       },
       relatedEntities: {
         correlationId
@@ -916,7 +935,7 @@ async function calculateCryptoExchange(fromCurrency, toCurrency, amount) {
 }
 
 /**
- * Execute crypto-to-crypto swap with atomic balance updates
+ * Execute crypto-to-crypto swap with atomic balance updates and enhanced metadata
  */
 async function executeCryptoCryptoSwap(userId, quote, correlationId, systemContext) {
   const session = await mongoose.startSession();
@@ -960,6 +979,32 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
 
     userCache.delete(`user_balance_${userId}`);
 
+    // Enhanced crypto-to-crypto metadata with all tracking fields
+    const enhancedCryptoCryptoMetadata = {
+      swapDirection: 'OUT',
+      swapType: 'CRYPTO_TO_CRYPTO',
+      swapCategory: 'CRYPTO_TO_CRYPTO_EXCHANGE',
+      exchangeRate: amountReceived / amount,
+      relatedTransactionRef: swapReference,
+      fromCurrency: sourceCurrency,
+      toCurrency: targetCurrency,
+      fromAmount: amount,
+      toAmount: amountReceived,
+      // Crypto-to-crypto specific fields
+      intermediateToken,
+      step1Details: step1,
+      step2Details: step2,
+      overallExchangeRate: amountReceived / amount,
+      step1Rate: step1?.rate,
+      step2Rate: step2?.rate,
+      routingPath: `${sourceCurrency} → ${intermediateToken} → ${targetCurrency}`,
+      originalQuoteId: quote.id || null,
+      provider: quote.provider || 'INTERNAL_EXCHANGE',
+      swapPair: `${sourceCurrency}-${targetCurrency}`,
+      executionTimestamp: new Date(),
+      correlationId
+    };
+
     const swapOutTransaction = new Transaction({
       userId,
       type: 'SWAP',
@@ -971,20 +1016,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       obiexTransactionId: `${swapReference}_OUT`,
       narration: `Crypto-to-Crypto Swap: ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency} (via ${intermediateToken})`,
       completedAt: new Date(),
-      metadata: {
-        swapDirection: 'OUT',
-        swapType: 'CRYPTO_TO_CRYPTO',
-        exchangeRate: amountReceived / amount,
-        relatedTransactionRef: swapReference,
-        fromCurrency: sourceCurrency,
-        toCurrency: targetCurrency,
-        fromAmount: amount,
-        toAmount: amountReceived,
-        intermediateToken,
-        step1Details: step1,
-        step2Details: step2,
-        correlationId
-      }
+      metadata: enhancedCryptoCryptoMetadata
     });
 
     const swapInTransaction = new Transaction({
@@ -999,18 +1031,8 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       narration: `Crypto-to-Crypto Swap: ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency} (via ${intermediateToken})`,
       completedAt: new Date(),
       metadata: {
-        swapDirection: 'IN',
-        swapType: 'CRYPTO_TO_CRYPTO',
-        exchangeRate: amountReceived / amount,
-        relatedTransactionRef: swapReference,
-        fromCurrency: sourceCurrency,
-        toCurrency: targetCurrency,
-        fromAmount: amount,
-        toAmount: amountReceived,
-        intermediateToken,
-        step1Details: step1,
-        step2Details: step2,
-        correlationId
+        ...enhancedCryptoCryptoMetadata,
+        swapDirection: 'IN'
       }
     });
 
@@ -1022,7 +1044,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
     
     const endTime = new Date();
 
-    logger.info('Crypto-to-crypto swap executed successfully', {
+    logger.info('Crypto-to-crypto swap executed successfully with enhanced persistence', {
       userId,
       swapReference,
       correlationId,
@@ -1032,8 +1054,10 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       sourceAmount: amount,
       targetAmount: amountReceived,
       overallExchangeRate: amountReceived / amount,
+      routingPath: `${sourceCurrency} → ${intermediateToken} → ${targetCurrency}`,
       outTransactionId: swapOutTransaction._id,
-      inTransactionId: swapInTransaction._id
+      inTransactionId: swapInTransaction._id,
+      enhancedMetadata: true
     });
     
     await Promise.all([
@@ -1043,7 +1067,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
         status: 'SUCCESS',
         source: 'INTERNAL_SWAP',
         action: 'Update User Balances',
-        description: `Updated balances for crypto-to-crypto swap: ${sourceCurrency} and ${targetCurrency}`,
+        description: `Updated balances for crypto-to-crypto swap: ${sourceCurrency} to ${targetCurrency} via ${intermediateToken}`,
         beforeState: {
           [fromKey]: userBefore[fromKey],
           [toKey]: userBefore[toKey]
@@ -1067,8 +1091,14 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
           sourceAmount: amount,
           targetAmount: amountReceived,
           exchangeRate: amountReceived / amount,
-          provider: 'INTERNAL_EXCHANGE',
-          swapType: 'CRYPTO_TO_CRYPTO'
+          provider: quote.provider || 'INTERNAL_EXCHANGE',
+          swapType: 'CRYPTO_TO_CRYPTO',
+          swapCategory: 'CRYPTO_TO_CRYPTO_EXCHANGE',
+          swapPair: `${sourceCurrency}-${targetCurrency}`,
+          routingPath: `${sourceCurrency} → ${intermediateToken} → ${targetCurrency}`,
+          step1Details: step1,
+          step2Details: step2,
+          originalQuoteId: quote.id
         },
         relatedEntities: {
           correlationId,
@@ -1080,7 +1110,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
           endTime,
           duration: endTime - startTime
         },
-        tags: ['balance-update', 'swap', 'internal', 'crypto-to-crypto']
+        tags: ['balance-update', 'swap', 'internal', 'crypto-to-crypto', 'enhanced-persistence']
       }),
       
       createAuditEntry({
@@ -1098,8 +1128,14 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
           sourceAmount: amount,
           targetAmount: amountReceived,
           exchangeRate: amountReceived / amount,
-          provider: 'INTERNAL_EXCHANGE',
-          swapType: 'CRYPTO_TO_CRYPTO'
+          provider: quote.provider || 'INTERNAL_EXCHANGE',
+          swapType: 'CRYPTO_TO_CRYPTO',
+          swapCategory: 'CRYPTO_TO_CRYPTO_EXCHANGE',
+          swapPair: `${sourceCurrency}-${targetCurrency}`,
+          routingPath: `${sourceCurrency} → ${intermediateToken} → ${targetCurrency}`,
+          step1Details: step1,
+          step2Details: step2,
+          originalQuoteId: quote.id
         },
         relatedEntities: {
           correlationId,
@@ -1111,7 +1147,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
           endTime,
           duration: endTime - startTime
         },
-        tags: ['swap', 'internal', 'completed', 'success', 'crypto-to-crypto']
+        tags: ['swap', 'internal', 'completed', 'success', 'crypto-to-crypto', 'enhanced-persistence']
       })
     ]);
 
@@ -1152,8 +1188,12 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
         sourceCurrency: quote.sourceCurrency,
         targetCurrency: quote.targetCurrency,
         sourceAmount: quote.amount,
-        provider: 'INTERNAL_EXCHANGE',
-        swapType: 'CRYPTO_TO_CRYPTO'
+        intermediateToken: quote.intermediateToken,
+        provider: quote.provider || 'INTERNAL_EXCHANGE',
+        swapType: 'CRYPTO_TO_CRYPTO',
+        swapCategory: 'CRYPTO_TO_CRYPTO_EXCHANGE',
+        swapPair: `${quote.sourceCurrency}-${quote.targetCurrency}`,
+        originalQuoteId: quote.id
       },
       relatedEntities: {
         correlationId
@@ -1167,7 +1207,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
       riskLevel: 'HIGH',
       flagged: true,
       flagReason: 'Internal crypto-to-crypto swap execution failed',
-      tags: ['swap', 'internal', 'failed', 'critical-error', 'crypto-to-crypto']
+      tags: ['swap', 'internal', 'failed', 'critical-error', 'crypto-to-crypto', 'enhanced-persistence']
     });
     
     throw err;
@@ -1175,7 +1215,7 @@ async function executeCryptoCryptoSwap(userId, quote, correlationId, systemConte
 }
 
 /**
- * Execute crypto-to-stablecoin swap with atomic balance updates
+ * Execute crypto-to-stablecoin swap with atomic balance updates and enhanced metadata
  */
 async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
   const session = await mongoose.startSession();
@@ -1219,6 +1259,28 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
 
     userCache.delete(`user_balance_${userId}`);
 
+    // Enhanced transaction metadata with comprehensive swap details
+    const enhancedMetadata = {
+      swapDirection: 'OUT',
+      swapType: type,
+      swapCategory: 'CRYPTO_EXCHANGE',
+      exchangeRate: amountReceived / amount,
+      relatedTransactionRef: swapReference,
+      fromCurrency: sourceCurrency,
+      toCurrency: targetCurrency,
+      fromAmount: amount,
+      toAmount: amountReceived,
+      // Additional tracking fields
+      originalQuoteId: quote.id || null,
+      provider: quote.provider || 'INTERNAL_EXCHANGE',
+      swapPair: `${sourceCurrency}-${targetCurrency}`,
+      executionTimestamp: new Date(),
+      correlationId,
+      // Price information if available
+      fromPrice: quote.fromPrice || null,
+      toPrice: quote.toPrice || null
+    };
+
     const swapOutTransaction = new Transaction({
       userId,
       type: 'SWAP',
@@ -1230,17 +1292,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       obiexTransactionId: `${swapReference}_OUT`,
       narration: `Crypto Swap: ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency}`,
       completedAt: new Date(),
-      metadata: {
-        swapDirection: 'OUT',
-        swapType: type,
-        exchangeRate: amountReceived / amount,
-        relatedTransactionRef: swapReference,
-        fromCurrency: sourceCurrency,
-        toCurrency: targetCurrency,
-        fromAmount: amount,
-        toAmount: amountReceived,
-        correlationId
-      }
+      metadata: enhancedMetadata
     });
 
     const swapInTransaction = new Transaction({
@@ -1255,15 +1307,8 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       narration: `Crypto Swap: ${amount} ${sourceCurrency} to ${amountReceived} ${targetCurrency}`,
       completedAt: new Date(),
       metadata: {
-        swapDirection: 'IN',
-        swapType: type,
-        exchangeRate: amountReceived / amount,
-        relatedTransactionRef: swapReference,
-        fromCurrency: sourceCurrency,
-        toCurrency: targetCurrency,
-        fromAmount: amount,
-        toAmount: amountReceived,
-        correlationId
+        ...enhancedMetadata,
+        swapDirection: 'IN'
       }
     });
 
@@ -1275,7 +1320,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
     
     const endTime = new Date();
 
-    logger.info('Crypto swap executed successfully', {
+    logger.info('Crypto swap executed successfully with enhanced data persistence', {
       userId,
       swapReference,
       correlationId,
@@ -1284,8 +1329,10 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       sourceAmount: amount,
       targetAmount: amountReceived,
       exchangeRate: amountReceived / amount,
+      swapPair: `${sourceCurrency}-${targetCurrency}`,
       outTransactionId: swapOutTransaction._id,
-      inTransactionId: swapInTransaction._id
+      inTransactionId: swapInTransaction._id,
+      enhancedMetadata: true
     });
     
     await Promise.all([
@@ -1295,7 +1342,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
         status: 'SUCCESS',
         source: 'INTERNAL_SWAP',
         action: 'Update User Balances',
-        description: `Updated balances for crypto swap: ${sourceCurrency} and ${targetCurrency}`,
+        description: `Updated balances for crypto swap: ${sourceCurrency} to ${targetCurrency}`,
         beforeState: {
           [fromKey]: userBefore[fromKey],
           [toKey]: userBefore[toKey]
@@ -1318,8 +1365,13 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           sourceAmount: amount,
           targetAmount: amountReceived,
           exchangeRate: amountReceived / amount,
-          provider: 'INTERNAL_EXCHANGE',
-          swapType: 'DIRECT'
+          provider: quote.provider || 'INTERNAL_EXCHANGE',
+          swapType: type,
+          swapCategory: 'CRYPTO_EXCHANGE',
+          swapPair: `${sourceCurrency}-${targetCurrency}`,
+          originalQuoteId: quote.id,
+          fromPrice: quote.fromPrice,
+          toPrice: quote.toPrice
         },
         relatedEntities: {
           correlationId,
@@ -1331,7 +1383,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           endTime,
           duration: endTime - startTime
         },
-        tags: ['balance-update', 'swap', 'internal']
+        tags: ['balance-update', 'swap', 'internal', 'enhanced-persistence']
       }),
       
       createAuditEntry({
@@ -1340,7 +1392,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
         status: 'SUCCESS',
         source: 'INTERNAL_SWAP',
         action: 'Complete Internal Swap',
-        description: `Successfully completed internal crypto swap`,
+        description: `Successfully completed internal crypto swap with enhanced data persistence`,
         swapDetails: {
           swapId: swapReference,
           sourceCurrency,
@@ -1348,8 +1400,13 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           sourceAmount: amount,
           targetAmount: amountReceived,
           exchangeRate: amountReceived / amount,
-          provider: 'INTERNAL_EXCHANGE',
-          swapType: 'DIRECT'
+          provider: quote.provider || 'INTERNAL_EXCHANGE',
+          swapType: type,
+          swapCategory: 'CRYPTO_EXCHANGE',
+          swapPair: `${sourceCurrency}-${targetCurrency}`,
+          originalQuoteId: quote.id,
+          fromPrice: quote.fromPrice,
+          toPrice: quote.toPrice
         },
         relatedEntities: {
           correlationId,
@@ -1361,7 +1418,7 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           endTime,
           duration: endTime - startTime
         },
-        tags: ['swap', 'internal', 'completed', 'success']
+        tags: ['swap', 'internal', 'completed', 'success', 'enhanced-persistence']
       }),
       
       createAuditEntry({
@@ -1378,11 +1435,14 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           balanceBefore: userBefore[fromKey],
           balanceAfter: updatedUser[fromKey]
         },
+        swapDetails: {
+          swapPair: `${sourceCurrency}-${targetCurrency}`
+        },
         relatedEntities: {
           correlationId
         },
         systemContext,
-        tags: ['transaction', 'swap', 'outgoing']
+        tags: ['transaction', 'swap', 'outgoing', 'enhanced-persistence']
       }),
       
       createAuditEntry({
@@ -1399,11 +1459,14 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
           balanceBefore: userBefore[toKey],
           balanceAfter: updatedUser[toKey]
         },
+        swapDetails: {
+          swapPair: `${sourceCurrency}-${targetCurrency}`
+        },
         relatedEntities: {
           correlationId
         },
         systemContext,
-        tags: ['transaction', 'swap', 'incoming']
+        tags: ['transaction', 'swap', 'incoming', 'enhanced-persistence']
       })
     ]);
 
@@ -1444,8 +1507,11 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
         sourceCurrency: quote.sourceCurrency,
         targetCurrency: quote.targetCurrency,
         sourceAmount: quote.amount,
-        provider: 'INTERNAL_EXCHANGE',
-        swapType: 'DIRECT'
+        provider: quote.provider || 'INTERNAL_EXCHANGE',
+        swapType: quote.type,
+        swapCategory: 'CRYPTO_EXCHANGE',
+        swapPair: `${quote.sourceCurrency}-${quote.targetCurrency}`,
+        originalQuoteId: quote.id
       },
       relatedEntities: {
         correlationId
@@ -1459,14 +1525,14 @@ async function executeCryptoSwap(userId, quote, correlationId, systemContext) {
       riskLevel: 'HIGH',
       flagged: true,
       flagReason: 'Internal swap execution failed',
-      tags: ['swap', 'internal', 'failed', 'critical-error']
+      tags: ['swap', 'internal', 'failed', 'critical-error', 'enhanced-persistence']
     });
     
     throw err;
   }
 }
 
-// POST /swap/quote - Create swap quote
+// POST /swap/quote - Create swap quote with enhanced data persistence
 router.post('/quote', async (req, res) => {
   const correlationId = generateCorrelationId();
   const systemContext = getSystemContext(req);
@@ -1547,10 +1613,14 @@ router.post('/quote', async (req, res) => {
         correlationId,
         step1: cryptoQuote.step1,
         step2: cryptoQuote.step2,
-        overall: cryptoQuote.overall
+        overall: cryptoQuote.overall,
+        // Enhanced tracking fields
+        swapCategory: 'CRYPTO_TO_CRYPTO_EXCHANGE',
+        swapPair: `${from.toUpperCase()}-${to.toUpperCase()}`,
+        routingPath: `${from.toUpperCase()} → ${pairValidation.intermediateToken} → ${to.toUpperCase()}`
       };
 
-      logger.info('Crypto-to-crypto swap quote created', {
+      logger.info('Crypto-to-crypto swap quote created with enhanced persistence', {
         sourceAmount: amount,
         sourceCurrency: from.toUpperCase(),
         targetAmount: cryptoQuote.overall.receiveAmount,
@@ -1559,6 +1629,8 @@ router.post('/quote', async (req, res) => {
         step1Rate: cryptoQuote.step1.rate,
         step2Rate: cryptoQuote.step2.rate,
         overallRate: cryptoQuote.overall.rate,
+        swapPair: payload.swapPair,
+        routingPath: payload.routingPath,
         correlationId
       });
       
@@ -1579,10 +1651,13 @@ router.post('/quote', async (req, res) => {
         expiresAt,
         fromPrice: result.fromPrice,
         toPrice: result.toPrice,
-        correlationId
+        correlationId,
+        // Enhanced tracking fields
+        swapCategory: 'CRYPTO_EXCHANGE',
+        swapPair: `${from.toUpperCase()}-${to.toUpperCase()}`
       };
 
-      logger.info('Direct crypto swap quote created', {
+      logger.info('Direct crypto swap quote created with enhanced persistence', {
         sourceAmount: amount,
         sourceCurrency: from.toUpperCase(),
         targetAmount: result.receiveAmount,
@@ -1590,6 +1665,7 @@ router.post('/quote', async (req, res) => {
         exchangeRate: result.exchangeRate,
         fromPrice: result.fromPrice,
         toPrice: result.toPrice,
+        swapPair: payload.swapPair,
         correlationId
       });
     }
@@ -1617,7 +1693,12 @@ router.post('/quote', async (req, res) => {
         exchangeRate: payload.rate,
         provider: 'INTERNAL_EXCHANGE',
         swapType: payload.swapType,
-        intermediateToken: payload.intermediateToken
+        swapCategory: payload.swapCategory,
+        swapPair: payload.swapPair,
+        intermediateToken: payload.intermediateToken,
+        routingPath: payload.routingPath,
+        fromPrice: payload.fromPrice,
+        toPrice: payload.toPrice
       },
       relatedEntities: {
         correlationId
@@ -1628,7 +1709,7 @@ router.post('/quote', async (req, res) => {
         endTime,
         duration: endTime - startTime
       },
-      tags: ['quote', 'created', 'success', payload.swapType?.toLowerCase()]
+      tags: ['quote', 'created', 'success', payload.swapType?.toLowerCase(), 'enhanced-persistence']
     });
 
     return res.json({
@@ -1667,7 +1748,7 @@ router.post('/quote', async (req, res) => {
       riskLevel: 'MEDIUM',
       flagged: true,
       flagReason: 'Quote creation system error',
-      tags: ['quote', 'creation', 'system-error']
+      tags: ['quote', 'creation', 'system-error', 'enhanced-persistence']
     });
     
     return res.status(500).json({ 
@@ -1677,7 +1758,7 @@ router.post('/quote', async (req, res) => {
   }
 });
 
-// POST /swap/quote/:quoteId - Execute swap
+// POST /swap/quote/:quoteId - Execute swap with enhanced data persistence
 router.post('/quote/:quoteId', async (req, res) => {
   const systemContext = getSystemContext(req);
   const startTime = new Date();
@@ -1697,7 +1778,9 @@ router.post('/quote/:quoteId', async (req, res) => {
       action: 'Accept Swap Quote',
       description: `Attempting to accept quote ${quoteId}`,
       swapDetails: {
-        quoteId
+        quoteId,
+        swapType: quote?.swapType,
+        swapPair: quote?.swapPair
       },
       relatedEntities: {
         correlationId
@@ -1706,7 +1789,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       timing: {
         startTime
       },
-      tags: ['quote', 'acceptance', 'pending']
+      tags: ['quote', 'acceptance', 'pending', 'enhanced-persistence']
     });
 
     if (!quote) {
@@ -1749,11 +1832,12 @@ router.post('/quote/:quoteId', async (req, res) => {
       executeObiexSwapBackground(userId, quote, swapResult.swapId, correlationId, systemContext);
     });
 
-    logger.info(`${quote.swapType === 'CRYPTO_TO_CRYPTO' ? 'Crypto-to-crypto' : 'Crypto'} swap completed, Obiex swap initiated in background`, { 
+    logger.info(`${quote.swapType === 'CRYPTO_TO_CRYPTO' ? 'Crypto-to-crypto' : 'Crypto'} swap completed with enhanced persistence, Obiex swap initiated in background`, { 
       userId, 
       quoteId, 
       correlationId,
       swapType: quote.swapType,
+      swapPair: quote.swapPair,
       swapId: swapResult.swapId,
       swapOutTransactionId: swapResult.swapOutTransaction._id,
       swapInTransactionId: swapResult.swapInTransaction._id
@@ -1780,7 +1864,10 @@ router.post('/quote/:quoteId', async (req, res) => {
         exchangeRate: quote.rate,
         provider: 'INTERNAL_EXCHANGE',
         swapType: quote.swapType,
-        intermediateToken: quote.intermediateToken
+        swapCategory: quote.swapCategory,
+        swapPair: quote.swapPair,
+        intermediateToken: quote.intermediateToken,
+        routingPath: quote.routingPath
       },
       relatedEntities: {
         correlationId,
@@ -1792,7 +1879,7 @@ router.post('/quote/:quoteId', async (req, res) => {
         endTime,
         duration: endTime - startTime
       },
-      tags: ['quote', 'accepted', 'success', 'obiex-initiated', quote.swapType?.toLowerCase()]
+      tags: ['quote', 'accepted', 'success', 'obiex-initiated', quote.swapType?.toLowerCase(), 'enhanced-persistence']
     });
 
     const responsePayload = {
@@ -1808,7 +1895,10 @@ router.post('/quote/:quoteId', async (req, res) => {
         exchangeRate: quote.rate,
         provider: quote.provider,
         swapType: quote.swapType,
+        swapCategory: quote.swapCategory,
+        swapPair: quote.swapPair,
         intermediateToken: quote.intermediateToken,
+        routingPath: quote.routingPath,
         ...(quote.swapType === 'CRYPTO_TO_CRYPTO' && {
           step1Details: quote.step1,
           step2Details: quote.step2,
@@ -1829,7 +1919,8 @@ router.post('/quote/:quoteId', async (req, res) => {
       obiexSwapInitiated: true,
       audit: {
         correlationId,
-        trackingEnabled: true
+        trackingEnabled: true,
+        enhancedPersistence: true
       }
     };
 
@@ -1877,7 +1968,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       riskLevel: 'HIGH',
       flagged: true,
       flagReason: 'Critical swap execution failure',
-      tags: ['swap', 'execution', 'critical-error', 'api-endpoint']
+      tags: ['swap', 'execution', 'critical-error', 'api-endpoint', 'enhanced-persistence']
     });
     
     return res.status(500).json({ 
@@ -1908,7 +1999,7 @@ router.get('/tokens', (req, res) => {
         description: 'Retrieved supported tokens list',
         responseData: { tokenCount: tokens.length },
         systemContext,
-        tags: ['tokens', 'fetch', 'info']
+        tags: ['tokens', 'fetch', 'info', 'enhanced-persistence']
       });
     });
     
@@ -1935,7 +2026,7 @@ router.get('/tokens', (req, res) => {
           stack: err.stack
         },
         systemContext,
-        tags: ['tokens', 'fetch', 'error']
+        tags: ['tokens', 'fetch', 'error', 'enhanced-persistence']
       });
     });
     
