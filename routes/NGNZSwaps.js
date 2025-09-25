@@ -55,7 +55,7 @@ function getSystemContext(req) {
 
 /**
  * Execute Obiex NGNZ swap in background (non-blocking) with comprehensive auditing
- * Note: NGNZ in our system maps to NGNX in Obiex
+ * Updated to always use crypto as sourceId and NGNX as targetId
  */
 async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlationId, systemContext) {
   const auditStartTime = new Date();
@@ -63,9 +63,9 @@ async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlation
   try {
     const { sourceCurrency, targetCurrency, amount, flow } = quote;
     
-    // Convert NGNZ to NGNX for Obiex operations
-    const obiexSourceCurrency = sourceCurrency === 'NGNZ' ? 'NGNX' : sourceCurrency;
-    const obiexTargetCurrency = targetCurrency === 'NGNZ' ? 'NGNX' : targetCurrency;
+    // Always use crypto as source and NGNX as target for Obiex
+    const cryptoCurrency = flow === 'ONRAMP' ? targetCurrency : sourceCurrency;
+    const isOfframp = flow === 'OFFRAMP';
     
     // Create initial audit entry
     await createAuditEntry({
@@ -74,7 +74,7 @@ async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlation
       status: 'PENDING',
       source: 'BACKGROUND_JOB',
       action: 'Initiate Background Obiex NGNZ Swap',
-      description: `Starting Obiex NGNZ ${flow}: ${amount} ${sourceCurrency} to ${targetCurrency} (Obiex: ${obiexSourceCurrency} to ${obiexTargetCurrency})`,
+      description: `Starting Obiex NGNZ ${flow}: ${amount} ${sourceCurrency} to ${targetCurrency} (Obiex: ${cryptoCurrency}-NGNX ${isOfframp ? 'SELL' : 'BUY'})`,
       swapDetails: {
         swapId,
         sourceCurrency,
@@ -85,8 +85,9 @@ async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlation
         flow
       },
       obiexDetails: {
-        obiexSourceCurrency,
-        obiexTargetCurrency,
+        obiexCryptoCurrency: cryptoCurrency,
+        obiexTargetCurrency: 'NGNX',
+        obiexSide: isOfframp ? 'SELL' : 'BUY',
         obiexOperationType: flow === 'ONRAMP' ? 'NGNX_TO_CRYPTO' : 'CRYPTO_TO_NGNX'
       },
       relatedEntities: {
@@ -99,138 +100,31 @@ async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlation
       tags: ['background', 'obiex', 'ngnz-swap', flow.toLowerCase()]
     });
     
-    // Execute appropriate Obiex operation based on flow
-    if (flow === 'OFFRAMP') {
-      // Crypto to NGNX (user: crypto to NGNZ, obiex: crypto to NGNX)
-      logger.info('Executing Obiex crypto-to-NGNX swap in background for NGNZ offramp', {
+    // Execute Obiex operation with standardized crypto-NGNX pairing
+    if (isOfframp) {
+      // OFFRAMP: Crypto to NGNZ (Obiex: SELL crypto for NGNX)
+      logger.info('Executing Obiex crypto-NGNX SELL swap for NGNZ offramp', {
         userId,
         swapId,
-        sourceCurrency: obiexSourceCurrency,
-        targetCurrency: obiexTargetCurrency,
+        cryptoCurrency,
         amount,
+        side: 'SELL',
         correlationId
       });
       
-      const obiexResult = await swapCryptoToNGNX({
-        sourceCode: obiexSourceCurrency,
-        amount: amount
-      });
-      
-      const auditEndTime = new Date();
-      
-      if (obiexResult.success) {
-        logger.info('Obiex crypto-to-NGNX swap completed successfully for NGNZ offramp', {
-          userId,
-          swapId,
-          correlationId,
-          obiexData: obiexResult.data
-        });
-        
-        // Create success audit entry
-        await createAuditEntry({
-          userId,
-          eventType: 'OBIEX_SWAP_COMPLETED',
-          status: 'SUCCESS',
-          source: 'OBIEX_API',
-          action: 'Complete NGNZ Offramp Swap',
-          description: `Successfully completed Obiex crypto-to-NGNX swap for NGNZ offramp`,
-          swapDetails: {
-            swapId,
-            sourceCurrency,
-            targetCurrency,
-            sourceAmount: amount,
-            provider: 'OBIEX',
-            swapType: 'CRYPTO_TO_NGNX',
-            flow: 'OFFRAMP'
-          },
-          obiexDetails: {
-            obiexTransactionId: obiexResult.data?.id || obiexResult.data?.reference,
-            obiexStatus: obiexResult.data?.status || 'COMPLETED',
-            obiexResponse: obiexResult.data,
-            obiexOperationType: 'CRYPTO_TO_NGNX',
-            obiexSourceCurrency,
-            obiexTargetCurrency
-          },
-          relatedEntities: {
-            correlationId
-          },
-          responseData: obiexResult.data,
-          systemContext,
-          timing: {
-            startTime: auditStartTime,
-            endTime: auditEndTime,
-            duration: auditEndTime - auditStartTime
-          },
-          tags: ['background', 'obiex', 'ngnz-swap', 'offramp', 'success']
-        });
-        
-        // Create transaction record
-        await createObiexNGNZTransactionRecord(userId, swapId, obiexResult, 'OFFRAMP', correlationId);
-      } else {
-        logger.error('Obiex crypto-to-NGNX swap failed for NGNZ offramp', {
-          userId,
-          swapId,
-          correlationId,
-          error: obiexResult.error,
-          statusCode: obiexResult.statusCode
-        });
-        
-        // Create failure audit entry
-        await createAuditEntry({
-          userId,
-          eventType: 'OBIEX_SWAP_FAILED',
-          status: 'FAILED',
-          source: 'OBIEX_API',
-          action: 'Failed NGNZ Offramp Swap',
-          description: `Obiex crypto-to-NGNX swap failed for NGNZ offramp: ${obiexResult.error?.message || 'Unknown error'}`,
-          errorDetails: {
-            message: obiexResult.error?.message || 'Unknown error',
-            code: obiexResult.error?.code || 'OBIEX_NGNZ_ERROR',
-            httpStatus: obiexResult.statusCode,
-            providerError: obiexResult.error
-          },
-          swapDetails: {
-            swapId,
-            sourceCurrency,
-            targetCurrency,
-            sourceAmount: amount,
-            provider: 'OBIEX',
-            swapType: 'CRYPTO_TO_NGNX',
-            flow: 'OFFRAMP'
-          },
-          obiexDetails: {
-            obiexSourceCurrency,
-            obiexTargetCurrency,
-            obiexOperationType: 'CRYPTO_TO_NGNX'
-          },
-          relatedEntities: {
-            correlationId
-          },
-          responseData: obiexResult,
-          systemContext,
-          timing: {
-            startTime: auditStartTime,
-            endTime: auditEndTime,
-            duration: auditEndTime - auditStartTime
-          },
-          riskLevel: 'MEDIUM',
-          flagged: true,
-          flagReason: 'Obiex NGNZ offramp swap operation failed',
-          tags: ['background', 'obiex', 'ngnz-swap', 'offramp', 'failed', 'error']
-        });
-      }
+      await executeObiexCryptoNGNXSwap(userId, swapId, cryptoCurrency, amount, 'SELL', correlationId, systemContext, auditStartTime, 'OFFRAMP');
     } else {
-      // ONRAMP: NGNX to crypto (user: NGNZ to crypto, obiex: NGNX to crypto)
-      logger.info('Executing Obiex NGNX-to-crypto swap in background for NGNZ onramp', {
+      // ONRAMP: NGNZ to crypto (Obiex: BUY crypto with NGNX)
+      logger.info('Executing Obiex crypto-NGNX BUY swap for NGNZ onramp', {
         userId,
         swapId,
-        sourceCurrency: obiexSourceCurrency,
-        targetCurrency: obiexTargetCurrency,
+        cryptoCurrency,
         amount,
+        side: 'BUY',
         correlationId
       });
       
-      await executeObiexNGNXCryptoSwap(userId, swapId, obiexSourceCurrency, obiexTargetCurrency, amount, correlationId, systemContext, auditStartTime, 'ONRAMP');
+      await executeObiexCryptoNGNXSwap(userId, swapId, cryptoCurrency, amount, 'BUY', correlationId, systemContext, auditStartTime, 'ONRAMP');
     }
     
   } catch (error) {
@@ -245,7 +139,6 @@ async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlation
       stack: error.stack
     });
     
-    // Create error audit entry
     await createAuditEntry({
       userId,
       eventType: 'OBIEX_SWAP_FAILED',
@@ -285,57 +178,70 @@ async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlation
 }
 
 /**
- * Execute NGNX-to-crypto swap via Obiex (background process) with auditing
+ * Execute crypto-NGNX swap via Obiex with standardized pairing
+ * Always uses crypto as sourceId and NGNX as targetId, with side determining direction
  */
-async function executeObiexNGNXCryptoSwap(userId, swapId, sourceCurrency, targetCurrency, amount, correlationId, systemContext, startTime, flow) {
+async function executeObiexCryptoNGNXSwap(userId, swapId, cryptoCurrency, amount, side, correlationId, systemContext, startTime, flow) {
   try {
-    // Get currency IDs for Obiex (sourceCurrency should be NGNX here)
-    const sourceId = await getCurrencyIdByCode(sourceCurrency);
-    const targetId = await getCurrencyIdByCode(targetCurrency);
+    // Always get crypto as sourceId and NGNX as targetId
+    const cryptoId = await getCurrencyIdByCode(cryptoCurrency);
+    const ngnxId = await getCurrencyIdByCode('NGNX');
     
-    // Create and accept quote for the swap
-    const quoteResult = await createQuote({
-      sourceId,
-      targetId,
+    logger.info('Executing standardized Obiex crypto-NGNX swap', {
+      userId,
+      swapId,
+      cryptoCurrency,
+      cryptoId,
+      ngnxId,
       amount,
-      side: 'SELL' // Selling NGNX for crypto
+      side,
+      flow,
+      correlationId
+    });
+    
+    // Create quote with standardized crypto-NGNX pairing
+    const quoteResult = await createQuote({
+      sourceId: cryptoId,  // Always crypto as source
+      targetId: ngnxId,    // Always NGNX as target
+      amount,
+      side: side           // 'SELL' for offramp, 'BUY' for onramp
     });
     
     if (!quoteResult.success) {
-      throw new Error(`Obiex NGNX quote creation failed: ${JSON.stringify(quoteResult.error)}`);
+      throw new Error(`Obiex crypto-NGNX quote creation failed: ${JSON.stringify(quoteResult.error)}`);
     }
     
     const acceptResult = await acceptQuote(quoteResult.quoteId);
     const auditEndTime = new Date();
     
     if (acceptResult.success) {
-      logger.info('Obiex NGNX-to-crypto swap completed successfully for NGNZ onramp', {
+      logger.info('Obiex crypto-NGNX swap completed successfully', {
         userId,
         swapId,
-        sourceCurrency,
-        targetCurrency,
+        cryptoCurrency,
+        side,
+        flow,
         amount,
         correlationId,
         quoteId: quoteResult.quoteId,
         obiexData: acceptResult.data
       });
       
-      // Create success audit entry
       await createAuditEntry({
         userId,
         eventType: 'OBIEX_SWAP_COMPLETED',
         status: 'SUCCESS',
         source: 'OBIEX_API',
-        action: 'Complete NGNZ Onramp Swap',
-        description: `Successfully completed Obiex NGNX-to-crypto swap for NGNZ onramp`,
+        action: `Complete NGNZ ${flow} Swap`,
+        description: `Successfully completed Obiex crypto-NGNX ${side} swap for NGNZ ${flow}`,
         swapDetails: {
           swapId,
-          sourceCurrency: 'NGNZ', // User perspective
-          targetCurrency,
+          sourceCurrency: flow === 'ONRAMP' ? 'NGNZ' : cryptoCurrency,
+          targetCurrency: flow === 'ONRAMP' ? cryptoCurrency : 'NGNZ',
           sourceAmount: amount,
           provider: 'OBIEX',
-          swapType: 'NGNX_TO_CRYPTO',
-          flow: 'ONRAMP'
+          swapType: `CRYPTO_NGNX_${side}`,
+          flow
         },
         obiexDetails: {
           obiexTransactionId: acceptResult.data?.id || acceptResult.data?.reference,
@@ -343,13 +249,20 @@ async function executeObiexNGNXCryptoSwap(userId, swapId, sourceCurrency, target
           obiexStatus: acceptResult.data?.status || 'COMPLETED',
           obiexResponse: acceptResult.data,
           obiexOperationType: 'QUOTE_ACCEPT',
-          obiexSourceCurrency: sourceCurrency,
-          obiexTargetCurrency: targetCurrency
+          obiexCryptoCurrency: cryptoCurrency,
+          obiexSide: side,
+          obiexPairing: `${cryptoCurrency}-NGNX`
         },
         relatedEntities: {
           correlationId
         },
-        requestData: { sourceId, targetId, amount, side: 'SELL' },
+        requestData: { 
+          sourceId: cryptoId, 
+          targetId: ngnxId, 
+          amount, 
+          side,
+          pairing: `${cryptoCurrency}-NGNX`
+        },
         responseData: acceptResult.data,
         systemContext,
         timing: {
@@ -357,58 +270,60 @@ async function executeObiexNGNXCryptoSwap(userId, swapId, sourceCurrency, target
           endTime: auditEndTime,
           duration: auditEndTime - startTime
         },
-        tags: ['background', 'obiex', 'ngnz-swap', 'onramp', 'success']
+        tags: ['background', 'obiex', 'ngnz-swap', flow.toLowerCase(), side.toLowerCase(), 'success']
       });
       
-      // Create a record of the Obiex transaction
       await createObiexNGNZTransactionRecord(userId, swapId, {
         quoteId: quoteResult.quoteId,
         quoteData: quoteResult.data,
-        acceptData: acceptResult.data
-      }, 'ONRAMP', correlationId);
+        acceptData: acceptResult.data,
+        obiexPairing: `${cryptoCurrency}-NGNX`,
+        obiexSide: side
+      }, flow, correlationId);
       
     } else {
-      throw new Error(`Obiex NGNX quote acceptance failed: ${JSON.stringify(acceptResult.error)}`);
+      throw new Error(`Obiex crypto-NGNX quote acceptance failed: ${JSON.stringify(acceptResult.error)}`);
     }
     
   } catch (error) {
     const auditEndTime = new Date();
     
-    logger.error('Obiex NGNX-to-crypto swap failed for NGNZ onramp', {
+    logger.error('Obiex crypto-NGNX swap failed', {
       userId,
       swapId,
-      sourceCurrency,
-      targetCurrency,
+      cryptoCurrency,
+      side,
+      flow,
       amount,
       correlationId,
       error: error.message
     });
     
-    // Create failure audit entry
     await createAuditEntry({
       userId,
       eventType: 'OBIEX_SWAP_FAILED',
       status: 'FAILED',
       source: 'OBIEX_API',
-      action: 'Failed NGNZ Onramp Swap',
-      description: `Obiex NGNX-to-crypto swap failed for NGNZ onramp: ${error.message}`,
+      action: `Failed NGNZ ${flow} Swap`,
+      description: `Obiex crypto-NGNX ${side} swap failed for NGNZ ${flow}: ${error.message}`,
       errorDetails: {
         message: error.message,
-        code: 'OBIEX_NGNX_CRYPTO_ERROR',
+        code: 'OBIEX_CRYPTO_NGNX_ERROR',
         stack: error.stack
       },
       swapDetails: {
         swapId,
-        sourceCurrency: 'NGNZ', // User perspective
-        targetCurrency,
+        sourceCurrency: flow === 'ONRAMP' ? 'NGNZ' : cryptoCurrency,
+        targetCurrency: flow === 'ONRAMP' ? cryptoCurrency : 'NGNZ',
         sourceAmount: amount,
         provider: 'OBIEX',
-        swapType: 'NGNX_TO_CRYPTO',
-        flow: 'ONRAMP'
+        swapType: `CRYPTO_NGNX_${side}`,
+        flow
       },
       obiexDetails: {
-        obiexSourceCurrency: sourceCurrency,
-        obiexTargetCurrency: targetCurrency,
+        obiexCryptoCurrency: cryptoCurrency,
+        obiexSide: side,
+        obiexPairing: `${cryptoCurrency}-NGNX`,
         obiexOperationType: 'QUOTE_ACCEPT'
       },
       relatedEntities: {
@@ -422,27 +337,27 @@ async function executeObiexNGNXCryptoSwap(userId, swapId, sourceCurrency, target
       },
       riskLevel: 'MEDIUM',
       flagged: true,
-      flagReason: 'Obiex NGNZ onramp swap operation failed',
-      tags: ['background', 'obiex', 'ngnz-swap', 'onramp', 'failed']
+      flagReason: `Obiex NGNZ ${flow} swap operation failed`,
+      tags: ['background', 'obiex', 'ngnz-swap', flow.toLowerCase(), side.toLowerCase(), 'failed']
     });
   }
 }
 
 /**
- * Create a transaction record for Obiex NGNZ operations with auditing
+ * Updated transaction record creation with Obiex pairing info
  */
 async function createObiexNGNZTransactionRecord(userId, swapId, obiexResult, flow, correlationId) {
   try {
     const obiexTransaction = new Transaction({
       userId,
       type: 'OBIEX_SWAP',
-      currency: 'MIXED', // Since it involves multiple currencies
-      amount: 0, // This is a tracking transaction
+      currency: 'MIXED',
+      amount: 0,
       status: 'SUCCESSFUL',
       source: 'OBIEX',
       reference: `OBIEX_NGNZ_${swapId}`,
       obiexTransactionId: obiexResult.quoteId || obiexResult.data?.id || `OBIEX_NGNZ_${Date.now()}`,
-      narration: `Obiex background NGNZ ${flow} swap`,
+      narration: `Obiex background NGNZ ${flow} swap - ${obiexResult.obiexPairing} ${obiexResult.obiexSide}`,
       completedAt: new Date(),
       metadata: {
         originalSwapId: swapId,
@@ -450,6 +365,8 @@ async function createObiexNGNZTransactionRecord(userId, swapId, obiexResult, flo
         obiexResult: obiexResult,
         isBackgroundOperation: true,
         flow: flow,
+        obiexPairing: obiexResult.obiexPairing,
+        obiexSide: obiexResult.obiexSide,
         correlationId
       }
     });
@@ -460,11 +377,12 @@ async function createObiexNGNZTransactionRecord(userId, swapId, obiexResult, flo
       userId,
       swapId,
       flow,
+      obiexPairing: obiexResult.obiexPairing,
+      obiexSide: obiexResult.obiexSide,
       correlationId,
       obiexTransactionId: obiexTransaction._id
     });
     
-    // Create audit for transaction record creation
     await createAuditEntry({
       userId,
       transactionId: obiexTransaction._id,
@@ -472,7 +390,7 @@ async function createObiexNGNZTransactionRecord(userId, swapId, obiexResult, flo
       status: 'SUCCESS',
       source: 'BACKGROUND_JOB',
       action: 'Create Obiex NGNZ Transaction Record',
-      description: `Created Obiex NGNZ transaction record for ${flow} swap ${swapId}`,
+      description: `Created Obiex NGNZ transaction record for ${flow} swap ${swapId} - ${obiexResult.obiexPairing} ${obiexResult.obiexSide}`,
       relatedEntities: {
         correlationId
       },
@@ -480,6 +398,8 @@ async function createObiexNGNZTransactionRecord(userId, swapId, obiexResult, flo
         transactionType: 'OBIEX_SWAP',
         originalSwapId: swapId,
         obiexSwapType: `NGNZ_${flow}`,
+        obiexPairing: obiexResult.obiexPairing,
+        obiexSide: obiexResult.obiexSide,
         flow
       },
       tags: ['transaction', 'obiex', 'ngnz', 'record-creation']
@@ -494,7 +414,6 @@ async function createObiexNGNZTransactionRecord(userId, swapId, obiexResult, flo
       error: error.message
     });
     
-    // Create audit for transaction record failure
     await createAuditEntry({
       userId,
       eventType: 'TRANSACTION_CREATED',
