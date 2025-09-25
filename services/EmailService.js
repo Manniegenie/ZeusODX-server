@@ -122,11 +122,77 @@ async function sendUtilityEmail(to, name, utilityType, amount, reference) {
   });
 }
 
+// Legacy/simple helper (keeps parity with earlier API usage)
 async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
   return sendEmail({
     to, name,
     templateId: parseInt(process.env.BREVO_TEMPLATE_GIFTCARD),
     params: { username: String(name || 'User'), giftcardType: String(giftcardType), amount: String(amount), reference: String(reference) }
+  });
+}
+
+/**
+ * NEW: sendGiftcardSubmissionEmail
+ * Use this for giftcard submission notifications (rich payload for template)
+ *
+ * Params:
+ *  - to (string)                : recipient email
+ *  - name (string)              : recipient name
+ *  - submissionId (string)      : giftcard submission DB id (ObjectId)
+ *  - giftcardType (string)      : e.g. 'VANILLA', 'AMAZON', 'USDT' etc.
+ *  - cardFormat (string)        : 'PHYSICAL' | 'E_CODE'
+ *  - country (string)           : country code e.g. 'US'
+ *  - cardValue (number|string)  : face value on card (number)
+ *  - expectedAmount (number)    : amount user will receive (calculated)
+ *  - expectedCurrency (string)  : currency of expectedAmount (e.g. 'NGN' or 'USD')
+ *  - rateDisplay (string)       : human-readable rate (e.g. '85%')
+ *  - totalImages (number)       : number of images uploaded
+ *  - imageUrls (array<string>)  : small array of image urls (optional)
+ *  - reference (string)         : transaction id or reference (optional)
+ */
+async function sendGiftcardSubmissionEmail(
+  to,
+  name,
+  submissionId,
+  giftcardType,
+  cardFormat,
+  country,
+  cardValue,
+  expectedAmount,
+  expectedCurrency,
+  rateDisplay,
+  totalImages = 0,
+  imageUrls = [],
+  reference = ''
+) {
+  // Build friendly links for template
+  const submissionUrl = submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL;
+  const appDeepLink = submissionId ? `${APP_DEEP_LINK}/giftcards/${submissionId}` : APP_DEEP_LINK;
+
+  const params = {
+    username: String(name || 'User'),
+    submissionId: String(submissionId || ''),
+    giftcardType: String(giftcardType || ''),
+    cardFormat: String(cardFormat || ''),
+    country: String(country || ''),
+    cardValue: String(cardValue ?? ''),
+    expectedAmount: String(expectedAmount ?? ''),
+    expectedCurrency: String(expectedCurrency || ''),
+    rateDisplay: String(rateDisplay || ''),
+    totalImages: String(totalImages),
+    // Optional: include up to first 3 image urls for templates that support inline previews
+    imageUrls: Array.isArray(imageUrls) ? imageUrls.slice(0, 3) : [],
+    submissionUrl,
+    appDeepLink,
+    reference: String(reference || ''),
+    companyName: String(COMPANY_NAME),
+    supportEmail: String(SUPPORT_EMAIL)
+  };
+
+  return sendEmail({
+    to, name,
+    templateId: parseInt(process.env.BREVO_TEMPLATE_GIFTCARD_SUBMISSION),
+    params
   });
 }
 
@@ -159,7 +225,8 @@ module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
   sendUtilityEmail,
-  sendGiftcardEmail,
+  sendGiftcardEmail,              // existing simple helper
+  sendGiftcardSubmissionEmail,    // NEW richer giftcard helper
   sendKycEmail,
   sendLoginEmail,
   sendSignupEmail: async (to, name) =>

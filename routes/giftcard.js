@@ -1,3 +1,4 @@
+// app/routes/giftcard.js (updated)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -8,6 +9,7 @@ const GiftCard = require('../models/giftcard');
 const Transaction = require('../models/transaction');
 const GiftCardPrice = require('../models/giftcardPrice');
 const logger = require('../utils/logger');
+const { sendDepositEmail } = require('../services/EmailService'); // <-- email service import
 
 // Cloudinary configuration
 cloudinary.config({
@@ -283,6 +285,26 @@ router.post('/submit', upload.array('cardImages', 20), async (req, res) => {
       cardValue: cardVal,
       expectedAmountToReceive: rateCalculation.amountToReceive
     });
+
+    // Send notification email to user (non-blocking; errors logged)
+    try {
+      if (user.email) {
+        // Re-using sendDepositEmail signature: (email, name, amount, currency, reference)
+        await sendDepositEmail(
+          user.email,
+          user.firstName || user.username || 'User',
+          rateCalculation.amountToReceive,
+          rateCalculation.targetCurrency,
+          transaction._id.toString()
+        );
+        logger.info(`Giftcard submission email sent to ${user.email}`, { userId, submissionId: giftCard._id });
+      } else {
+        logger.warn(`User ${user._id} has no email, skipping giftcard submission email`);
+      }
+    } catch (emailErr) {
+      // Log but don't fail the request if email fails
+      logger.error('Failed to send giftcard submission email', { error: emailErr.message, stack: emailErr.stack, userId, submissionId: giftCard._id });
+    }
 
     // Prepare response data
     const responseData = {
