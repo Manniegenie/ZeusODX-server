@@ -1,10 +1,34 @@
-// routes/notification.js
 const express = require('express');
 const router = express.Router();
 const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 
-// POST /notifications/send-all
+// POST /notification/register-token
+router.post('/register-token', async (req, res) => {
+  try {
+    const { expoPushToken, deviceId } = req.body;
+
+    if (!expoPushToken || !deviceId) {
+      return res.status(400).json({ error: 'expoPushToken and deviceId are required.' });
+    }
+
+    // Find or create a user based on deviceId
+    let user = await User.findOne({ deviceId });
+    if (!user) {
+      user = new User({ deviceId, expoPushToken });
+    } else {
+      user.expoPushToken = expoPushToken;
+    }
+
+    await user.save();
+    return res.json({ message: 'Push token registered successfully.' });
+  } catch (err) {
+    console.error('Error registering push token:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// POST /notification/send-all
 router.post('/send-all', async (req, res) => {
   try {
     const { message } = req.body;
