@@ -114,14 +114,6 @@ async function sendWithdrawalEmail(to, name, amount, currency, reference) {
   });
 }
 
-async function sendUtilityEmail(to, name, utilityType, amount, reference) {
-  return sendEmail({
-    to, name,
-    templateId: parseInt(process.env.BREVO_TEMPLATE_UTILITY),
-    params: { username: String(name || 'User'), utilityType: String(utilityType), amount: String(amount), reference: String(reference) }
-  });
-}
-
 // Legacy/simple helper (keeps parity with earlier API usage)
 async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
   return sendEmail({
@@ -196,6 +188,54 @@ async function sendGiftcardSubmissionEmail(
   });
 }
 
+async function sendUtilityTransactionEmail(to, name, options = {}) {
+  const {
+    utilityType,
+    amount,
+    currency = 'NGN',
+    reference = '',
+    status = 'PENDING',
+    date = new Date().toLocaleString(),
+    recipientPhone = '',
+    provider = '',
+    transactionId = '',
+    account = '',
+    additionalNote = '',
+    webUrl,
+    appDeepLink
+  } = options || {};
+
+  // build links (fallback to your global base urls)
+  const viewUrl = webUrl || (reference ? `${APP_WEB_BASE_URL}/transactions/${reference}` : APP_WEB_BASE_URL);
+  const deepLink = appDeepLink || (reference ? `${APP_DEEP_LINK}/transactions/${reference}` : APP_DEEP_LINK);
+
+  const params = {
+    username: String(name || 'User'),
+    utilityType: String(utilityType || ''),
+    amount: String(amount ?? ''),
+    currency: String(currency || ''),
+    reference: String(reference || ''),
+    status: String(status || ''),
+    date: String(date || new Date().toLocaleString()),
+    recipientPhone: String(recipientPhone || ''),
+    provider: String(provider || ''),
+    transactionId: String(transactionId || ''),
+    account: String(account || ''),
+    additionalNote: String(additionalNote || ''),
+    viewUrl,
+    appDeepLink: deepLink,
+    companyName: String(COMPANY_NAME),
+    supportEmail: String(SUPPORT_EMAIL)
+  };
+
+  return sendEmail({
+    to,
+    name,
+    templateId: parseInt(process.env.BREVO_TEMPLATE_UTILITY),
+    params
+  });
+}
+
 async function sendKycEmail(to, name, status, comments) {
   return sendEmail({
     to, name,
@@ -224,9 +264,10 @@ async function sendNINVerificationEmail(to, name, status, kycLevel, rejectionRea
 module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
-  sendUtilityEmail,
-  sendGiftcardEmail,              // existing simple helper
-  sendGiftcardSubmissionEmail,    // NEW richer giftcard helper
+  sendUtilityEmail,              // existing simple helper
+  sendUtilityTransactionEmail,   // NEW generic utility helper
+  sendGiftcardEmail,
+  sendGiftcardSubmissionEmail,
   sendKycEmail,
   sendLoginEmail,
   sendSignupEmail: async (to, name) =>
