@@ -147,12 +147,57 @@ const transactionSchema = new mongoose.Schema({
   senderUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   senderUsername: { type: String },
 
-  /** ========= Swap ========= **/
+  /** ========= Swap - UPDATED FOR ENHANCED COMPATIBILITY ========= **/
   fromCurrency: { type: String },
   toCurrency: { type: String },
   fromAmount: { type: Number },
   toAmount: { type: Number },
-  swapType: { type: String, enum: ['onramp', 'offramp', 'crypto_to_crypto'] },
+  // UPDATED: More flexible swapType enum to handle both old and new values
+  swapType: { 
+    type: String, 
+    enum: [
+      // Old values (maintain backward compatibility)
+      'onramp', 
+      'offramp', 
+      'crypto_to_crypto',
+      // New values from enhanced swap.js
+      'ONRAMP',
+      'OFFRAMP', 
+      'CRYPTO_TO_CRYPTO',
+      'CRYPTO_TO_STABLECOIN',
+      'STABLECOIN_TO_CRYPTO',
+      'DIRECT',
+      'NGNX_TO_CRYPTO',
+      'CRYPTO_TO_NGNX'
+    ]
+  },
+
+  // NEW: Enhanced swap tracking fields
+  swapCategory: { 
+    type: String,
+    enum: [
+      'CRYPTO_EXCHANGE',
+      'CRYPTO_TO_CRYPTO_EXCHANGE', 
+      'NGNZ_EXCHANGE',
+      'FIAT_EXCHANGE'
+    ]
+  },
+  swapPair: { type: String }, // e.g., "BTC-ETH", "NGNZ-BTC"
+  intermediateToken: { type: String }, // For crypto-to-crypto routing
+  routingPath: { type: String }, // e.g., "BTC → USDT → ETH"
+  exchangeRate: { type: Number }, // Overall exchange rate
+  
+  // NEW: Enhanced price tracking
+  fromPrice: { type: Number }, // USD price of source currency
+  toPrice: { type: Number },   // USD price of target currency
+  
+  // NEW: Enhanced correlation tracking
+  correlationId: { type: String }, // Links related operations
+  originalQuoteId: { type: String }, // Links back to original quote
+  
+  // NEW: Enhanced execution tracking
+  executionTimestamp: { type: Date },
+  swapDirection: { type: String, enum: ['IN', 'OUT', 'INTERNAL'] },
 
   /** ========= Gift card ========= **/
   giftCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'GiftCard' },
@@ -190,7 +235,7 @@ const transactionSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
-/** ========= Indexes ========= **/
+/** ========= Indexes - ENHANCED FOR BETTER SWAP TRACKING ========= **/
 
 // Existing / common indexes
 transactionSchema.index({ transactionId: 1 }, { sparse: true });
@@ -227,6 +272,16 @@ transactionSchema.index({ 'ngnzWithdrawal.obiex.reference': 1 }, { sparse: true 
 transactionSchema.index({ 'ngnzWithdrawal.obiex.id': 1 }, { sparse: true });
 transactionSchema.index({ 'ngnzWithdrawal.destination.accountNumberHash': 1 }, { sparse: true });
 
+// NEW: Enhanced swap tracking indexes
+transactionSchema.index({ correlationId: 1 }, { sparse: true });
+transactionSchema.index({ originalQuoteId: 1 }, { sparse: true });
+transactionSchema.index({ swapPair: 1, status: 1 });
+transactionSchema.index({ swapCategory: 1, status: 1 });
+transactionSchema.index({ userId: 1, swapCategory: 1, createdAt: -1 });
+transactionSchema.index({ userId: 1, correlationId: 1 });
+transactionSchema.index({ intermediateToken: 1, status: 1 });
+transactionSchema.index({ executionTimestamp: -1 }, { sparse: true });
+
 /** ========= Hooks & Methods ========= **/
 
 transactionSchema.pre('save', function (next) {
@@ -237,8 +292,66 @@ transactionSchema.pre('save', function (next) {
     this.populateReceiptDetails();
   }
   
+  // NEW: Auto-populate enhanced swap fields from metadata if not set
+  if (this.type === 'SWAP' && this.metadata) {
+    this.syncSwapFieldsFromMetadata();
+  }
+  
   next();
 });
+
+/**
+ * NEW: Method to sync enhanced swap fields from metadata
+ * This ensures consistency between metadata and top-level fields
+ */
+transactionSchema.methods.syncSwapFieldsFromMetadata = function() {
+  if (!this.metadata) return;
+  
+  // Sync top-level fields from metadata if not already set
+  if (this.metadata.correlationId && !this.correlationId) {
+    this.correlationId = this.metadata.correlationId;
+  }
+  
+  if (this.metadata.originalQuoteId && !this.originalQuoteId) {
+    this.originalQuoteId = this.metadata.originalQuoteId;
+  }
+  
+  if (this.metadata.swapCategory && !this.swapCategory) {
+    this.swapCategory = this.metadata.swapCategory;
+  }
+  
+  if (this.metadata.swapPair && !this.swapPair) {
+    this.swapPair = this.metadata.swapPair;
+  }
+  
+  if (this.metadata.intermediateToken && !this.intermediateToken) {
+    this.intermediateToken = this.metadata.intermediateToken;
+  }
+  
+  if (this.metadata.routingPath && !this.routingPath) {
+    this.routingPath = this.metadata.routingPath;
+  }
+  
+  if (this.metadata.exchangeRate && !this.exchangeRate) {
+    this.exchangeRate = this.metadata.exchangeRate;
+  }
+  
+  if (this.metadata.fromPrice && !this.fromPrice) {
+    this.fromPrice = this.metadata.fromPrice;
+  }
+  
+  if (this.metadata.toPrice && !this.toPrice) {
+    this.toPrice = this.metadata.toPrice;
+  }
+  
+  if (this.metadata.executionTimestamp && !this.executionTimestamp) {
+    this.executionTimestamp = this.metadata.executionTimestamp;
+  }
+  
+  if (this.metadata.swapDirection && !this.swapDirection) {
+    this.swapDirection = this.metadata.swapDirection;
+  }
+};
 
 /**
  * Method to populate receiptDetails from transaction data
@@ -286,7 +399,7 @@ transactionSchema.methods.populateReceiptDetails = function() {
     date: formatDate(this.createdAt),
     
     // Category
-    category: this.isNGNZWithdrawal ? 'withdrawal' : 'utility',
+    category: this.isNGNZWithdrawal ? 'withdrawal' : (this.type === 'SWAP' ? 'swap' : 'utility'),
     
     // Additional provider-specific fields
     additionalFields: {
@@ -294,12 +407,18 @@ transactionSchema.methods.populateReceiptDetails = function() {
       obiexReference: this.ngnzWithdrawal?.obiex?.reference,
       amountSentToBank: this.bankAmount ? formatCurrency(this.bankAmount) : undefined,
       totalAmountDeducted: formatCurrency(Math.abs(this.amount), this.currency),
+      // NEW: Enhanced swap details for receipts
+      swapPair: this.swapPair,
+      routingPath: this.routingPath,
+      exchangeRate: this.exchangeRate,
+      correlationId: this.correlationId
     }
   };
 };
 
 /**
  * Method to get formatted data for frontend receipt modal
+ * ENHANCED: Better support for swap transactions
  */
 transactionSchema.methods.getReceiptData = function() {
   // Ensure receiptDetails is populated
@@ -309,7 +428,8 @@ transactionSchema.methods.getReceiptData = function() {
 
   return {
     id: this._id.toString(),
-    type: this.type === 'WITHDRAWAL' ? 'Withdrawal' : this.type,
+    type: this.type === 'WITHDRAWAL' ? 'Withdrawal' : 
+          this.type === 'SWAP' ? 'Swap' : this.type,
     status: this.status === 'SUCCESSFUL' ? 'Successful' : this.status,
     amount: this.receiptDetails.amount,
     date: this.receiptDetails.date,
@@ -329,6 +449,14 @@ transactionSchema.methods.getReceiptData = function() {
       narration: this.receiptDetails.narration,
       category: this.receiptDetails.category,
       
+      // NEW: Enhanced swap details
+      fromCurrency: this.fromCurrency,
+      toCurrency: this.toCurrency,
+      fromAmount: this.fromAmount,
+      toAmount: this.toAmount,
+      swapType: this.swapType,
+      swapCategory: this.swapCategory,
+      
       // Additional fields that might be useful
       ...this.receiptDetails.additionalFields
     }
@@ -337,6 +465,7 @@ transactionSchema.methods.getReceiptData = function() {
 
 /**
  * Static method to create swap transaction pairs
+ * ENHANCED: Updated to work with new enhanced swap system
  */
 transactionSchema.statics.createSwapTransactions = async function ({
   userId,
@@ -352,10 +481,44 @@ transactionSchema.statics.createSwapTransactions = async function ({
   swapFee = 0,
   quoteExpiresAt = null,
   status = 'SUCCESSFUL',
-  session = null
+  session = null,
+  // NEW: Enhanced parameters
+  swapCategory = 'CRYPTO_EXCHANGE',
+  correlationId = null,
+  fromPrice = null,
+  toPrice = null,
+  intermediateToken = null,
+  routingPath = null,
+  metadata = {}
 }) {
   const swapReference = `SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const normalizedSwapType = swapType?.toLowerCase() || 'crypto_to_crypto';
+  
+  // Enhanced metadata combining old and new fields
+  const enhancedMetadata = {
+    swapDirection: 'OUT',
+    exchangeRate,
+    relatedTransactionRef: swapReference,
+    quoteId,
+    provider,
+    markdownApplied,
+    quoteExpiresAt,
+    // NEW: Enhanced tracking fields
+    swapCategory,
+    correlationId,
+    fromPrice,
+    toPrice,
+    intermediateToken,
+    routingPath,
+    executionTimestamp: new Date(),
+    swapPair: `${sourceCurrency}-${targetCurrency}`,
+    fromCurrency: sourceCurrency,
+    toCurrency: targetCurrency,
+    fromAmount: sourceAmount,
+    toAmount: targetAmount,
+    originalQuoteId: quoteId,
+    ...metadata // Allow additional custom metadata
+  };
 
   const swapOutTransaction = new this({
     userId,
@@ -373,15 +536,19 @@ transactionSchema.statics.createSwapTransactions = async function ({
     narration: `Swap ${sourceAmount} ${sourceCurrency} to ${targetAmount} ${targetCurrency}`,
     completedAt: status === 'SUCCESSFUL' ? new Date() : null,
     fee: swapFee,
-    metadata: {
-      swapDirection: 'OUT',
-      exchangeRate,
-      relatedTransactionRef: swapReference,
-      quoteId,
-      provider,
-      markdownApplied,
-      quoteExpiresAt
-    }
+    // NEW: Enhanced top-level fields
+    swapCategory,
+    swapPair: `${sourceCurrency}-${targetCurrency}`,
+    intermediateToken,
+    routingPath,
+    exchangeRate,
+    fromPrice,
+    toPrice,
+    correlationId,
+    originalQuoteId: quoteId,
+    executionTimestamp: new Date(),
+    swapDirection: 'OUT',
+    metadata: enhancedMetadata
   });
 
   const swapInTransaction = new this({
@@ -400,14 +567,21 @@ transactionSchema.statics.createSwapTransactions = async function ({
     narration: `Swap ${sourceAmount} ${sourceCurrency} to ${targetAmount} ${targetCurrency}`,
     completedAt: status === 'SUCCESSFUL' ? new Date() : null,
     fee: 0,
+    // NEW: Enhanced top-level fields
+    swapCategory,
+    swapPair: `${sourceCurrency}-${targetCurrency}`,
+    intermediateToken,
+    routingPath,
+    exchangeRate,
+    fromPrice,
+    toPrice,
+    correlationId,
+    originalQuoteId: quoteId,
+    executionTimestamp: new Date(),
+    swapDirection: 'IN',
     metadata: {
-      swapDirection: 'IN',
-      exchangeRate,
-      relatedTransactionRef: swapReference,
-      quoteId,
-      provider,
-      markdownApplied,
-      quoteExpiresAt
+      ...enhancedMetadata,
+      swapDirection: 'IN'
     }
   });
 
@@ -420,6 +594,56 @@ transactionSchema.statics.createSwapTransactions = async function ({
     swapInTransaction,
     swapId: swapReference
   };
+};
+
+/**
+ * NEW: Static method to find related swap transactions by correlation ID
+ */
+transactionSchema.statics.findRelatedSwaps = function(correlationId) {
+  return this.find({ 
+    correlationId,
+    type: { $in: ['SWAP', 'OBIEX_SWAP'] }
+  }).sort({ createdAt: -1 });
+};
+
+/**
+ * NEW: Static method to get swap analytics by pair
+ */
+transactionSchema.statics.getSwapAnalytics = function(swapPair, timeframe = '24h') {
+  const timeAgo = new Date();
+  const hours = timeframe === '24h' ? 24 : 
+                timeframe === '7d' ? 24 * 7 : 
+                timeframe === '30d' ? 24 * 30 : 24;
+  timeAgo.setHours(timeAgo.getHours() - hours);
+  
+  return this.aggregate([
+    {
+      $match: {
+        swapPair,
+        type: 'SWAP',
+        status: 'SUCCESSFUL',
+        createdAt: { $gte: timeAgo }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalSwaps: { $sum: 1 },
+        totalVolume: { $sum: { $abs: '$amount' } },
+        avgExchangeRate: { $avg: '$exchangeRate' },
+        uniqueUsers: { $addToSet: '$userId' }
+      }
+    },
+    {
+      $project: {
+        _id: 0,
+        totalSwaps: 1,
+        totalVolume: 1,
+        avgExchangeRate: 1,
+        uniqueUsers: { $size: '$uniqueUsers' }
+      }
+    }
+  ]);
 };
 
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
