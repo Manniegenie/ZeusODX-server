@@ -1,4 +1,4 @@
-// src/services/EmailService.js
+// src/services/EmailService.js (Fixed syntax errors)
 const brevo = require('@getbrevo/brevo');
 require('dotenv').config();
 
@@ -17,7 +17,7 @@ function buildVerifyUrls(email) {
   const qs = `email=${encodeURIComponent(email)}`;
   return {
     verifyUrl: `${APP_WEB_BASE_URL}/kyc/verify-email?${qs}`,
-    appDeepLink: `${APP_DEEP_LINK}/kyc/verify-email?${qs}`,
+    appDeepLink: `${APP_DEEP_LINK}/kyc/verify-email?${qs}`
   };
 }
 
@@ -31,6 +31,76 @@ function safeParseTemplateId(envVar, fallback = null) {
     return fallback;
   }
   return parsed;
+}
+
+/**
+ * Helper function to safely format numbers for email templates
+ */
+function formatNumber(value, decimals = 2) {
+  if (value === null || value === undefined || value === '') return '0.00';
+  const num = parseFloat(value);
+  if (isNaN(num)) return '0.00';
+  return num.toLocaleString('en-US', { 
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals 
+  });
+}
+
+/**
+ * Helper function to format currency amounts with symbol
+ */
+function formatCurrency(amount, currency = 'NGN') {
+  const formattedAmount = formatNumber(amount);
+  
+  // Currency symbol mapping
+  const currencySymbols = {
+    'NGN': '₦',
+    'USD': '$',
+    'EUR': '€',
+    'GBP': '£',
+    'CAD': 'C$'
+  };
+  
+  const symbol = currencySymbols[currency?.toUpperCase()] || currency || '₦';
+  return `${symbol}${formattedAmount}`;
+}
+
+/**
+ * Helper function to safely format dates for email templates
+ */
+function formatDate(date, includeTime = true) {
+  if (!date) return new Date().toLocaleString();
+  
+  let dateObj;
+  if (typeof date === 'string') {
+    dateObj = new Date(date);
+  } else if (date instanceof Date) {
+    dateObj = date;
+  } else {
+    dateObj = new Date();
+  }
+  
+  // Check if date is valid
+  if (isNaN(dateObj.getTime())) {
+    dateObj = new Date();
+  }
+  
+  if (includeTime) {
+    return dateObj.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  } else {
+    return dateObj.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  }
 }
 
 /**
@@ -74,7 +144,7 @@ async function sendEmail({ to, name, templateId, params = {}, options = {} }) {
       message: error.message,
       response: error.response?.body || error.response?.data,
       templateId,
-      params: Object.keys(params || {}),
+      params: Object.keys(params || {})
     });
     throw error;
   }
@@ -90,7 +160,7 @@ async function sendLoginEmail(to, name, device, location, time) {
       username: String(name || 'User'),
       device: String(device || 'Unknown Device'),
       location: String(location || 'Unknown Location'),
-      time: String(time || new Date().toLocaleString())
+      time: formatDate(time)
     };
     return await sendEmail({ to, name, templateId, params });
   } catch (error) {
@@ -111,18 +181,20 @@ async function sendEmailVerificationOTP(
     if (!templateId) throw new Error('Email verification template ID not configured');
 
     const { verifyUrl, appDeepLink } = buildVerifyUrls(to);
+    const expiryTime = new Date(Date.now() + expiryMinutes * 60 * 1000);
+    
     const params = {
       username: String(name || 'User'),
       otp: String(otp),
       expiryMinutes: String(expiryMinutes),
-      expiryTime: new Date(Date.now() + expiryMinutes * 60 * 1000).toLocaleString(),
+      expiryTime: formatDate(expiryTime),
 
       // routing/branding params your template can use
       verifyUrl: String(extras.verifyUrl || verifyUrl),
       appDeepLink: String(extras.appDeepLink || appDeepLink),
       ctaText: String(extras.ctaText || 'Verify email'),
       companyName: String(extras.companyName || COMPANY_NAME),
-      supportEmail: String(extras.supportEmail || SUPPORT_EMAIL),
+      supportEmail: String(extras.supportEmail || SUPPORT_EMAIL)
     };
 
     return await sendEmail({ to, name, templateId, params });
@@ -139,7 +211,14 @@ async function sendDepositEmail(to, name, amount, currency, reference) {
 
     return await sendEmail({
       to, name, templateId,
-      params: { username: String(name || 'User'), amount: String(amount), currency: String(currency), reference: String(reference) }
+      params: { 
+        username: String(name || 'User'), 
+        amount: formatNumber(amount), 
+        currency: String(currency || 'NGN'),
+        amountWithCurrency: formatCurrency(amount, currency),
+        reference: String(reference || ''),
+        date: formatDate(new Date())
+      }
     });
   } catch (error) {
     console.error('Failed to send deposit email:', error.message);
@@ -154,7 +233,14 @@ async function sendWithdrawalEmail(to, name, amount, currency, reference) {
 
     return await sendEmail({
       to, name, templateId,
-      params: { username: String(name || 'User'), amount: String(amount), currency: String(currency), reference: String(reference) }
+      params: { 
+        username: String(name || 'User'), 
+        amount: formatNumber(amount), 
+        currency: String(currency || 'NGN'),
+        amountWithCurrency: formatCurrency(amount, currency),
+        reference: String(reference || ''),
+        date: formatDate(new Date())
+      }
     });
   } catch (error) {
     console.error('Failed to send withdrawal email:', error.message);
@@ -171,14 +257,18 @@ async function sendUtilityEmail(to, name, utilityType, amount, reference) {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_UTILITY);
     if (!templateId) throw new Error('Utility email template ID not configured');
 
+    const currency = process.env.DEFAULT_CURRENCY || 'NGN';
+
     return await sendEmail({
       to, name, templateId,
       params: {
         username: String(name || 'User'),
         utilityType: String(utilityType || ''),
-        amount: String(amount ?? ''),
-        currency: String(process.env.DEFAULT_CURRENCY || 'NGN'),
-        reference: String(reference || '')
+        amount: formatNumber(amount),
+        currency: String(currency),
+        amountWithCurrency: formatCurrency(amount, currency),
+        reference: String(reference || ''),
+        date: formatDate(new Date())
       }
     });
   } catch (error) {
@@ -193,9 +283,19 @@ async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD);
     if (!templateId) throw new Error('Giftcard email template ID not configured');
 
+    const currency = 'NGN'; // Default for giftcards
+
     return await sendEmail({
       to, name, templateId,
-      params: { username: String(name || 'User'), giftcardType: String(giftcardType), amount: String(amount), reference: String(reference) }
+      params: { 
+        username: String(name || 'User'), 
+        giftcardType: String(giftcardType || ''), 
+        amount: formatNumber(amount),
+        currency: currency,
+        amountWithCurrency: formatCurrency(amount, currency),
+        reference: String(reference || ''),
+        date: formatDate(new Date())
+      }
     });
   } catch (error) {
     console.error('Failed to send giftcard email:', error.message);
@@ -235,15 +335,18 @@ async function sendGiftcardSubmissionEmail(
       giftcardType: String(giftcardType || ''),
       cardFormat: String(cardFormat || ''),
       country: String(country || ''),
-      cardValue: String(cardValue ?? ''),
-      expectedAmount: String(expectedAmount ?? ''),
-      expectedCurrency: String(expectedCurrency || ''),
+      cardValue: formatNumber(cardValue),
+      cardValueWithCurrency: formatCurrency(cardValue, 'USD'), // Gift cards are typically USD
+      expectedAmount: formatNumber(expectedAmount),
+      expectedAmountWithCurrency: formatCurrency(expectedAmount, expectedCurrency),
+      expectedCurrency: String(expectedCurrency || 'NGN'),
       rateDisplay: String(rateDisplay || ''),
-      totalImages: String(totalImages),
+      totalImages: String(totalImages || 0),
       imageUrls: Array.isArray(imageUrls) ? imageUrls.slice(0, 3) : [],
       submissionUrl,
       appDeepLink,
       reference: String(reference || ''),
+      submissionDate: formatDate(new Date()),
       companyName: String(COMPANY_NAME),
       supportEmail: String(SUPPORT_EMAIL)
     };
@@ -270,7 +373,7 @@ async function sendUtilityTransactionEmail(to, name, options = {}) {
       currency = process.env.DEFAULT_CURRENCY || 'NGN',
       reference = '',
       status = 'PENDING',
-      date = new Date().toLocaleString(),
+      date,
       recipientPhone = '',
       provider = '',
       transactionId = '',
@@ -286,11 +389,12 @@ async function sendUtilityTransactionEmail(to, name, options = {}) {
     const params = {
       username: String(name || 'User'),
       utilityType: String(utilityType || ''),
-      amount: String(amount ?? ''),
-      currency: String(currency || ''),
+      amount: formatNumber(amount),
+      amountWithCurrency: formatCurrency(amount, currency),
+      currency: String(currency || 'NGN'),
       reference: String(reference || ''),
-      status: String(status || ''),
-      date: String(date || new Date().toLocaleString()),
+      status: String(status || 'PENDING'),
+      date: formatDate(date),
       recipientPhone: String(recipientPhone || ''),
       provider: String(provider || ''),
       transactionId: String(transactionId || ''),
@@ -316,7 +420,12 @@ async function sendKycEmail(to, name, status, comments) {
 
     return await sendEmail({
       to, name, templateId,
-      params: { username: String(name || 'User'), status: String(status), comments: String(comments || '') }
+      params: { 
+        username: String(name || 'User'), 
+        status: String(status || ''), 
+        comments: String(comments || ''),
+        date: formatDate(new Date())
+      }
     });
   } catch (error) {
     console.error('Failed to send KYC email:', error.message);
@@ -331,12 +440,15 @@ async function sendNINVerificationEmail(to, name, status, kycLevel, rejectionRea
 
     const params = {
       username: String(name || 'User'),
-      status: String(status),
+      status: String(status || ''),
       kycLevel: String(kycLevel || 0),
+      date: formatDate(new Date()),
       companyName: String(COMPANY_NAME),
-      supportEmail: String(SUPPORT_EMAIL),
+      supportEmail: String(SUPPORT_EMAIL)
     };
-    if (status === 'rejected' && rejectionReason) params.rejectionReason = String(rejectionReason);
+    if (status === 'rejected' && rejectionReason) {
+      params.rejectionReason = String(rejectionReason);
+    }
 
     return await sendEmail({ to, name, templateId, params });
   } catch (error) {
@@ -352,7 +464,11 @@ async function sendSignupEmail(to, name) {
 
     return await sendEmail({
       to, name, templateId,
-      params: { username: String(name || 'User'), companyName: String(COMPANY_NAME) }
+      params: { 
+        username: String(name || 'User'), 
+        companyName: String(COMPANY_NAME),
+        signupDate: formatDate(new Date())
+      }
     });
   } catch (error) {
     console.error('Failed to send signup email:', error.message);
