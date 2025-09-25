@@ -1,13 +1,4 @@
-// Rate calculation with vanilla type support and Apple/iTunes handling
-async function calculateAmountToReceive(cardType, country, cardValue, cardFormat, vanillaType = null) {
-  const options = {};
-  if (cardType === 'VANILLA' && vanillaType) {
-    options.vanillaType = vanillaType;
-  }
-
-  // For Apple cards, try both APPLE and APPLE/ITUNES in the database
-  let rate;
-  if (cardType ===// app/routes/giftcard.js (complete version with better email error handling)
+// app/routes/giftcard.js (complete version with proper syntax)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -30,7 +21,7 @@ cloudinary.config({
 // Gift Card Types Mapping for Frontend Display - Updated to handle Apple/iTunes
 const GIFTCARD_TYPES = {
   'APPLE': 'Apple',
-  'APPLE/ITUNES': 'Apple/iTunes', // Add this for database compatibility
+  'APPLE/ITUNES': 'Apple/iTunes',
   'STEAM': 'Steam',
   'NORDSTROM': 'Nordstrom',
   'MACY': "Macy's",
@@ -175,7 +166,6 @@ async function safelySendGiftcardEmail(user, giftCard, transaction, rateCalculat
       email: user.email,
       error: emailErr.message,
       stack: emailErr.stack,
-      // Include additional context for debugging
       templateIdConfigured: !!process.env.BREVO_TEMPLATE_GIFTCARD_SUBMISSION,
       brevoApiKeyConfigured: !!process.env.BREVO_API_KEY,
       senderEmailConfigured: !!process.env.SENDER_EMAIL || !!process.env.SUPPORT_EMAIL
@@ -189,9 +179,7 @@ async function safelySendGiftcardEmail(user, giftCard, transaction, rateCalculat
   }
 }
 
-// ---------------------------
 // GET /giftcard/types - Get supported gift card types
-// ---------------------------
 router.get('/types', (req, res) => {
   try {
     const giftcardOptions = Object.entries(GIFTCARD_TYPES).map(([value, label]) => ({
@@ -218,9 +206,7 @@ router.get('/types', (req, res) => {
   }
 });
 
-// ---------------------------
 // GET /giftcard/rates - Get gift card rates (public endpoint)
-// ---------------------------
 router.get('/rates', async (req, res) => {
   try {
     const { country, cardType, vanillaType } = req.query;
@@ -292,11 +278,8 @@ router.get('/rates', async (req, res) => {
   }
 });
 
-// ---------------------------
-// Gift card submission route
-// ---------------------------
+// POST /giftcard/submit - Gift card submission route
 router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), async (req, res) => {
-  // Quick local helper for a 400 response
   const badRequest = (errors) => res.status(400).json({ success: false, message: 'Validation failed', errors });
 
   try {
@@ -304,7 +287,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       cardType,
       cardFormat,
       cardRange,
-      cardValue: cardValueRaw, // string from form-data
+      cardValue: cardValueRaw,
       currency,
       country,
       description,
@@ -312,19 +295,24 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       vanillaType
     } = req.body;
 
+    // Debug logging
+    logger.info('Received gift card submission', {
+      cardType,
+      cardFormat,
+      country,
+      cardValue: cardValueRaw,
+      cardRange,
+      hasFiles: !!(req.files && req.files.length > 0),
+      filesCount: req.files ? req.files.length : 0
+    });
+
     const errors = [];
 
-    // Enhanced card type validation to handle Apple/iTunes case
+    // Enhanced card type validation
     let isValidCardType = false;
     if (cardType) {
       const normalizedInputCardType = String(cardType).toUpperCase();
-      
-      // Check if it matches any supported type directly
       if (GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(normalizedInputCardType)) {
-        isValidCardType = true;
-      }
-      // Special handling for Apple cards - accept both APPLE and APPLE/ITUNES
-      else if (normalizedInputCardType === 'APPLE' || normalizedInputCardType === 'APPLE/ITUNES') {
         isValidCardType = true;
       }
     }
@@ -332,6 +320,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     if (!isValidCardType) {
       errors.push(`Invalid or missing card type: ${cardType}. Supported types: ${GIFTCARD_CONFIG.SUPPORTED_TYPES.join(', ')}`);
     }
+
     if (!cardFormat || !GIFTCARD_CONFIG.SUPPORTED_FORMATS.includes(String(cardFormat).toUpperCase())) {
       errors.push('Invalid or missing card format');
     }
@@ -353,7 +342,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       errors.push('Vanilla type can only be specified for VANILLA gift cards');
     }
 
-    // cardValue validation & normalization early to allow parallel work
+    // Card value validation
     if (!cardValueRaw || typeof cardValueRaw !== 'string' || cardValueRaw.trim() === '') {
       errors.push('Card value is required');
     }
@@ -381,9 +370,6 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     // Normalize - with Apple/iTunes handling
     let normalizedCardType = String(cardType).toUpperCase();
-    
-    // Special handling for Apple cards - normalize APPLE to APPLE for consistency
-    // (Your rate system might store APPLE/ITUNES but we'll normalize to APPLE in submissions)
     if (normalizedCardType === 'APPLE/ITUNES') {
       normalizedCardType = 'APPLE';
     }
@@ -405,7 +391,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    // Fetch user and pending count in parallel (both needed before heavy work)
+    // Fetch user and pending count
     const [user, pendingCount] = await Promise.all([
       User.findById(userId).lean().exec(),
       GiftCard.countDocuments({ userId, status: { $in: ['PENDING', 'REVIEWING'] } })
@@ -417,23 +403,16 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       return res.status(400).json({ success: false, message: `Maximum ${GIFTCARD_CONFIG.MAX_PENDING_SUBMISSIONS} pending submissions allowed` });
     }
 
-    // Prepare two independent async tasks that we can run in parallel:
-    // 1) upload images (if any)
-    // 2) calculate expected rate/amount
-
     // Image uploads: run concurrently (if PHYSICAL)
     let uploadPromise = Promise.resolve([]);
     if (normalizedCardFormat === 'PHYSICAL' && req.files && req.files.length > 0) {
       const fileUploads = req.files.map((file) => uploadToCloudinary(file.buffer));
-      // Use allSettled so we can log partial failures, but treat any rejection as failure for now
       uploadPromise = Promise.allSettled(fileUploads).then(results => {
         const rejected = results.filter(r => r.status === 'rejected');
         if (rejected.length > 0) {
-          // Log individual errors for debugging
           rejected.forEach((r, i) => logger.error('Cloudinary upload error', { index: i, error: r.reason?.message || r.reason }));
           throw new Error('One or more image uploads failed');
         }
-        // Map to results
         return results.map(r => r.value);
       });
     }
@@ -450,11 +429,11 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     // Run uploads + rate calc in parallel
     const [uploadedImages, rateCalculation] = await Promise.all([uploadPromise, ratePromise]);
 
-    // map results
+    // Map results
     const imageUrls = (uploadedImages || []).map(img => img.secure_url);
     const imagePublicIds = (uploadedImages || []).map(img => img.public_id);
 
-    // Build gift card document (we create and then transaction)
+    // Build gift card document
     const giftCardData = {
       userId,
       cardType: normalizedCardType,
@@ -489,7 +468,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     // Persist gift card
     const giftCard = await GiftCard.create(giftCardData);
 
-    // Create transaction referencing the giftCard
+    // Create transaction
     const transactionData = {
       userId,
       type: 'GIFTCARD',
@@ -522,9 +501,8 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     const transaction = await Transaction.create(transactionData);
 
-    // Link transaction id back to giftCard (no need to block further ops on this)
+    // Link transaction to gift card
     giftCard.transactionId = transaction._id;
-    // Save without awaiting a fresh fetch — just update
     await giftCard.save();
 
     logger.info('Gift card submitted successfully', {
@@ -539,7 +517,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       expectedAmountToReceive: rateCalculation.amountToReceive
     });
 
-    // Respond to client immediately with essential data
+    // Response data
     const responseData = {
       submissionId: giftCard._id,
       transactionId: transaction._id,
@@ -564,8 +542,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       responseData.vanillaTypeName = VANILLA_TYPES[normalizedVanillaType];
     }
 
-    // FIRE & FORGET: send notification email asynchronously (non-blocking)
-    // We intentionally do not await this so the HTTP response is faster.
+    // Send email asynchronously
     setImmediate(async () => {
       const emailResult = await safelySendGiftcardEmail(user, giftCard, transaction, rateCalculation, imageUrls);
       
@@ -582,17 +559,13 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
           email: user.email,
           reason: emailResult.reason
         });
-        
-        // Optionally, you could queue this for retry later
-        // await addToEmailRetryQueue({ user, giftCard, transaction, rateCalculation, imageUrls });
       }
     });
 
     return res.status(201).json({ success: true, message: 'Gift card submitted successfully', data: responseData });
 
   } catch (err) {
-    // Centralized error logging
-    logger.error('Gift card submission failed (performance-updated route)', {
+    logger.error('Gift card submission failed', {
       userId: req.user?.id,
       cardType: req.body?.cardType,
       vanillaType: req.body?.vanillaType,
@@ -600,7 +573,6 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       stack: err.stack
     });
 
-    // If cloudinary upload error bubbled up it will be caught here
     if (err.message && err.message.toLowerCase().includes('upload')) {
       return res.status(500).json({ success: false, message: 'Image upload failed', error: err.message });
     }
@@ -609,9 +581,7 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
   }
 });
 
-// ---------------------------
 // GET /giftcard/:id - Get gift card details
-// ---------------------------
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -653,9 +623,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ---------------------------
 // GET /giftcard - Get user's gift cards
-// ---------------------------
 router.get('/', async (req, res) => {
   try {
     const userId = req.user?.id;
