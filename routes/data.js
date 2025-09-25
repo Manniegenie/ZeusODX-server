@@ -1,3 +1,4 @@
+// routes/data.js
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const User = require('../models/user');
@@ -7,6 +8,7 @@ const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
+const { sendUtilityTransactionEmail } = require('../services/EmailService'); // <-- imported
 
 const router = express.Router();
 
@@ -54,9 +56,10 @@ async function getCachedUser(userId) {
     return cached.user;
   }
   
+  // include email/firstName/username so we can email the user
   const user = await User.findById(userId).select(
-    'twoFASecret is2FAEnabled passwordpin ngnzBalance lastBalanceUpdate'
-  ).lean(); // Use lean() for better performance, only select what we need
+    'twoFASecret is2FAEnabled passwordpin ngnzBalance lastBalanceUpdate email firstName username'
+  ).lean();
   
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
@@ -305,6 +308,7 @@ router.post('/purchase', async (req, res) => {
   let transactionCreated = false;
   let pendingTransaction = null;
   let ebillsResponse = null;
+  let validation;
 
   try {
     const requestBody = req.body;
@@ -316,7 +320,7 @@ router.post('/purchase', async (req, res) => {
     });
     
     // Step 1: Validate request
-    const validation = validateDataRequest(requestBody);
+    validation = validateDataRequest(requestBody);
     if (!validation.isValid) {
       return res.status(400).json({
         success: false,
@@ -616,6 +620,43 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
+    // -------------------------------
+    // SEND UTILITY EMAIL (non-blocking)
+    // -------------------------------
+    (async () => {
+      try {
+        if (user && user.email) {
+          const emailOptions = {
+            utilityType: 'Data',
+            amount,
+            currency,
+            reference: finalRequestId,
+            status: ebillsStatus,
+            date: new Date().toLocaleString(),
+            recipientPhone: phone,
+            provider: service_id,
+            transactionId: ebillsResponse.data.order_id ? String(ebillsResponse.data.order_id) : '',
+            account: phone,
+            additionalNote: ebillsStatus === 'completed-api' ? 'Data activated' : 'Data purchase is being processed',
+            webUrl: `${process.env.APP_WEB_BASE_URL || ''}/transactions/${finalRequestId}`,
+            appDeepLink: `${process.env.APP_DEEP_LINK || 'zeusodx://'}//transactions/${finalRequestId}`
+          };
+
+          await sendUtilityTransactionEmail(user.email, user.firstName || user.username || 'User', emailOptions);
+          logger.info(`Utility email (Data) sent to ${user.email} for request ${finalRequestId}`);
+        } else {
+          logger.warn(`No email on file for user ${userId} — skipping utility email`);
+        }
+      } catch (emailErr) {
+        logger.error('Failed to send utility email for data transaction', {
+          userId,
+          error: emailErr.message,
+          stack: emailErr.stack
+        });
+        // don't fail the request — email errors are non-blocking
+      }
+    })();
+
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
     if (ebillsStatus === 'completed-api') {
       return res.status(200).json({
