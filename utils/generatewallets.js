@@ -167,7 +167,9 @@ const getSchemaKeyFromNetworkId = (currency, networkId) => {
     'bsc': 'BSC',
     'avax': 'AVAX',
     'polygon': 'POLYGON',
-    'solana': 'SOL'
+    'solana': 'SOL',
+    'tron': 'TRX',      // ADDED
+    'trx': 'TRX'        // ADDED (alternative mapping)
   };
   
   const network = networkMap[networkId.toLowerCase()] || networkId.toUpperCase();
