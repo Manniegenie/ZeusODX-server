@@ -1,4 +1,4 @@
-// app/routes/giftcard.js (performance-updated)
+// app/routes/giftcard.js (performance-updated with better email error handling)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -9,7 +9,7 @@ const GiftCard = require('../models/giftcard');
 const Transaction = require('../models/transaction');
 const GiftCardPrice = require('../models/giftcardPrice');
 const logger = require('../utils/logger');
-const { sendGiftcardSubmissionEmail } = require('../services/EmailService'); // correct helper
+const { sendGiftcardSubmissionEmail } = require('../services/EmailService');
 
 // Cloudinary configuration
 cloudinary.config({
@@ -87,6 +87,61 @@ async function calculateAmountToReceive(cardType, country, cardValue, cardFormat
     ...rate.calculateAmount(cardValue, cardFormat),
     giftCardRateId: rate._id
   };
+}
+
+// Safe email sending function
+async function safelySendGiftcardEmail(user, giftCard, transaction, rateCalculation, imageUrls) {
+  try {
+    if (!user.email) {
+      logger.warn('User has no email; skipping giftcard submission email', { 
+        userId: user._id, 
+        submissionId: giftCard._id 
+      });
+      return { success: false, reason: 'No email address' };
+    }
+
+    await sendGiftcardSubmissionEmail(
+      user.email,
+      user.firstName || user.username || 'User',
+      giftCard._id.toString(),
+      giftCard.cardType,
+      giftCard.cardFormat,
+      giftCard.country,
+      giftCard.cardValue,
+      rateCalculation.amountToReceive,
+      rateCalculation.targetCurrency,
+      rateCalculation.rateDisplay,
+      imageUrls.length,
+      imageUrls.slice(0, 3),
+      transaction._id.toString()
+    );
+
+    logger.info('Giftcard submission email sent successfully', { 
+      userId: user._id, 
+      submissionId: giftCard._id,
+      email: user.email
+    });
+    
+    return { success: true };
+  } catch (emailErr) {
+    logger.error('Failed to send giftcard submission email', {
+      userId: user._id,
+      submissionId: giftCard._id,
+      email: user.email,
+      error: emailErr.message,
+      stack: emailErr.stack,
+      // Include additional context for debugging
+      templateIdConfigured: !!process.env.BREVO_TEMPLATE_GIFTCARD_SUBMISSION,
+      brevoApiKeyConfigured: !!process.env.BREVO_API_KEY,
+      senderEmailConfigured: !!process.env.SENDER_EMAIL || !!process.env.SUPPORT_EMAIL
+    });
+    
+    return { 
+      success: false, 
+      reason: emailErr.message,
+      error: emailErr 
+    };
+  }
 }
 
 // ---------------------------
@@ -327,37 +382,27 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
 
     // FIRE & FORGET: send notification email asynchronously (non-blocking)
     // We intentionally do not await this so the HTTP response is faster.
-    (async () => {
-      try {
-        if (user.email) {
-          await sendGiftcardSubmissionEmail(
-            user.email,
-            user.firstName || user.username || 'User',
-            giftCard._id.toString(),
-            normalizedCardType,
-            normalizedCardFormat,
-            normalizedCountry,
-            cardVal,
-            rateCalculation.amountToReceive,
-            rateCalculation.targetCurrency,
-            rateCalculation.rateDisplay,
-            imageUrls.length,
-            imageUrls.slice(0, 3),
-            transaction._id.toString()
-          );
-          logger.info('Giftcard submission email sent (async)', { userId: user._id, submissionId: giftCard._id });
-        } else {
-          logger.warn('User has no email; skipped giftcard submission email', { userId: user._id });
-        }
-      } catch (emailErr) {
-        logger.error('Async: Failed to send giftcard submission email', {
+    setImmediate(async () => {
+      const emailResult = await safelySendGiftcardEmail(user, giftCard, transaction, rateCalculation, imageUrls);
+      
+      if (emailResult.success) {
+        logger.info('Async: Giftcard submission email sent successfully', { 
+          userId: user._id, 
+          submissionId: giftCard._id,
+          email: user.email
+        });
+      } else {
+        logger.warn('Async: Giftcard submission email failed (non-critical)', {
           userId: user._id,
           submissionId: giftCard._id,
-          error: emailErr.message,
-          stack: emailErr.stack
+          email: user.email,
+          reason: emailResult.reason
         });
+        
+        // Optionally, you could queue this for retry later
+        // await addToEmailRetryQueue({ user, giftCard, transaction, rateCalculation, imageUrls });
       }
-    })();
+    });
 
     return res.status(201).json({ success: true, message: 'Gift card submitted successfully', data: responseData });
 
