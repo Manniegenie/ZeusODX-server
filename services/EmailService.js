@@ -1,4 +1,3 @@
-// src/services/EmailService.js (Full code with simplified sendGiftcardSubmissionEmail)
 const brevo = require('@getbrevo/brevo');
 require('dotenv').config();
 
@@ -304,8 +303,7 @@ async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
 }
 
 /**
- * SIMPLIFIED: sendGiftcardSubmissionEmail
- * Expects pre-formatted amount and date from the route
+ * Updated sendGiftcardSubmissionEmail to use provided params
  */
 async function sendGiftcardSubmissionEmail(
   to,
@@ -315,20 +313,16 @@ async function sendGiftcardSubmissionEmail(
   cardFormat,
   country,
   cardValue,
-  expectedAmount,        // Pre-formatted: "₦1,500.00"
+  expectedAmount,
   expectedCurrency,
   rateDisplay,
-  totalImages = 0,
-  imageUrls = [],
-  reference = '',
-  submissionDate = ''     // Pre-formatted: "January 15, 2025"
+  totalImages,
+  imageUrls,
+  reference
 ) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_SUBMISSION);
     if (!templateId) throw new Error('Giftcard submission email template ID not configured');
-
-    const submissionUrl = submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL;
-    const appDeepLink = submissionId ? `${APP_DEEP_LINK}/giftcards/${submissionId}` : APP_DEEP_LINK;
 
     const params = {
       username: String(name || 'User'),
@@ -337,19 +331,15 @@ async function sendGiftcardSubmissionEmail(
       cardFormat: String(cardFormat || ''),
       country: String(country || ''),
       cardValue: String(cardValue || '0'),
-      expectedAmount: String(expectedAmount || '₦0.00'),    // Already formatted
+      expectedAmount: String(expectedAmount || '0.00'),
       expectedCurrency: String(expectedCurrency || 'NGN'),
       rateDisplay: String(rateDisplay || ''),
-      totalImages: String(totalImages || 0),
+      totalImages: String(totalImages || '0'),
       imageUrls: Array.isArray(imageUrls) ? imageUrls.slice(0, 3) : [],
-      submissionUrl,
-      appDeepLink,
+      submissionUrl: String(submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL),
+      appDeepLink: String(submissionId ? `${APP_DEEP_LINK}/giftcards/${submissionId}` : APP_DEEP_LINK),
       reference: String(reference || ''),
-      submissionDate: String(submissionDate || new Date().toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      })),  // Use provided date or fallback
+      submissionDate: String(formatDate(new Date(), false)),
       companyName: String(COMPANY_NAME),
       supportEmail: String(SUPPORT_EMAIL)
     };
@@ -482,10 +472,10 @@ async function sendSignupEmail(to, name) {
 module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
-  sendUtilityEmail,              // legacy/simple helper
-  sendUtilityTransactionEmail,   // new generic helper (rich)
+  sendUtilityEmail,              
+  sendUtilityTransactionEmail,   
   sendGiftcardEmail,
-  sendGiftcardSubmissionEmail,   // SIMPLIFIED - expects pre-formatted data
+  sendGiftcardSubmissionEmail,   
   sendKycEmail,
   sendLoginEmail,
   sendSignupEmail,
