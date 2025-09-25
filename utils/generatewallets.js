@@ -98,7 +98,7 @@ const generateSingleWallet = async (email, userId, currency, network) => {
   }
 };
 
-// Mapping for currency/network to schema keys (updated with additional ETH networks)
+// Mapping for currency/network to schema keys (updated with USDC TRX)
 const CURRENCY_NETWORK_TO_SCHEMA = {
   // Bitcoin variants
   'BTC_BTC': 'BTC_BTC',           // Bitcoin mainnet
@@ -122,8 +122,9 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   
   // USDC variants
   'USDC_ETH': 'USDC_ETH',           // USDC on Ethereum
+  'USDC_TRX': 'USDC_TRX',           // USDC on Tron (TRC20) - ADDED
   'USDC_BSC': 'USDC_BSC',           // USDC on BSC
-  'USDC_ARBITRUM': 'USDC_ARBITRUM', // USDC on Arbitrum
+  'USDC_ARBITRUM': 'USDC_ARBITRUM', // USDC on Arbitrum - Already exists
   'USDC_BASE': 'USDC_BASE',         // USDC on Base
   'USDC_AVAX': 'USDC_AVAX',         // USDC on Avalanche C-Chain
   'USDC_POLYGON': 'USDC_POLYGON',   // USDC on Polygon (MATIC)
