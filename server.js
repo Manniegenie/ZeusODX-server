@@ -190,6 +190,7 @@ const EmailVerifyRoutes = require('./routes/EmailVerify')
 const KYCRoutes = require('./routes/KYC');
 const ForgotPinRoutes = require('./routes/forgotpasswordpin');
 const AccountnameRoutes = require('./routes/Accountname');
+const Pushnotification = require('./adminRoutes/pushnotification');
 
 
 
@@ -222,6 +223,7 @@ app.use("/fund", FunduserRoutes);
 app.use("/marker", pricemarkdownRoutes);
 app.use("/2FA-Disable", TwooFARoutes);
 app.use('/admingiftcard', admingiftcardRoutes);
+app.use('/notification', Pushnotification);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
