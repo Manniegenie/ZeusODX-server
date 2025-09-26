@@ -100,11 +100,25 @@ router.get('/dashboard', async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Get portfolio data and price changes in parallel
-    const [portfolioData, priceChanges] = await Promise.all([
+    // Get token symbols (excluding NGNZ for separate fetch)
+    const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
+
+    // Fetch prices and NGNZ rate separately
+    const [portfolioData, priceChanges, tokenPricesResult, ngnzRateInfo] = await Promise.all([
       calculatePortfolioBalances(user),
-      getPriceChanges()
+      getPriceChanges(),
+      getPricesWithCache(tokenSymbols),
+      getCurrentRate()
     ]);
+
+    // Handle pricing data for market display
+    const marketPrices = tokenPricesResult || {};
+    const ngnzRate = ngnzRateInfo || null;
+
+    // Add NGNZ price for market display
+    if (ngnzRate && ngnzRate.finalPrice) {
+      marketPrices.NGNZ = ngnzRate.finalPrice;
+    }
 
     // Add price changes to portfolio balances
     for (const token in portfolioData.balances) {
@@ -136,8 +150,14 @@ router.get('/dashboard', async (req, res) => {
         balances: portfolioData.balances
       },
       market: {
-        prices: await getPricesWithCache(Object.keys(SUPPORTED_TOKENS)),
-        priceChanges12h: priceChanges
+        prices: marketPrices,
+        priceChanges12h: priceChanges,
+        ngnzExchangeRate: ngnzRate ? {
+          rate: ngnzRate.finalPrice,
+          lastUpdated: ngnzRate.lastUpdated,
+          source: ngnzRate.source
+        } : null,
+        pricesLastUpdated: new Date().toISOString()
       },
       security: {
         is2FAEnabled: user.is2FAEnabled,
