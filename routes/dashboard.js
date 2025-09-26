@@ -135,6 +135,10 @@ router.get('/dashboard', async (req, res) => {
         totalPortfolioBalance: portfolioData.totalPortfolioBalance,
         balances: portfolioData.balances
       },
+      market: {
+        prices: await getPricesWithCache(Object.keys(SUPPORTED_TOKENS)),
+        priceChanges12h: priceChanges
+      },
       security: {
         is2FAEnabled: user.is2FAEnabled,
         failedLoginAttempts: user.failedLoginAttempts || 0
