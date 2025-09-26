@@ -57,8 +57,8 @@ const userSchema = new mongoose.Schema({
     default: []
   },
 
-  // KYC Levels (Updated structure)
-  kycLevel: { type: Number, default: 0, min: 0, max: 3, enum: [0, 1, 2, 3] },
+  // KYC Levels (Updated structure - removed level 3)
+  kycLevel: { type: Number, default: 0, min: 0, max: 2, enum: [0, 1, 2] },
   kycStatus: {
     type: String,
     default: 'not_verified',
@@ -83,16 +83,6 @@ const userSchema = new mongoose.Schema({
       approvedAt: { type: Date, default: null },
       rejectedAt: { type: Date, default: null },
       rejectionReason: { type: String, default: null }
-    },
-    level3: {
-      // Enhanced verification
-      status: { type: String, default: 'not_submitted', enum: ['not_submitted', 'pending', 'approved', 'rejected'] },
-      submittedAt: { type: Date, default: null },
-      approvedAt: { type: Date, default: null },
-      rejectedAt: { type: Date, default: null },
-      rejectionReason: { type: String, default: null },
-      addressVerified: { type: Boolean, default: false },
-      sourceOfFunds: { type: String, default: null }
     }
   },
 
@@ -233,8 +223,7 @@ userSchema.pre('save', async function (next) {
     const kycRelevantFields = [
       'emailVerified',
       'kyc.level2.status',
-      'kyc.level2.documentSubmitted',
-      'kyc.level3.status'
+      'kyc.level2.documentSubmitted'
     ];
 
     if (kycRelevantFields.some(field => this.isModified(field))) {
@@ -379,7 +368,7 @@ userSchema.methods.canAddBankAccount = function () {
   return this.getBankAccountsCount() < 10;
 };
 
-// KYC Limits (Updated structure)
+// KYC Limits (Updated structure - removed level 3)
 userSchema.methods.getKycLimits = function () {
   const limits = {
     0: {
@@ -398,13 +387,7 @@ userSchema.methods.getKycLimits = function () {
       ngnb: { daily: 25000000, monthly: 200000000 },
       crypto: { daily: 2000000, monthly: 2000000 },
       utilities: { daily: 500000, monthly: 2000000 },
-      description: 'Email verification + Document required'
-    },
-    3: {
-      ngnb: { daily: 50000000, monthly: 500000000 },
-      crypto: { daily: 5000000, monthly: 5000000 },
-      utilities: { daily: 500000, monthly: 2000000 },
-      description: 'Enhanced verification'
+      description: 'Email verification + Document verification'
     }
   };
   return limits[this.kycLevel] || limits[0];
@@ -514,22 +497,13 @@ userSchema.methods.getKycRequirements = function () {
         documentType: this.kyc.level2.documentType,
         documentNumber: this.kyc.level2.documentNumber
       }
-    },
-    level3: {
-      enhanced: {
-        required: true,
-        completed: this.kyc.level3.status === 'approved',
-        status: this.kyc.level3.status,
-        addressVerified: this.kyc.level3.addressVerified,
-        sourceOfFunds: this.kyc.level3.sourceOfFunds
-      }
     }
   };
 
   // Calculate completion percentages
   const level1Complete = requirements.level1.phone.completed;
-  const level2Complete = requirements.level2.email.completed && requirements.level2.identity.completed;
-  const level3Complete = requirements.level3.enhanced.completed;
+  const level2Complete = requirements.level2.email.completed && 
+                        requirements.level2.identity.completed;
 
   return {
     currentLevel: this.kycLevel,
@@ -538,8 +512,7 @@ userSchema.methods.getKycRequirements = function () {
     requirements,
     completion: {
       level1: level1Complete,
-      level2: level2Complete,
-      level3: level3Complete
+      level2: level2Complete
     }
   };
 };

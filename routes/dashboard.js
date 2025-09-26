@@ -6,427 +6,244 @@ const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio'
 const { getCurrentRate } = require('../services/offramppriceservice');
 const logger = require('../utils/logger');
 
-// Aggressive caching for dashboard data
-const dashboardCache = new Map();
-const priceChangeCache = new Map();
-const DASHBOARD_CACHE_TTL = 30000; // 30 seconds
-const PRICE_CHANGE_CACHE_TTL = 30000; // 5 minutes
+// Simple cache with reasonable TTL
+const cache = new Map();
+const CACHE_TTL = 60000; // 1 minute
 
-/**
- * Get cached user data with only required fields
- */
-async function getCachedUser(userId) {
-  const cacheKey = `dashboard_user_${userId}`;
-  const cached = dashboardCache.get(cacheKey);
-  
-  if (cached && (Date.now() - cached.timestamp) < DASHBOARD_CACHE_TTL) {
-    return cached.user;
+function getFromCache(key) {
+  const cached = cache.get(key);
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    return cached.data;
   }
-  
-  // Only select fields we actually need for dashboard
-  const user = await User.findById(userId).select(
-    'firstname lastname email username phonenumber avatarUrl avatarLastUpdated is2FAEnabled ' +
-    'kycLevel kycStatus failedLoginAttempts lastFailedLogin wallets ' +
-    'btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance avaxBalance ngnzBalance ' +
-    'btcPendingBalance ethPendingBalance solPendingBalance usdtPendingBalance usdcPendingBalance bnbPendingBalance maticPendingBalance avaxPendingBalance ngnzPendingBalance'
-  ).lean();
-  
-  if (user) {
-    dashboardCache.set(cacheKey, { user, timestamp: Date.now() });
-    setTimeout(() => dashboardCache.delete(cacheKey), DASHBOARD_CACHE_TTL);
-  }
-  
-  return user;
+  cache.delete(key);
+  return null;
 }
 
-/**
- * Get cached price changes
- */
-async function getCachedPriceChanges(prices) {
-  const cacheKey = 'price_changes_1h';
-  const cached = priceChangeCache.get(cacheKey);
-  
-  if (cached && (Date.now() - cached.timestamp) < PRICE_CHANGE_CACHE_TTL) {
-    return cached.changes;
-  }
-  
-  try {
-    const changes = await PriceChange.getPriceChanges(prices, 1);
-    priceChangeCache.set(cacheKey, { changes, timestamp: Date.now() });
-    setTimeout(() => priceChangeCache.delete(cacheKey), PRICE_CHANGE_CACHE_TTL);
-    return changes;
-  } catch (error) {
-    logger.error('Failed to get price changes:', error.message);
-    return {};
-  }
+function setCache(key, data) {
+  cache.set(key, { data, timestamp: Date.now() });
 }
 
-/**
- * FIXED: USD balance calculation - keeping original logic but optimized
- */
-async function calculateUSDBalances(user) {
+// Calculate USD balances for portfolio
+async function calculatePortfolioBalances(user) {
   try {
     const tokens = Object.keys(SUPPORTED_TOKENS);
     const prices = await getPricesWithCache(tokens);
-
-    const calculatedBalances = {};
+    
+    const portfolioBalances = {};
     let totalPortfolioUSD = 0;
 
     for (const token of tokens) {
       const tokenLower = token.toLowerCase();
-      const balanceField = `${tokenLower}Balance`;
-      const usdBalanceField = `${tokenLower}BalanceUSD`;
+      const balance = user[`${tokenLower}Balance`] || 0;
+      const pendingBalance = user[`${tokenLower}PendingBalance`] || 0;
+      const price = prices[token] || 0;
+      const balanceUSD = balance * price;
 
-      const tokenAmount = user[balanceField] || 0;
-      const tokenPrice = prices[token] || 0;
-      const usdValue = tokenAmount * tokenPrice;
+      portfolioBalances[token] = {
+        balance,
+        balanceUSD: parseFloat(balanceUSD.toFixed(2)),
+        pendingBalance,
+        currentPrice: price
+      };
 
-      calculatedBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
-      totalPortfolioUSD += usdValue;
-
-      if (logger && logger.debug) {
-        logger.debug(`Calculated USD balance for ${token}`, {
-          tokenAmount,
-          tokenPrice,
-          usdValue: calculatedBalances[usdBalanceField],
-          isNGNZ: token === 'NGNZ'
-        });
-      }
+      totalPortfolioUSD += balanceUSD;
     }
 
-    calculatedBalances.totalPortfolioBalance = parseFloat(totalPortfolioUSD.toFixed(2));
-
-    if (logger && logger.debug) {
-      logger.debug('Calculated total portfolio balance', { 
-        totalPortfolioUSD: calculatedBalances.totalPortfolioBalance,
-        tokensProcessed: tokens.length,
-        includesNGNZ: !!prices.NGNZ
-      });
-    }
-
-    return calculatedBalances;
+    return {
+      balances: portfolioBalances,
+      totalPortfolioBalance: parseFloat(totalPortfolioUSD.toFixed(2))
+    };
   } catch (error) {
-    if (logger && logger.error) {
-      logger.error('Error calculating USD balances', { error: error.message });
-    } else {
-      console.error('Error calculating USD balances:', error.message);
-    }
-
-    const fallbackBalances = {};
-    const tokens = Object.keys(SUPPORTED_TOKENS);
-    for (const token of tokens) {
-      const tokenLower = token.toLowerCase();
-      const usdBalanceField = `${tokenLower}BalanceUSD`;
-      fallbackBalances[usdBalanceField] = 0;
-    }
-    fallbackBalances.totalPortfolioBalance = 0;
-    return fallbackBalances;
+    logger.error('Error calculating portfolio balances:', error.message);
+    return {
+      balances: {},
+      totalPortfolioBalance: 0
+    };
   }
 }
 
-// GET /dashboard - Optimized dashboard endpoint
+// Get price changes
+async function getPriceChanges() {
+  const cacheKey = 'price_changes';
+  const cached = getFromCache(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    const prices = await getPricesWithCache(tokens);
+    const changes = await PriceChange.getPriceChanges(prices, 1);
+    
+    setCache(cacheKey, changes);
+    return changes;
+  } catch (error) {
+    logger.error('Error getting price changes:', error.message);
+    return {};
+  }
+}
+
+// Main dashboard endpoint
 router.get('/dashboard', async (req, res) => {
   const startTime = Date.now();
   
   try {
     const userId = req.user.id;
-    
-    // Check if we have a cached complete dashboard response
-    const dashboardCacheKey = `dashboard_complete_${userId}`;
-    const cachedDashboard = dashboardCache.get(dashboardCacheKey);
-    
-    if (cachedDashboard && (Date.now() - cachedDashboard.timestamp) < DASHBOARD_CACHE_TTL) {
-      logger.info('Dashboard cache hit', { userId, cacheAge: Date.now() - cachedDashboard.timestamp });
-      return res.status(200).json({ success: true, data: cachedDashboard.data });
-    }
 
-    // Get user data first
-    const user = await getCachedUser(userId);
+    // Get user data
+    const user = await User.findById(userId).select(
+      'firstname lastname email username phonenumber avatarUrl is2FAEnabled ' +
+      'kycLevel kycStatus failedLoginAttempts lastFailedLogin wallets ' +
+      'btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance avaxBalance ngnzBalance ' +
+      'btcPendingBalance ethPendingBalance solPendingBalance usdtPendingBalance usdcPendingBalance bnbPendingBalance maticPendingBalance avaxPendingBalance ngnzPendingBalance'
+    );
+
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Get token symbols (excluding NGNZ for separate fetch - for market display)
-    const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
-
-    logger.info('Fetching dashboard data', { 
-      userId, 
-      requestedTokens: tokenSymbols 
-    });
-
-    // Fetch prices and NGNZ rate separately (for market display)
-    const [tokenPricesResult, ngnzRateInfo] = await Promise.allSettled([
-      getPricesWithCache(tokenSymbols),
-      getCurrentRate()
+    // Get portfolio data and price changes in parallel
+    const [portfolioData, priceChanges] = await Promise.all([
+      calculatePortfolioBalances(user),
+      getPriceChanges()
     ]);
 
-    // Handle pricing data for market display
-    const marketPrices = tokenPricesResult.status === 'fulfilled' ? tokenPricesResult.value : {};
-    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
-
-    // Add NGNZ price for market display
-    if (ngnzRate && ngnzRate.finalPrice) {
-      marketPrices.NGNZ = ngnzRate.finalPrice;
+    // Add price changes to portfolio balances
+    for (const token in portfolioData.balances) {
+      portfolioData.balances[token].priceChange12h = priceChanges[token]?.percentageChange || null;
     }
 
-    logger.info('Pricing data fetched', {
-      pricesCount: Object.keys(marketPrices).length,
-      hasNGNZ: !!marketPrices.NGNZ,
-      priceSymbols: Object.keys(marketPrices)
-    });
+    // Get KYC completion percentage
+    const kycPercentage = user.kycLevel === 0 ? 0 : user.kycLevel === 1 ? 50 : 100;
 
-    // Calculate USD balances using original method (this fetches prices internally)
-    const calculatedUSDBalances = await calculateUSDBalances(user);
-
-    // Get price changes using market prices
-    const priceChanges = await getCachedPriceChanges(marketPrices);
-
-    // Build portfolio balances using market prices for display
-    const portfolioBalances = {};
-    const allTokenSymbols = Object.keys(SUPPORTED_TOKENS);
-    
-    for (const token of allTokenSymbols) {
-      const tokenLower = token.toLowerCase();
-      const balanceField = `${tokenLower}Balance`;
-      const pendingBalanceField = `${tokenLower}PendingBalance`;
-      const usdBalanceField = `${tokenLower}BalanceUSD`;
-      
-      portfolioBalances[token] = {
-        balance: user[balanceField] || 0,
-        balanceUSD: calculatedUSDBalances[usdBalanceField] || 0,
-        pendingBalance: user[pendingBalanceField] || 0,
-        currentPrice: marketPrices[token] || 0,
-        priceChange12h: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token]?.percentageChange || null),
-        priceChangeData: ['NGNZ', 'USDT', 'USDC'].includes(token) ? null : (priceChanges[token] || null)
-      };
-    }
-
-    // Calculate KYC completion percentage
-    const kycPercentageMap = { 0: 0, 1: 33, 2: 67, 3: 100 };
-    const kycCompletionPercentage = kycPercentageMap[user.kycLevel] || 0;
-
-    // Build optimized dashboard response
+    // Build response
     const dashboardData = {
       profile: {
-        id: user.id,
+        id: user._id,
         firstname: user.firstname,
         lastname: user.lastname,
         email: user.email,
         username: user.username,
         phonenumber: user.phonenumber,
         avatarUrl: user.avatarUrl,
-        avatarLastUpdated: user.avatarLastUpdated,
         is2FAEnabled: user.is2FAEnabled
       },
       kyc: {
         level: user.kycLevel,
         status: user.kycStatus,
-        completionPercentage: kycCompletionPercentage,
-        limits: user.getKycLimits ? user.getKycLimits() : null
+        completionPercentage: kycPercentage
       },
       portfolio: {
-        totalPortfolioBalance: calculatedUSDBalances.totalPortfolioBalance,
-        balances: portfolioBalances
+        totalPortfolioBalance: portfolioData.totalPortfolioBalance,
+        balances: portfolioData.balances
       },
-      market: {
-        prices: marketPrices,
-        priceChanges12h: priceChanges,
-        ngnzExchangeRate: ngnzRate ? {
-          rate: ngnzRate.finalPrice,
-          lastUpdated: ngnzRate.lastUpdated,
-          source: ngnzRate.source
-        } : null,
-        pricesLastUpdated: tokenPricesResult.status === 'fulfilled' ? new Date().toISOString() : null
-      },
-      wallets: user.wallets,
       security: {
         is2FAEnabled: user.is2FAEnabled,
-        failedLoginAttempts: user.failedLoginAttempts,
-        lastFailedLogin: user.lastFailedLogin
-      }
+        failedLoginAttempts: user.failedLoginAttempts || 0
+      },
+      wallets: user.wallets || {}
     };
 
-    // Cache the complete dashboard response
-    dashboardCache.set(dashboardCacheKey, { 
-      data: dashboardData, 
-      timestamp: Date.now() 
-    });
-    setTimeout(() => dashboardCache.delete(dashboardCacheKey), DASHBOARD_CACHE_TTL);
-
-    // Log performance metrics
     const processingTime = Date.now() - startTime;
-    logger.info('Dashboard optimized fetch completed', {
-      userId,
-      processingTime,
-      totalTokens: Object.keys(SUPPORTED_TOKENS).length,
-      pricesRetrieved: Object.keys(marketPrices).length,
-      totalPortfolioUSD: calculatedUSDBalances.totalPortfolioBalance,
-      cacheUsed: false
-    });
+    logger.info('Dashboard fetched successfully', { userId, processingTime });
 
     res.status(200).json({ success: true, data: dashboardData });
     
-  } catch (err) {
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
     logger.error('Dashboard fetch error', { 
-      error: err.message, 
-      stack: err.stack,
+      error: error.message, 
       userId: req.user?.id,
-      processingTime: Date.now() - startTime
+      processingTime
     });
     
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to fetch dashboard data', 
-      error: err.message 
+      message: 'Failed to fetch dashboard data'
     });
   }
 });
 
-// REMOVED: Automatic price storage from dashboard fetch (moved to separate background job)
-
-// Store prices endpoint - NOW ASYNC (don't block dashboard)
-router.post('/store-prices', async (req, res) => {
+// Get current market prices
+router.get('/market-prices', async (req, res) => {
   try {
-    const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
-    
-    const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
-      getPricesWithCache(tokenSymbols),
-      getCurrentRate()
-    ]);
+    const cacheKey = 'market_prices';
+    let prices = getFromCache(cacheKey);
 
-    const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
-    const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
-    
-    if (ngnzRate?.finalPrice) {
-      prices.NGNZ = ngnzRate.finalPrice;
+    if (!prices) {
+      const tokens = Object.keys(SUPPORTED_TOKENS);
+      prices = await getPricesWithCache(tokens);
+      setCache(cacheKey, prices);
     }
 
-    // Store prices asynchronously
+    res.status(200).json({ success: true, data: prices });
+  } catch (error) {
+    logger.error('Market prices fetch error:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch market prices' 
+    });
+  }
+});
+
+// Get KYC limits for current user
+router.get('/kyc-limits', async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('kycLevel');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const limits = user.getKycLimits();
+    res.status(200).json({ success: true, data: limits });
+  } catch (error) {
+    logger.error('KYC limits fetch error:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch KYC limits' 
+    });
+  }
+});
+
+// Store prices (background job trigger)
+router.post('/store-prices', async (req, res) => {
+  try {
+    const tokens = Object.keys(SUPPORTED_TOKENS);
+    const prices = await getPricesWithCache(tokens);
+    
+    // Store prices in background
     PriceChange.storePrices(prices, 'manual_store').catch(error => {
       logger.error('Background price storage failed:', error.message);
     });
     
     res.status(200).json({ 
       success: true, 
-      message: 'Price storage initiated', 
-      pricesCount: Object.keys(prices).length
+      message: 'Price storage initiated'
     });
   } catch (error) {
-    logger.error('Store prices error', { error: error.message });
+    logger.error('Store prices error:', error.message);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to initiate price storage', 
-      error: error.message 
+      message: 'Failed to initiate price storage'
     });
   }
 });
 
-// Lightweight health check endpoint
+// Health check
 router.get('/health', (req, res) => {
   res.json({
     success: true,
     timestamp: new Date().toISOString(),
-    cacheStats: {
-      dashboardEntries: dashboardCache.size,
-      priceChangeEntries: priceChangeCache.size
-    }
+    cacheSize: cache.size
   });
 });
 
-// Debug route - only for development
-if (process.env.NODE_ENV === 'development') {
-  router.get('/debug-price-changes', async (req, res) => {
-    try {
-      const tokenSymbols = Object.keys(SUPPORTED_TOKENS).filter(token => token !== 'NGNZ');
-      
-      const [tokenPrices, ngnzRateInfo] = await Promise.allSettled([
-        getPricesWithCache(tokenSymbols),
-        getCurrentRate()
-      ]);
-
-      const prices = tokenPrices.status === 'fulfilled' ? tokenPrices.value : {};
-      const ngnzRate = ngnzRateInfo.status === 'fulfilled' ? ngnzRateInfo.value : null;
-      
-      if (ngnzRate?.finalPrice) {
-        prices.NGNZ = ngnzRate.finalPrice;
-      }
-
-      const [changes1h, changes12h, changes24h] = await Promise.allSettled([
-        PriceChange.getPriceChanges(prices, 1),
-        PriceChange.getPriceChanges(prices, 12),
-        PriceChange.getPriceChanges(prices, 24)
-      ]);
-
-      res.json({
-        success: true,
-        data: {
-          currentPrices: prices,
-          priceChanges: {
-            oneHour: changes1h.status === 'fulfilled' ? changes1h.value : {},
-            twelveHours: changes12h.status === 'fulfilled' ? changes12h.value : {},
-            twentyFourHours: changes24h.status === 'fulfilled' ? changes24h.value : {}
-          },
-          cacheStats: {
-            dashboardEntries: dashboardCache.size,
-            priceChangeEntries: priceChangeCache.size
-          }
-        }
-      });
-      
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  });
-}
-
-// Cleanup old prices endpoint
-router.post('/cleanup-prices', async (req, res) => {
-  try {
-    const daysToKeep = req.body.daysToKeep || 30;
-    
-    // Run cleanup in background
-    PriceChange.cleanupOldPrices(daysToKeep)
-      .then(deletedCount => {
-        logger.info('Price cleanup completed', { deletedCount, daysKept: daysToKeep });
-      })
-      .catch(error => {
-        logger.error('Price cleanup failed:', error.message);
-      });
-    
-    res.json({
-      success: true,
-      message: 'Price cleanup initiated',
-      daysToKeep: daysToKeep
-    });
-  } catch (error) {
-    logger.error('Cleanup prices error', { error: error.message });
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Clean up caches periodically
+// Clean up cache periodically (every 5 minutes)
 setInterval(() => {
   const now = Date.now();
-  
-  // Clean dashboard cache
-  for (const [key, entry] of dashboardCache.entries()) {
-    if (now - entry.timestamp > DASHBOARD_CACHE_TTL) {
-      dashboardCache.delete(key);
+  for (const [key, entry] of cache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      cache.delete(key);
     }
   }
-  
-  // Clean price change cache
-  for (const [key, entry] of priceChangeCache.entries()) {
-    if (now - entry.timestamp > PRICE_CHANGE_CACHE_TTL) {
-      priceChangeCache.delete(key);
-    }
-  }
-}, 60000); // Clean every minute
+}, 300000);
 
 module.exports = router;
