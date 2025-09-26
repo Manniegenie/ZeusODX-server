@@ -43,7 +43,7 @@ class KYCLimitService {
             }
           }
           
-          // For NGNZ transactions, use ngnz limits
+          // For NGNZ transactions, use ngnz limits (matching user.js model)
           if (['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType) && limits.ngnz) {
             if (typeof limits.ngnz.daily === 'number' && typeof limits.ngnz.monthly === 'number') {
               logger.info(`Using NGNZ limits for ${transactionType}: Daily ₦${limits.ngnz.daily.toLocaleString()}, Monthly ₦${limits.ngnz.monthly.toLocaleString()}`);
@@ -70,30 +70,25 @@ class KYCLimitService {
   }
 
   /**
-   * Get default limits for specific transaction type
+   * Get default limits for specific transaction type (updated to match user.js exactly)
    */
   getDefaultLimitsForTransaction(kycLevel, transactionType) {
-    // Define limits per KYC level and transaction type (matching user model structure)
+    // Define limits per KYC level and transaction type (matching user.js getKycLimits method)
     const defaultLimitsByType = {
       0: {
-        utilities: { daily: 0, monthly: 0 },
+        ngnz: { daily: 0, monthly: 0 },
         crypto: { daily: 0, monthly: 0 },
-        ngnz: { daily: 0, monthly: 0 }
+        utilities: { daily: 0, monthly: 0 }
       },
       1: {
-        utilities: { daily: 50000, monthly: 200000 },
-        crypto: { daily: 0, monthly: 0 },
-        ngnz: { daily: 0, monthly: 0 }
+        ngnz: { daily: 0, monthly: 0 }, // No NGN transactions allowed
+        crypto: { daily: 0, monthly: 0 }, // No crypto transactions allowed
+        utilities: { daily: 50000, monthly: 200000 } // Only utilities allowed
       },
       2: {
-        utilities: { daily: 500000, monthly: 2000000 },
+        ngnz: { daily: 25000000, monthly: 200000000 },
         crypto: { daily: 2000000, monthly: 2000000 },
-        ngnz: { daily: 25000000, monthly: 200000000 }
-      },
-      3: {
-        utilities: { daily: 500000, monthly: 2000000 },
-        crypto: { daily: 5000000, monthly: 5000000 },
-        ngnz: { daily: 50000000, monthly: 500000000 }
+        utilities: { daily: 500000, monthly: 2000000 }
       }
     };
 
@@ -122,7 +117,7 @@ class KYCLimitService {
    */
   async validateTransactionLimit(userId, amount, currency = 'NGNZ', transactionType = 'WITHDRAWAL') {
     try {
-      logger.info(`🔍 KYC validation started for user ${userId}: ${amount} ${currency} (${transactionType})`);
+      logger.info(`Validation started for user ${userId}: ${amount} ${currency} (${transactionType})`);
 
       // 1. Fetch user and validate
       const user = await this.getUser(userId);
@@ -134,13 +129,13 @@ class KYCLimitService {
       const kycLimits = this.getUserKycLimits(user, transactionType);
       const userKycLevel = user.kycLevel || 0;
       
-      logger.info(`📋 User KYC Level ${userKycLevel}: Daily ₦${kycLimits.daily?.toLocaleString() || 'N/A'}, Monthly ₦${kycLimits.monthly?.toLocaleString() || 'N/A'}`);
+      logger.info(`User KYC Level ${userKycLevel}: Daily ₦${kycLimits.daily?.toLocaleString() || 'N/A'}, Monthly ₦${kycLimits.monthly?.toLocaleString() || 'N/A'}`);
 
       // 3. Convert amount to NGNZ/Naira if needed
       let amountInNaira;
       try {
         amountInNaira = await this.convertToNaira(amount, currency);
-        logger.info(`💰 Amount conversion: ${amount} ${currency} = ₦${amountInNaira.toLocaleString()}`);
+        logger.info(`Amount conversion: ${amount} ${currency} = ₦${amountInNaira.toLocaleString()}`);
       } catch (conversionError) {
         logger.error('Currency conversion failed:', conversionError);
         return this.createErrorResponse('CONVERSION_ERROR', `Failed to convert ${currency} to Naira: ${conversionError.message}`);
@@ -209,7 +204,7 @@ class KYCLimitService {
       });
 
     } catch (error) {
-      logger.error('❌ KYC validation error:', error);
+      logger.error('KYC validation error:', error);
       return this.createErrorResponse('VALIDATION_ERROR', 'Failed to validate transaction limits', {
         error: error.message,
         userId,
@@ -265,7 +260,7 @@ class KYCLimitService {
         const usdValue = amount * cryptoPrice;
         const nairaValue = await offrampService.convertUsdToNaira(usdValue);
         
-        logger.info(`💱 Crypto conversion via CurrencyAPI: ${amount} ${currency} @ $${cryptoPrice} = $${usdValue} = ₦${nairaValue.toLocaleString()}`);
+        logger.info(`Crypto conversion via CurrencyAPI: ${amount} ${currency} @ $${cryptoPrice} = $${usdValue} = ₦${nairaValue.toLocaleString()}`);
         return nairaValue;
       }
 
@@ -290,7 +285,7 @@ class KYCLimitService {
         throw new Error('No prices returned from CurrencyAPI');
       }
 
-      logger.info(`📈 CurrencyAPI prices: ${Object.entries(prices).map(([symbol, price]) => `${symbol}=$${price}`).join(', ')}`);
+      logger.info(`CurrencyAPI prices: ${Object.entries(prices).map(([symbol, price]) => `${symbol}=$${price}`).join(', ')}`);
       return prices;
 
     } catch (error) {
@@ -379,7 +374,7 @@ class KYCLimitService {
       this.cache.userSpending.set(cacheKey, spending);
       this.cache.cacheExpiry.set(cacheKey, Date.now() + this.cacheTimeout);
 
-      logger.info(`📊 Current spending for user ${userId}: Daily ₦${dailyTotal.toLocaleString()}, Monthly ₦${monthlyTotal.toLocaleString()}`);
+      logger.info(`Current spending for user ${userId}: Daily ₦${dailyTotal.toLocaleString()}, Monthly ₦${monthlyTotal.toLocaleString()}`);
       
       return spending;
 
@@ -461,13 +456,12 @@ class KYCLimitService {
   }
 
   /**
-   * Get upgrade recommendation based on current KYC level
+   * Get upgrade recommendation based on current KYC level (updated for 2-level system)
    */
   getUpgradeRecommendation(currentLevel) {
     const recommendations = {
       0: 'Complete basic verification (Level 1) to start making transactions',
-      1: 'Complete identity verification (Level 2) for higher limits up to ₦5M daily',
-      2: 'Complete enhanced verification (Level 3) for maximum limits up to ₦20M daily'
+      1: 'Complete identity verification (Level 2) for higher limits up to ₦25M daily'
     };
     return recommendations[currentLevel] || 'Your account has maximum verification';
   }
