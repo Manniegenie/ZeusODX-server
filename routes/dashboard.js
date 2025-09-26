@@ -184,16 +184,26 @@ router.get('/market-prices', async (req, res) => {
   }
 });
 
-// Get KYC limits for current user
+// Get KYC limits and requirements for current user
 router.get('/kyc-limits', async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('kycLevel');
+    const user = await User.findById(req.user.id).select('kycLevel kycStatus kyc emailVerified');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
     const limits = user.getKycLimits();
-    res.status(200).json({ success: true, data: limits });
+    const requirements = user.getKycRequirements();
+    
+    res.status(200).json({ 
+      success: true, 
+      data: {
+        limits,
+        requirements,
+        currentLevel: user.kycLevel,
+        status: user.kycStatus
+      }
+    });
   } catch (error) {
     logger.error('KYC limits fetch error:', error.message);
     res.status(500).json({ 
@@ -223,6 +233,37 @@ router.post('/store-prices', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: 'Failed to initiate price storage'
+    });
+  }
+});
+
+// Get detailed KYC status and requirements
+router.get('/kyc-status', async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('kycLevel kycStatus kyc emailVerified firstname lastname phonenumber');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const requirements = user.getKycRequirements();
+    
+    res.status(200).json({ 
+      success: true, 
+      data: {
+        currentLevel: user.kycLevel,
+        status: user.kycStatus,
+        requirements: requirements,
+        nextSteps: user.kycLevel === 0 ? ['Phone verification'] : 
+                  user.kycLevel === 1 ? ['Email verification', 'Document verification'] : 
+                  ['All KYC requirements completed'],
+        isMaxLevel: user.kycLevel === 2
+      }
+    });
+  } catch (error) {
+    logger.error('KYC status fetch error:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch KYC status' 
     });
   }
 });
