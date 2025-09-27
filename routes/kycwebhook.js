@@ -20,7 +20,7 @@ const API_KEY = process.env.SMILE_ID_API_KEY;
 
 // ---- helpers ----------------------------------------------------
 
-// Updated result codes based on Smile ID documentation
+// Updated result codes based on Smile ID documentation - FIXED CLASSIFICATIONS
 const APPROVED_CODES = new Set([
   '0810', '0820', '0830', '0840', // Enhanced KYC approved
   '1012', '1020', '1021', // Basic KYC approved
@@ -37,7 +37,7 @@ const PROVISIONAL_CODES = new Set([
 
 const REJECTED_CODES = new Set([
   '0813', '0826', '0827', // Enhanced KYC rejected
-  '1011', '1013', '1014', '1015', // Basic KYC rejected
+  '1011', '1013', '1014', '1015', '1016', // Basic KYC rejected (ADDED 1016)
   '1216', '1217', '1218', '1226', '1227', '1228' // Biometric KYC rejected
 ]);
 
@@ -58,17 +58,29 @@ function classifyOutcome({ job_success, code, text, actions }) {
     return job_success ? 'APPROVED' : 'REJECTED';
   }
   
-  // Check result codes
+  // Check result codes FIRST - this is most reliable
   const codeStr = String(code || '');
   if (APPROVED_CODES.has(codeStr)) return 'APPROVED';
   if (REJECTED_CODES.has(codeStr)) return 'REJECTED';
   if (PROVISIONAL_CODES.has(codeStr)) return 'PROVISIONAL';
 
-  // Text-based classification
+  // More strict text-based classification - check for explicit failures first
   const t = (text || '').toLowerCase();
-  if (/(provisional|pending|awaiting|under.?review|partial.?match)/.test(t)) return 'PROVISIONAL';
-  if (/(pass|approved|verified|valid|exact.?match|enroll.?user|id.?validated)/.test(t)) return 'APPROVED';
-  if (/(fail|rejected|no.?match|unable|unsupported|error|invalid|not.?found)/.test(t)) return 'REJECTED';
+  
+  // Explicit failure indicators - check these FIRST
+  if (/(fail|rejected|no.?match|unable|unsupported|error|invalid|not.?found|not.?enabled|cannot|declined)/.test(t)) {
+    return 'REJECTED';
+  }
+  
+  // Provisional indicators
+  if (/(provisional|pending|awaiting|under.?review|partial.?match)/.test(t)) {
+    return 'PROVISIONAL';
+  }
+  
+  // Success indicators - only after ruling out failures
+  if (/(pass|approved|verified|valid|exact.?match|enroll.?user|id.?validated|success)/.test(t)) {
+    return 'APPROVED';
+  }
 
   // Actions-based classification
   if (actions && typeof actions === 'object') {
@@ -91,8 +103,13 @@ function classifyOutcome({ job_success, code, text, actions }) {
     if (mostPass) return 'APPROVED';
   }
   
-  // Default to provisional for unknown cases
-  return 'PROVISIONAL';
+  // Default to REJECTED for unknown cases (security-first approach)
+  logger.warn('Unknown verification outcome - defaulting to REJECTED', {
+    code: codeStr,
+    text: t,
+    job_success
+  });
+  return 'REJECTED';
 }
 
 function normalize(body) {
@@ -278,7 +295,7 @@ router.post('/callback', async (req, res) => {
     return res.status(500).json({ success: false, error: 'user_fetch_error' });
   }
 
-  // 4) Compute outcome
+  // 4) Compute outcome using FIXED classification
   const status = classifyOutcome({
     job_success: norm.jobSuccess,
     code: norm.resultCode,
@@ -378,7 +395,7 @@ router.post('/callback', async (req, res) => {
       runValidators: true,
     });
 
-    // 7) Update User KYC status - focus only on document verification
+    // 7) Update User KYC status using user model methods
     const userUpdate = {
       $set: {
         'kyc.provider': 'smile-id',
@@ -390,7 +407,7 @@ router.post('/callback', async (req, res) => {
       },
     };
 
-    // Update document verification status only
+    // Update document verification status
     if (isValidDocument) {
       if (status === 'APPROVED') {
         userUpdate.$set['kyc.level2.status'] = 'approved';
@@ -400,9 +417,6 @@ router.post('/callback', async (req, res) => {
         userUpdate.$set['kyc.level2.approvedAt'] = new Date();
         userUpdate.$set['kyc.level2.rejectionReason'] = null;
         
-        // Update overall KYC status to approved (document verification complete)
-        userUpdate.$set['kycStatus'] = 'approved';
-
         logger.info('Document verification approved', {
           requestId,
           userId,
@@ -432,6 +446,26 @@ router.post('/callback', async (req, res) => {
 
     // Update user document
     const updatedUser = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
+
+    // Trigger the user model's KYC upgrade methods for approved documents
+    if (isValidDocument && status === 'APPROVED') {
+      try {
+        await updatedUser.onIdentityDocumentVerified(frontendIdType, norm.idNumber);
+        logger.info('Triggered identity document verification and KYC upgrade check', {
+          requestId,
+          userId,
+          documentType: frontendIdType,
+          documentNumber: norm.idNumber?.slice(0, 4) + '****'
+        });
+      } catch (upgradeError) {
+        logger.error('Error during KYC upgrade process', {
+          requestId,
+          userId,
+          error: upgradeError.message,
+          documentType: frontendIdType
+        });
+      }
+    }
 
     logger.info('SmileID webhook: User KYC status updated successfully', {
       requestId,
@@ -485,7 +519,5 @@ router.post('/callback', async (req, res) => {
     });
   }
 });
-
-
 
 module.exports = router;

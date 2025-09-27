@@ -72,7 +72,235 @@ const validateSmileIdConfig = () => {
   }
 };
 
-// POST: /biometric-verification - Verify user identity using Smile ID
+// Updated result codes to match webhook
+const APPROVED_CODES = new Set([
+  '0810', '0820', '0830', '0840', // Enhanced KYC approved
+  '1012', '1020', '1021', // Basic KYC approved
+  '1210', '1220', '1230', '1240', // Biometric KYC approved
+  '2302' // Job completed successfully
+]);
+
+const PROVISIONAL_CODES = new Set([
+  '0812', '0814', '0815', '0816', '0817', // Enhanced KYC provisional
+  '0822', '0824', '0825', // Enhanced KYC under review
+  '1212', '1213', '1214', '1215', // Biometric KYC provisional
+  '1222', '1223', '1224', '1225'  // Biometric KYC under review
+]);
+
+const REJECTED_CODES = new Set([
+  '0813', '0826', '0827', // Enhanced KYC rejected
+  '1011', '1013', '1014', '1015', '1016', // Basic KYC rejected (ADDED 1016)
+  '1216', '1217', '1218', '1226', '1227', '1228' // Biometric KYC rejected
+]);
+
+// Classify outcome function (same as webhook)
+function classifyOutcome({ job_success, code, text, actions }) {
+  // First check explicit job_success flag
+  if (typeof job_success === 'boolean') {
+    return job_success ? 'APPROVED' : 'REJECTED';
+  }
+  
+  // Check result codes FIRST - this is most reliable
+  const codeStr = String(code || '');
+  if (APPROVED_CODES.has(codeStr)) return 'APPROVED';
+  if (REJECTED_CODES.has(codeStr)) return 'REJECTED';
+  if (PROVISIONAL_CODES.has(codeStr)) return 'PROVISIONAL';
+
+  // More strict text-based classification - check for explicit failures first
+  const t = (text || '').toLowerCase();
+  
+  // Explicit failure indicators - check these FIRST
+  if (/(fail|rejected|no.?match|unable|unsupported|error|invalid|not.?found|not.?enabled|cannot|declined)/.test(t)) {
+    return 'REJECTED';
+  }
+  
+  // Provisional indicators
+  if (/(provisional|pending|awaiting|under.?review|partial.?match)/.test(t)) {
+    return 'PROVISIONAL';
+  }
+  
+  // Success indicators - only after ruling out failures
+  if (/(pass|approved|verified|valid|exact.?match|enroll.?user|id.?validated|success)/.test(t)) {
+    return 'APPROVED';
+  }
+
+  // Actions-based classification
+  if (actions && typeof actions === 'object') {
+    const vals = Object.values(actions).map(v => String(v).toLowerCase());
+    const criticalActions = ['verify_id_number', 'selfie_to_id_authority_compare', 'human_review_compare'];
+    
+    // Check critical actions first
+    const criticalFailed = criticalActions.some(action => {
+      const actionValue = actions[action] || actions[action.replace(/_/g, '_')];
+      return actionValue && /(fail|rejected|unable|not.applicable)/.test(String(actionValue).toLowerCase());
+    });
+    
+    if (criticalFailed) return 'REJECTED';
+    
+    // Check all actions
+    const anyFail = vals.some(v => /(fail|rejected|unable)/.test(v));
+    const mostPass = vals.filter(v => /(pass|approved|verified|returned|completed)/.test(v)).length > vals.length / 2;
+    
+    if (anyFail && !mostPass) return 'REJECTED';
+    if (mostPass) return 'APPROVED';
+  }
+  
+  // Default to REJECTED for unknown cases (security-first approach)
+  logger.warn('Unknown verification outcome - defaulting to REJECTED', {
+    code: codeStr,
+    text: t,
+    job_success
+  });
+  return 'REJECTED';
+}
+
+// Background processing function for Smile ID verification
+const processSmileIdVerification = async (userData, verificationData, jobId) => {
+  const startTime = Date.now();
+  
+  try {
+    logger.info("Starting background Smile ID verification", { 
+      userId: userData._id,
+      jobId,
+      idType: verificationData.smileIdType
+    });
+
+    // Initialize Smile ID connection
+    const connection = new WebApi(
+      SMILE_ID_CONFIG.partner_id,
+      SMILE_ID_CONFIG.callback_url,
+      SMILE_ID_CONFIG.api_key,
+      SMILE_ID_CONFIG.sid_server
+    );
+
+    // Create partner parameters
+    const partner_params = {
+      job_id: jobId,
+      user_id: userData._id.toString(),
+      job_type: 1 // Biometric KYC
+    };
+
+    // Prepare image details
+    const image_details = [];
+
+    // Add selfie image
+    if (verificationData.selfieImage.startsWith('data:image/')) {
+      // Base64 encoded image
+      const base64Data = verificationData.selfieImage.split(',')[1]; // Remove data:image/jpeg;base64, prefix
+      image_details.push({
+        image_type_id: 2, // Base64 selfie
+        image: base64Data
+      });
+    } else {
+      // File path
+      image_details.push({
+        image_type_id: 0, // File path selfie
+        image: verificationData.selfieImage
+      });
+    }
+
+    // Add liveness images if provided (8 images for proof of life)
+    if (verificationData.livenessImages && verificationData.livenessImages.length === 8) {
+      verificationData.livenessImages.forEach((livenessImage, index) => {
+        if (livenessImage.startsWith('data:image/')) {
+          const base64Data = livenessImage.split(',')[1];
+          image_details.push({
+            image_type_id: 6, // Base64 liveness
+            image: base64Data
+          });
+        } else {
+          image_details.push({
+            image_type_id: 4, // File path liveness
+            image: livenessImage
+          });
+        }
+      });
+    }
+
+    // Create ID information object
+    const id_info = {
+      first_name: userData.firstname,
+      last_name: userData.lastname,
+      country: 'NG', // Nigeria
+      id_type: verificationData.smileIdType,
+      id_number: verificationData.idNumber,
+      dob: verificationData.dob || '', // Optional date of birth
+      entered: 'true' // Must be string
+    };
+
+    // Set job options
+    const options = {
+      return_job_status: true, // Get result synchronously
+      return_history: false, // Don't need history
+      return_image_links: true, // Return uploaded images
+      signature: true
+    };
+
+    // Submit job to Smile ID
+    const response = await connection.submit_job(partner_params, image_details, id_info, options);
+
+    logger.info("Background Smile ID response received", { 
+      jobId,
+      success: response.job_success,
+      resultCode: response.result?.ResultCode,
+      processingTime: Date.now() - startTime
+    });
+
+    // Process response using same logic as webhook - LOG ONLY, NO USER UPDATES
+    if (response.job_success) {
+      const result = response.result;
+      
+      // Use the same classification logic as webhook
+      const status = classifyOutcome({
+        job_success: response.job_success,
+        code: result.ResultCode,
+        text: result.ResultText,
+        actions: result.Actions,
+      });
+      
+      logger.info("Background verification completed - webhook will handle all user updates", {
+        jobId,
+        userId: userData._id,
+        resultCode: result.ResultCode,
+        resultText: result.ResultText,
+        status,
+        confidenceValue: result.ConfidenceValue,
+        jobSuccess: response.job_success,
+        smileJobId: result.SmileJobID,
+        processingTime: Date.now() - startTime
+      });
+      
+    } else {
+      // Job failed in background - webhook will still handle final status
+      const status = classifyOutcome({
+        job_success: false,
+        code: response.code,
+        text: response.message || 'Job submission failed',
+        actions: null,
+      });
+      
+      logger.info("Background verification failed - webhook will handle final status", { 
+        jobId, 
+        userId: userData._id, 
+        error: response.code || 'Unknown error',
+        message: response.message || 'No error message provided',
+        status,
+        processingTime: Date.now() - startTime
+      });
+    }
+
+  } catch (error) {
+    logger.error("Critical error during background biometric verification", { 
+      userId: userData._id,
+      jobId,
+      error: error.message, 
+      stack: error.stack,
+      processingTime: Date.now() - startTime
+    });
+  }
+};
+
+// POST: /biometric-verification - Verify user identity using Smile ID (Background Processing)
 router.post(
   "/biometric-verification",
   authenticateToken,
@@ -173,156 +401,46 @@ router.post(
         });
       }
 
-      // Initialize Smile ID connection
-      const connection = new WebApi(
-        SMILE_ID_CONFIG.partner_id,
-        SMILE_ID_CONFIG.callback_url,
-        SMILE_ID_CONFIG.api_key,
-        SMILE_ID_CONFIG.sid_server
-      );
-
       // Generate unique job ID
       const jobId = `${user._id}_${Date.now()}`;
 
-      // Create partner parameters
-      const partner_params = {
-        job_id: jobId,
-        user_id: user._id.toString(),
-        job_type: 1 // Biometric KYC
+      // Prepare verification data for background processing
+      const verificationData = {
+        idType,
+        idNumber,
+        selfieImage,
+        livenessImages,
+        dob,
+        smileIdType
       };
 
-      // Prepare image details
-      const image_details = [];
-
-      // Add selfie image
-      if (selfieImage.startsWith('data:image/')) {
-        // Base64 encoded image
-        const base64Data = selfieImage.split(',')[1]; // Remove data:image/jpeg;base64, prefix
-        image_details.push({
-          image_type_id: 2, // Base64 selfie
-          image: base64Data
-        });
-      } else {
-        // File path
-        image_details.push({
-          image_type_id: 0, // File path selfie
-          image: selfieImage
-        });
-      }
-
-      // Add liveness images if provided (8 images for proof of life)
-      if (livenessImages && livenessImages.length === 8) {
-        livenessImages.forEach((livenessImage, index) => {
-          if (livenessImage.startsWith('data:image/')) {
-            const base64Data = livenessImage.split(',')[1];
-            image_details.push({
-              image_type_id: 6, // Base64 liveness
-              image: base64Data
-            });
-          } else {
-            image_details.push({
-              image_type_id: 4, // File path liveness
-              image: livenessImage
-            });
-          }
-        });
-      }
-
-      // Create ID information object
-      const id_info = {
-        first_name: user.firstname,
-        last_name: user.lastname,
-        country: 'NG', // Nigeria
-        id_type: smileIdType,
-        id_number: idNumber,
-        dob: dob || '', // Optional date of birth
-        entered: 'true' // Must be string
-      };
-
-      // Set job options
-      const options = {
-        return_job_status: true, // Get result synchronously
-        return_history: false, // Don't need history
-        return_image_links: true, // Return uploaded images
-        signature: true
-      };
-
-      logger.info("Submitting Smile ID job", { 
-        jobId, 
-        userId: user._id,
-        idType: smileIdType,
-        imageCount: image_details.length
+      // Start background processing (fire and forget)
+      setImmediate(() => {
+        processSmileIdVerification(user, verificationData, jobId);
       });
 
-      // Submit job to Smile ID
-      const response = await connection.submit_job(partner_params, image_details, id_info, options);
-
-      logger.info("Smile ID response received", { 
+      // Return immediate response to frontend
+      logger.info("Biometric verification submitted successfully", { 
+        userId: req.user.id,
         jobId,
-        success: response.job_success,
-        resultCode: response.result?.ResultCode,
+        idType,
         processingTime: Date.now() - startTime
       });
 
-      // Process response
-      if (response.job_success) {
-        const result = response.result;
-        const isApproved = ['0810', '0820', '0830', '1210', '1220', '1230'].includes(result.ResultCode);
-        
-        // Update user KYC status if verification successful
-        if (isApproved) {
-          // Update user's KYC level based on verification
-          if (user.kycLevel < 2) {
-            user.kycLevel = 2;
-            user.kycStatus = 'approved';
-            user.kyc.level2.status = 'approved';
-            user.kyc.level2.documentType = idType;
-            user.kyc.level2.documentNumber = idNumber;
-            user.kyc.level2.documentSubmitted = true;
-            user.kyc.level2.approvedAt = new Date();
-            await user.save();
-            
-            logger.info("User KYC upgraded to level 2", { 
-              userId: user._id, 
-              idType,
-              smileJobId: result.SmileJobID 
-            });
-          }
+      return res.status(200).json({
+        success: true,
+        message: "Submission complete! Your ID verification is being processed.",
+        data: {
+          jobId,
+          status: "processing",
+          submittedAt: new Date().toISOString(),
+          idType,
+          processingTime: Date.now() - startTime
         }
-
-        return res.status(200).json({
-          success: true,
-          message: isApproved ? "ID verification successful" : "ID verification completed with issues",
-          data: {
-            jobId,
-            smileJobId: result.SmileJobID,
-            resultCode: result.ResultCode,
-            resultText: result.ResultText,
-            confidenceValue: result.ConfidenceValue,
-            isApproved,
-            actions: result.Actions,
-            kycLevel: user.kycLevel,
-            kycStatus: user.kycStatus,
-            processingTime: Date.now() - startTime
-          }
-        });
-      } else {
-        // Job failed
-        logger.error("Smile ID job failed", { 
-          jobId, 
-          userId: user._id, 
-          error: response.code || 'Unknown error' 
-        });
-
-        return res.status(400).json({
-          success: false,
-          message: "ID verification failed",
-          error: response.code || "Unknown error occurred during verification"
-        });
-      }
+      });
 
     } catch (error) {
-      logger.error("Critical error during biometric verification", { 
+      logger.error("Error during biometric verification submission", { 
         userId: req.user.id,
         error: error.message, 
         stack: error.stack,
@@ -339,57 +457,10 @@ router.post(
 
       return res.status(500).json({ 
         success: false, 
-        message: "Server error during ID verification. Please try again." 
-      });
+        message: "Server error during ID verification submission. Please try again." 
+        });
     }
   }
 );
-
-// POST: /smile-id/callback - Handle Smile ID webhook callbacks
-router.post("/smile-id/callback", async (req, res) => {
-  logger.info("Smile ID callback received", { 
-    body: req.body,
-    headers: req.headers 
-  });
-
-  try {
-    const callbackData = req.body;
-    
-    // Extract job information
-    const smileJobId = callbackData.SmileJobID;
-    const resultCode = callbackData.ResultCode;
-    const partnerParams = callbackData.PartnerParams;
-    const isApproved = ['0810', '0820', '0830', '1210', '1220', '1230'].includes(resultCode);
-
-    if (partnerParams && partnerParams.user_id) {
-      // Find and update user if needed
-      const user = await User.findById(partnerParams.user_id);
-      if (user && isApproved && user.kycLevel < 2) {
-        user.kycLevel = 2;
-        user.kycStatus = 'approved';
-        user.kyc.level2.status = 'approved';
-        user.kyc.level2.approvedAt = new Date();
-        await user.save();
-
-        logger.info("User KYC updated via callback", { 
-          userId: user._id, 
-          smileJobId,
-          resultCode 
-        });
-      }
-    }
-
-    // Acknowledge receipt
-    res.status(200).json({ success: true, message: "Callback received" });
-
-  } catch (error) {
-    logger.error("Error processing Smile ID callback", { 
-      error: error.message,
-      body: req.body 
-    });
-    
-    res.status(500).json({ success: false, message: "Callback processing error" });
-  }
-});
 
 module.exports = router;
