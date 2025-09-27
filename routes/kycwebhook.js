@@ -1,9 +1,25 @@
+// routes/smileid.webhook.js
 const express = require('express');
+const { body, validationResult } = require('express-validator');
+const smileIdentityCore = require('smile-identity-core');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 const User = require('../models/user');
 const KYC = require('../models/kyc');
+const config = require('./config');
 const logger = require('../utils/logger');
+
+// Initialize Smile Identity WebAPI
+const WebApi = smileIdentityCore.WebApi;
+
+// Smile ID Configuration
+const SMILE_ID_CONFIG = {
+  partner_id: process.env.SMILE_ID_PARTNER_ID || config.smileId?.partnerId,
+  api_key: process.env.SMILE_ID_API_KEY || config.smileId?.apiKey,
+  sid_server: process.env.SMILE_ID_SERVER || config.smileId?.server || '0', // 0 for sandbox, 1 for production
+  callback_url: process.env.SMILE_ID_CALLBACK_URL || config.smileId?.callbackUrl || 'https://your-domain.com/api/smile-id/callback'
+};
 
 // Optional: verify Smile signature using their server SDK
 let Signature;
@@ -12,10 +28,6 @@ try {
 } catch (_) {
   Signature = null;
 }
-
-// Use the same environment variables as your main service
-const PARTNER_ID = process.env.SMILE_ID_PARTNER_ID;
-const API_KEY = process.env.SMILE_ID_API_KEY;
 
 // ---- helpers ----------------------------------------------------
 
@@ -202,8 +214,39 @@ function extractDocumentMetadata(norm) {
   return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
-// ---- webhook ----------------------------------------------------
+// Middleware to authenticate JWT token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Access token required' });
+  }
+
+  const jwtSecret = config.jwtSecret || process.env.JWT_SECRET;
+  jwt.verify(token, jwtSecret, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({ success: false, message: 'Invalid or expired token' });
+    }
+    req.user = decoded;
+    next();
+  });
+};
+
+// Validate Smile ID configuration
+const validateSmileIdConfig = () => {
+  if (!SMILE_ID_CONFIG.partner_id) {
+    throw new Error('SMILE_ID_PARTNER_ID is not configured');
+  }
+  if (!SMILE_ID_CONFIG.api_key) {
+    throw new Error('SMILE_ID_API_KEY is not configured');
+  }
+  if (!SMILE_ID_CONFIG.callback_url) {
+    throw new Error('SMILE_ID_CALLBACK_URL is not configured');
+  }
+};
+
+// ---------------- Webhook Handler ----------------
 /**
  * Mount this at: app.use('/webhooks', require('./routes/smileid.webhook'))
  * Ensure JSON body size: app.use(express.json({ limit: '2mb' }))
@@ -229,14 +272,14 @@ router.post('/callback', async (req, res) => {
   // 1) Signature verification
   let signatureValid = false;
   try {
-    if (Signature && PARTNER_ID && API_KEY && body.timestamp && body.signature) {
-      const sig = new Signature(PARTNER_ID, API_KEY);
+    if (Signature && SMILE_ID_CONFIG.partner_id && SMILE_ID_CONFIG.api_key && body.timestamp && body.signature) {
+      const sig = new Signature(SMILE_ID_CONFIG.partner_id, SMILE_ID_CONFIG.api_key);
       signatureValid = sig.confirm_signature(body.timestamp, body.signature);
       
       if (!signatureValid) {
         logger.warn('SmileID webhook: signature INVALID', {
           requestId,
-          partnerId: PARTNER_ID,
+          partnerId: SMILE_ID_CONFIG.partner_id,
           timestampAge: Date.now() - new Date(body.timestamp).getTime()
         });
       } else {
@@ -245,8 +288,8 @@ router.post('/callback', async (req, res) => {
     } else {
       const missing = [];
       if (!Signature) missing.push('Signature SDK');
-      if (!PARTNER_ID) missing.push('SMILE_ID_PARTNER_ID');
-      if (!API_KEY) missing.push('SMILE_ID_API_KEY');
+      if (!SMILE_ID_CONFIG.partner_id) missing.push('SMILE_ID_PARTNER_ID');
+      if (!SMILE_ID_CONFIG.api_key) missing.push('SMILE_ID_API_KEY');
       if (!body.timestamp) missing.push('timestamp');
       if (!body.signature) missing.push('signature');
       
@@ -260,8 +303,8 @@ router.post('/callback', async (req, res) => {
     logger.error('SmileID signature verification error', { 
       requestId,
       error: e.message,
-      partnerId: PARTNER_ID,
-      hasApiKey: !!API_KEY
+      partnerId: SMILE_ID_CONFIG.partner_id,
+      hasApiKey: !!SMILE_ID_CONFIG.api_key
     });
   }
 
@@ -465,15 +508,65 @@ router.post('/callback', async (req, res) => {
       }
     }
 
+    // ------------------------------
+    // NEW: If the outcome is REJECTED, cancel any other in-progress / pending KYC records for this user.
+    // ------------------------------
+    if (status === 'REJECTED') {
+      try {
+        const pendingFilter = {
+          userId,
+          status: 'PENDING',
+          _id: { $ne: kycDoc._id }
+        };
+
+        const pendingDocs = await KYC.find(pendingFilter).select('_id partnerJobId smileJobId createdAt status');
+
+        if (pendingDocs && pendingDocs.length > 0) {
+          const now = new Date();
+          await KYC.updateMany(pendingFilter, {
+            $set: {
+              status: 'CANCELLED',
+              cancelledAt: now,
+              cancelledReason: 'Superseded by final REJECTED result',
+              lastUpdated: now
+            }
+          });
+
+          logger.info('Cancelled other pending KYC documents due to final rejection', {
+            requestId,
+            userId,
+            cancelledCount: pendingDocs.length,
+            cancelledIds: pendingDocs.map(d => d._id)
+          });
+        } else {
+          logger.debug('No other pending KYC docs to cancel', { requestId, userId });
+        }
+
+        // Ensure user's kyc flags reflect final rejected state and clear any inProgress flags
+        await User.findByIdAndUpdate(userId, {
+          $set: {
+            'kyc.status': 'rejected',
+            'kyc.updatedAt': new Date(),
+            'kyc.inProgress': false,
+            'kyc.latestKycId': kycDoc._id
+          }
+        });
+      } catch (cleanupErr) {
+        logger.error('Error cancelling pending KYC documents after rejection', {
+          requestId,
+          userId,
+          error: cleanupErr.message,
+          stack: cleanupErr.stack
+        });
+      }
+    }
+
     logger.info('SmileID webhook: User KYC status updated successfully', {
       requestId,
       userId,
-      kycStatus: updatedUser.kycStatus,
-      idType: frontendIdType,
-      smileIdType: norm.idType,
+      kycStatus: (await User.findById(userId)).kycStatus,
       status,
-      documentVerified: isValidDocument && status === 'APPROVED',
-      level2Status: updatedUser.kyc?.level2?.status
+      kycId: kycDoc._id
     });
 
     logger.info('SmileID KYC record stored successfully', {
@@ -485,8 +578,7 @@ router.post('/callback', async (req, res) => {
       resultCode: kycDoc.resultCode,
       signatureValid,
       kycId: kycDoc._id,
-      confidenceValue: norm.confidenceValue,
-      documentStored: status === 'APPROVED'
+      confidenceValue: norm.confidenceValue
     });
 
     return res.status(200).json({ 
@@ -517,5 +609,238 @@ router.post('/callback', async (req, res) => {
     });
   }
 });
+
+// ---------------- Biometric submission route (unchanged behavior) ----------------
+// This is your POST /biometric-verification route which creates a PENDING KYC
+router.post(
+  "/biometric-verification",
+  authenticateToken,
+  [
+    body("idType")
+      .trim()
+      .notEmpty()
+      .withMessage("ID type is required")
+      .isIn(['passport', 'national_id', 'drivers_license', 'bvn', 'nin', 'nin_slip', 'voter_id'])
+      .withMessage("Invalid ID type. Supported: passport, national_id, drivers_license, bvn, nin, nin_slip, voter_id"),
+    body("idNumber")
+      .trim()
+      .notEmpty()
+      .withMessage("ID number is required")
+      .isLength({ min: 8, max: 19 })
+      .withMessage("ID number must be between 8-19 characters"),
+    body("selfieImage")
+      .notEmpty()
+      .withMessage("Selfie image is required")
+      .custom((value) => {
+        // Check if it's a base64 string
+        if (typeof value === 'string' && value.startsWith('data:image/')) {
+          return true;
+        }
+        // Check if it's a file path (for file upload)
+        if (typeof value === 'string' && value.length > 10) {
+          return true;
+        }
+        throw new Error("Selfie must be a valid base64 image or file path");
+      }),
+    body("livenessImages")
+      .optional()
+      .isArray()
+      .withMessage("Liveness images must be an array")
+      .custom((value) => {
+        if (value && value.length > 0 && value.length !== 8) {
+          throw new Error("Liveness images must contain exactly 8 images or be empty");
+        }
+        return true;
+      }),
+    body("dob")
+      .optional()
+      .isISO8601()
+      .withMessage("Date of birth must be in YYYY-MM-DD format"),
+  ],
+  async (req, res) => {
+    const startTime = Date.now();
+    logger.info("Biometric verification request initiated", { 
+      userId: req.user.id,
+      idType: req.body.idType 
+    });
+
+    // Validate input
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Validation failed", 
+        errors: errors.array() 
+      });
+    }
+
+    const { idType, idNumber, selfieImage, livenessImages, dob } = req.body;
+
+    try {
+      // Validate Smile ID configuration
+      validateSmileIdConfig();
+
+      // Get user from database
+      const user = await User.findById(req.user.id).select('firstname lastname email username phonenumber kycLevel kycStatus');
+      if (!user) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
+
+      // Check if user has required fields
+      if (!user.firstname || !user.lastname) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "User profile incomplete. First name and last name are required for ID verification." 
+        });
+      }
+
+      // Check for existing pending KYC
+      const existingPendingKyc = await KYC.findOne({
+        userId: user._id,
+        status: 'PENDING'
+      });
+      if (existingPendingKyc) {
+        logger.info("KYC verification already in progress", {
+          userId: user._id,
+          kycId: existingPendingKyc._id
+        });
+        return res.status(400).json({
+          success: false,
+          message: "KYC verification already in progress",
+          data: {
+            kycId: existingPendingKyc._id,
+            status: existingPendingKyc.status,
+            submittedAt: existingPendingKyc.createdAt
+          }
+        });
+      }
+
+      // Map frontend ID type to Smile ID format
+      const NIGERIAN_ID_TYPES = {
+        'passport': 'PASSPORT',
+        'national_id': 'NIN_V2',
+        'drivers_license': 'NIN_V2',
+        'bvn': 'BVN',
+        'nin': 'NIN_V2',
+        'nin_slip': 'NIN_SLIP',
+        'voter_id': 'VOTER_ID'
+      };
+      const ID_PATTERNS = {
+        'BVN': /^\d{11}$/,
+        'NIN_V2': /^\d{11}$/,
+        'NIN_SLIP': /^\d{11}$/,
+        'PASSPORT': /^[A-Z]\d{8}$/,
+        'VOTER_ID': /^\d{19}$/
+      };
+
+      const smileIdType = NIGERIAN_ID_TYPES[idType];
+      if (!smileIdType) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Unsupported ID type: ${idType}` 
+        });
+      }
+
+      // Validate ID number format
+      const pattern = ID_PATTERNS[smileIdType];
+      if (pattern && !pattern.test(idNumber)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Invalid ${idType} format. Please check your ID number.` 
+        });
+      }
+
+      // Generate unique job ID
+      const jobId = `${user._id}_${Date.now()}`;
+
+      // Create pending KYC record
+      const kycDoc = await KYC.create({
+        userId: user._id,
+        provider: 'smile-id',
+        environment: process.env.NODE_ENV || 'development',
+        partnerJobId: jobId,
+        jobType: 1,
+        status: 'PENDING',
+        idType: smileIdType,
+        frontendIdType: idType,
+        idNumber,
+        createdAt: new Date(),
+        lastUpdated: new Date(),
+        imageLinks: {
+          selfie_image: selfieImage,
+          liveness_images: livenessImages || []
+        }
+      });
+
+      // Update user with pending KYC status and flag inProgress
+      await User.findByIdAndUpdate(user._id, {
+        $set: {
+          'kyc.status': 'pending',
+          'kyc.updatedAt': new Date(),
+          'kyc.latestKycId': kycDoc._id,
+          'kyc.inProgress': true
+        }
+      });
+
+      // Prepare verification data for background processing
+      const verificationData = {
+        idType,
+        idNumber,
+        selfieImage,
+        livenessImages,
+        dob,
+        smileIdType
+      };
+
+      // Start background processing (fire and forget)
+      setImmediate(() => {
+        processSmileIdVerification(user, verificationData, jobId, kycDoc._id);
+      });
+
+      // Return immediate response to frontend
+      logger.info("Biometric verification submitted successfully", { 
+        userId: user._id,
+        jobId,
+        kycId: kycDoc._id,
+        idType,
+        processingTime: Date.now() - startTime
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Submission complete! Your ID verification is being processed.",
+        data: {
+          jobId,
+          kycId: kycDoc._id,
+          status: "pending",
+          submittedAt: kycDoc.createdAt,
+          idType,
+          processingTime: Date.now() - startTime
+        }
+      });
+
+    } catch (error) {
+      logger.error("Error during biometric verification submission", { 
+        userId: req.user.id,
+        error: error.message, 
+        stack: error.stack,
+        processingTime: Date.now() - startTime
+      });
+
+      // Handle specific Smile ID errors
+      if (error.message && error.message.includes('SMILE_ID')) {
+        return res.status(500).json({ 
+          success: false, 
+          message: "ID verification service configuration error. Please contact support." 
+        });
+      }
+
+      return res.status(500).json({ 
+        success: false, 
+        message: "Server error during ID verification submission. Please try again." 
+      });
+    }
+  }
+);
 
 module.exports = router;

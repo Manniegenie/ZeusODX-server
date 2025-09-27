@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
-const STATUS = ['APPROVED', 'REJECTED', 'PROVISIONAL', 'PENDING'];
+const STATUS = ['APPROVED', 'REJECTED', 'PROVISIONAL', 'PENDING', 'CANCELLED'];
 
 const KYCSchema = new Schema(
   {
@@ -67,6 +67,10 @@ const KYCSchema = new Schema(
     // Reasons for non-approved statuses
     provisionalReason: { type: String },
     errorReason: { type: String },
+
+    // Cancellation metadata (added to preserve audit trail)
+    cancelledAt: { type: Date, default: null },
+    cancelledReason: { type: String, default: null },
 
     // Additional metadata for approved documents
     documentMetadata: {
