@@ -1,4 +1,3 @@
-// ../routes/smileid.webhook.js
 const express = require('express');
 const router = express.Router();
 
@@ -20,7 +19,7 @@ const API_KEY = process.env.SMILE_ID_API_KEY;
 
 // ---- helpers ----------------------------------------------------
 
-// Updated result codes based on Smile ID documentation - FIXED CLASSIFICATIONS
+// Updated result codes based on Smile ID documentation
 const APPROVED_CODES = new Set([
   '0810', '0820', '0830', '0840', // Enhanced KYC approved
   '1012', '1020', '1021', // Basic KYC approved
@@ -37,7 +36,7 @@ const PROVISIONAL_CODES = new Set([
 
 const REJECTED_CODES = new Set([
   '0813', '0826', '0827', // Enhanced KYC rejected
-  '1011', '1013', '1014', '1015', '1016', // Basic KYC rejected (ADDED 1016)
+  '1011', '1013', '1014', '1015', '1016', // Basic KYC rejected
   '1216', '1217', '1218', '1226', '1227', '1228' // Biometric KYC rejected
 ]);
 
@@ -48,8 +47,7 @@ const ID_TYPE_MAPPING = {
   'NIN': 'national_id',
   'NIN_SLIP': 'nin_slip',
   'PASSPORT': 'passport',
-  'VOTER_ID': 'voter_id',
-  'V_NIN': 'national_id'
+  'VOTER_ID': 'voter_id'
 };
 
 function classifyOutcome({ job_success, code, text, actions }) {
@@ -295,7 +293,7 @@ router.post('/callback', async (req, res) => {
     return res.status(500).json({ success: false, error: 'user_fetch_error' });
   }
 
-  // 4) Compute outcome using FIXED classification
+  // 4) Compute outcome using classification
   const status = classifyOutcome({
     job_success: norm.jobSuccess,
     code: norm.resultCode,
@@ -345,7 +343,7 @@ router.post('/callback', async (req, res) => {
         jobComplete: norm.jobComplete,
         jobSuccess: norm.jobSuccess,
 
-        status,
+        status: status === 'PROVISIONAL' ? 'PENDING' : status, // Map PROVISIONAL to PENDING
         resultCode: norm.resultCode,
         resultText: norm.resultText,
         actions: norm.actions,
@@ -399,7 +397,7 @@ router.post('/callback', async (req, res) => {
     const userUpdate = {
       $set: {
         'kyc.provider': 'smile-id',
-        'kyc.status': status.toLowerCase(),
+        'kyc.status': status === 'PROVISIONAL' ? 'pending' : status.toLowerCase(),
         'kyc.updatedAt': new Date(),
         'kyc.latestKycId': kycDoc._id,
         'kyc.resultCode': kycDoc.resultCode,
@@ -426,13 +424,13 @@ router.post('/callback', async (req, res) => {
           confidenceValue: norm.confidenceValue
         });
       } else if (status === 'PROVISIONAL') {
-        userUpdate.$set['kyc.level2.status'] = 'under_review';
+        userUpdate.$set['kyc.level2.status'] = 'pending';
         userUpdate.$set['kyc.level2.documentSubmitted'] = true;
         userUpdate.$set['kyc.level2.documentType'] = frontendIdType;
         userUpdate.$set['kyc.level2.documentNumber'] = norm.idNumber;
         userUpdate.$set['kyc.level2.submittedAt'] = new Date();
-        userUpdate.$set['kyc.level2.rejectionReason'] = `Partial verification: ${norm.resultText}`;
-        userUpdate.$set['kycStatus'] = 'under_review';
+        userUpdate.$set['kyc.level2.rejectionReason'] = `Pending verification: ${norm.resultText}`;
+        userUpdate.$set['kycStatus'] = 'pending';
       } else if (status === 'REJECTED') {
         userUpdate.$set['kyc.level2.status'] = 'rejected';
         userUpdate.$set['kyc.level2.documentSubmitted'] = true;

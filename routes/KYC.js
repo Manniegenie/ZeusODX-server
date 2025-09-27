@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const router = express.Router();
 
 const User = require("../models/user");
+const KYC = require("../models/kyc");
 const config = require("./config");
 const logger = require("../utils/logger");
 
@@ -89,7 +90,7 @@ const PROVISIONAL_CODES = new Set([
 
 const REJECTED_CODES = new Set([
   '0813', '0826', '0827', // Enhanced KYC rejected
-  '1011', '1013', '1014', '1015', '1016', // Basic KYC rejected (ADDED 1016)
+  '1011', '1013', '1014', '1015', '1016', // Basic KYC rejected
   '1216', '1217', '1218', '1226', '1227', '1228' // Biometric KYC rejected
 ]);
 
@@ -155,13 +156,14 @@ function classifyOutcome({ job_success, code, text, actions }) {
 }
 
 // Background processing function for Smile ID verification
-const processSmileIdVerification = async (userData, verificationData, jobId) => {
+const processSmileIdVerification = async (userData, verificationData, jobId, kycDocId) => {
   const startTime = Date.now();
   
   try {
     logger.info("Starting background Smile ID verification", { 
       userId: userData._id,
       jobId,
+      kycDocId,
       idType: verificationData.smileIdType
     });
 
@@ -241,6 +243,7 @@ const processSmileIdVerification = async (userData, verificationData, jobId) => 
 
     logger.info("Background Smile ID response received", { 
       jobId,
+      kycDocId,
       success: response.job_success,
       resultCode: response.result?.ResultCode,
       processingTime: Date.now() - startTime
@@ -260,6 +263,7 @@ const processSmileIdVerification = async (userData, verificationData, jobId) => 
       
       logger.info("Background verification completed - webhook will handle all user updates", {
         jobId,
+        kycDocId,
         userId: userData._id,
         resultCode: result.ResultCode,
         resultText: result.ResultText,
@@ -281,6 +285,7 @@ const processSmileIdVerification = async (userData, verificationData, jobId) => 
       
       logger.info("Background verification failed - webhook will handle final status", { 
         jobId, 
+        kycDocId,
         userId: userData._id, 
         error: response.code || 'Unknown error',
         message: response.message || 'No error message provided',
@@ -293,6 +298,7 @@ const processSmileIdVerification = async (userData, verificationData, jobId) => 
     logger.error("Critical error during background biometric verification", { 
       userId: userData._id,
       jobId,
+      kycDocId,
       error: error.message, 
       stack: error.stack,
       processingTime: Date.now() - startTime
@@ -383,6 +389,27 @@ router.post(
         });
       }
 
+      // Check for existing pending KYC
+      const existingPendingKyc = await KYC.findOne({
+        userId: user._id,
+        status: 'PENDING'
+      });
+      if (existingPendingKyc) {
+        logger.info("KYC verification already in progress", {
+          userId: user._id,
+          kycId: existingPendingKyc._id
+        });
+        return res.status(400).json({
+          success: false,
+          message: "KYC verification in progress",
+          data: {
+            kycId: existingPendingKyc._id,
+            status: existingPendingKyc.status,
+            submittedAt: existingPendingKyc.createdAt
+          }
+        });
+      }
+
       // Map frontend ID type to Smile ID format
       const smileIdType = NIGERIAN_ID_TYPES[idType];
       if (!smileIdType) {
@@ -404,6 +431,34 @@ router.post(
       // Generate unique job ID
       const jobId = `${user._id}_${Date.now()}`;
 
+      // Create pending KYC record
+      const kycDoc = await KYC.create({
+        userId: user._id,
+        provider: 'smile-id',
+        environment: process.env.NODE_ENV || 'development',
+        partnerJobId: jobId,
+        jobType: 1,
+        status: 'PENDING',
+        idType: smileIdType,
+        frontendIdType: idType,
+        idNumber,
+        createdAt: new Date(),
+        lastUpdated: new Date(),
+        imageLinks: {
+          selfie_image: selfieImage,
+          liveness_images: livenessImages || []
+        }
+      });
+
+      // Update user with pending KYC status
+      await User.findByIdAndUpdate(user._id, {
+        $set: {
+          'kyc.status': 'pending',
+          'kyc.updatedAt': new Date(),
+          'kyc.latestKycId': kycDoc._id
+        }
+      });
+
       // Prepare verification data for background processing
       const verificationData = {
         idType,
@@ -416,13 +471,14 @@ router.post(
 
       // Start background processing (fire and forget)
       setImmediate(() => {
-        processSmileIdVerification(user, verificationData, jobId);
+        processSmileIdVerification(user, verificationData, jobId, kycDoc._id);
       });
 
       // Return immediate response to frontend
       logger.info("Biometric verification submitted successfully", { 
-        userId: req.user.id,
+        userId: user._id,
         jobId,
+        kycId: kycDoc._id,
         idType,
         processingTime: Date.now() - startTime
       });
@@ -432,8 +488,9 @@ router.post(
         message: "Submission complete! Your ID verification is being processed.",
         data: {
           jobId,
-          status: "processing",
-          submittedAt: new Date().toISOString(),
+          kycId: kycDoc._id,
+          status: "pending",
+          submittedAt: kycDoc.createdAt,
           idType,
           processingTime: Date.now() - startTime
         }
@@ -458,7 +515,7 @@ router.post(
       return res.status(500).json({ 
         success: false, 
         message: "Server error during ID verification submission. Please try again." 
-        });
+      });
     }
   }
 );
