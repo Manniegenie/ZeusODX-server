@@ -401,7 +401,7 @@ router.post(
         });
         return res.status(400).json({
           success: false,
-          message: "KYC verification in progress",
+          message: "KYC verification already in progress",
           data: {
             kycId: existingPendingKyc._id,
             status: existingPendingKyc.status,
