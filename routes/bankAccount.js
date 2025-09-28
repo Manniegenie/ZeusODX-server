@@ -160,18 +160,21 @@ router.post('/add-bank', async (req, res) => {
   }
 });
 
-// DELETE: /api/user/delete-bank - Delete a bank account using only accountNumber
+/ DELETE: /api/user/delete-bank - Delete a bank account using accountNumber from body or query
 router.delete('/delete-bank', async (req, res) => {
   try {
     const userId = req.user && req.user.id;
-    const { accountNumber } = req.body;
+    // Try both body and query parameter
+    const { accountNumber } = req.body || {};
+    const accountNumberFromQuery = req.query.accountNumber;
+    const finalAccountNumber = accountNumber || accountNumberFromQuery;
 
     if (!userId) {
       logger.warn('No user ID found in token', { source: 'delete-bank-account' });
       return res.status(401).json({ message: 'Unauthenticated' });
     }
 
-    if (!accountNumber) {
+    if (!finalAccountNumber) {
       logger.warn('No account number provided', { userId, source: 'delete-bank-account' });
       return res.status(400).json({ message: 'Account number is required' });
     }
@@ -182,9 +185,9 @@ router.delete('/delete-bank', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const bankAccount = user.bankAccounts.find(acc => acc.accountNumber === accountNumber && acc.isActive);
+    const bankAccount = user.bankAccounts.find(acc => acc.accountNumber === finalAccountNumber && acc.isActive);
     if (!bankAccount) {
-      logger.warn('Bank account not found', { userId, accountNumber, source: 'delete-bank-account' });
+      logger.warn('Bank account not found', { userId, accountNumber: finalAccountNumber, source: 'delete-bank-account' });
       return res.status(404).json({ message: 'Bank account not found' });
     }
 
