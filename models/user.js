@@ -120,7 +120,7 @@ const userSchema = new mongoose.Schema({
     USDC_BSC: { address: String, network: String, walletReferenceId: String },
     USDC_ARBITRUM: { address: String, network: String, walletReferenceId: String },
     USDC_BASE: { address: String, network: String, walletReferenceId: String },
-    USDC_AVAX: { address: String, network: String, walletReferenceId: String },
+    USDC_TRX: { address: String, network: String, walletReferenceId: String },
     USDC_POLYGON: { address: String, network: String, walletReferenceId: String },
     USDC_SOL: { address: String, network: String, walletReferenceId: String },
 
@@ -132,9 +132,8 @@ const userSchema = new mongoose.Schema({
     MATIC_ETH: { address: String, network: String, walletReferenceId: String },
     MATIC_ARBITRUM: { address: String, network: String, walletReferenceId: String },
 
-    // Avalanche variants
-    AVAX_BSC: { address: String, network: String, walletReferenceId: String },
-    AVAX_ARBITRUM: { address: String, network: String, walletReferenceId: String },
+    // Tron variants
+    TRX_TRX: { address: String, network: String, walletReferenceId: String },
 
     // NGN stable / on-platform currency
     NGNZ: { address: String, network: String, walletReferenceId: String }
@@ -155,8 +154,8 @@ const userSchema = new mongoose.Schema({
   bnbPendingBalance: { type: Number, default: 0, min: 0 },
   maticBalance: { type: Number, default: 0, min: 0 },
   maticPendingBalance: { type: Number, default: 0, min: 0 },
-  avaxBalance: { type: Number, default: 0, min: 0 },
-  avaxPendingBalance: { type: Number, default: 0, min: 0 },
+  trxBalance: { type: Number, default: 0, min: 0 },
+  trxPendingBalance: { type: Number, default: 0, min: 0 },
   ngnzBalance: { type: Number, default: 0, min: 0 },
   ngnzPendingBalance: { type: Number, default: 0, min: 0 },
 
@@ -213,7 +212,7 @@ userSchema.pre('save', async function (next) {
 
     const balanceFields = [
       'solBalance', 'btcBalance', 'usdtBalance', 'usdcBalance', 'ethBalance',
-      'bnbBalance', 'maticBalance', 'avaxBalance', 'ngnzBalance'
+      'bnbBalance', 'maticBalance', 'trxBalance', 'ngnzBalance'
     ];
     if (balanceFields.some(f => this.isModified(f))) {
       this.lastBalanceUpdate = new Date();

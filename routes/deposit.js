@@ -17,7 +17,8 @@ const {
 // Helper: build a supported tokens map dynamically from getAvailableNetworks
 const buildSupportedTokens = () => {
   const map = {};
-  // CURRENCY_NETWORK_TO_SCHEMA keys are like "ETH_ARBITRUM"
+  // CURRENCY_NETWORK_TO_SCHEMA keys are like "ETH_ARBITRUM", "TRX_TRX", etc.
+  // This automatically includes TRX_TRX once CURRENCY_NETWORK_TO_SCHEMA is updated
   Object.keys(CURRENCY_NETWORK_TO_SCHEMA).forEach(key => {
     const [currency, network] = key.split('_');
     if (!map[currency]) map[currency] = new Set();

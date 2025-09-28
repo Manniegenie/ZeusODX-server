@@ -98,7 +98,7 @@ const generateSingleWallet = async (email, userId, currency, network) => {
   }
 };
 
-// Mapping for currency/network to schema keys (updated with USDC TRX)
+// Mapping for currency/network to schema keys (updated with TRX_TRX)
 const CURRENCY_NETWORK_TO_SCHEMA = {
   // Bitcoin variants
   'BTC_BTC': 'BTC_BTC',           // Bitcoin mainnet
@@ -122,11 +122,10 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   
   // USDC variants
   'USDC_ETH': 'USDC_ETH',           // USDC on Ethereum
-  'USDC_TRX': 'USDC_TRX',           // USDC on Tron (TRC20) - ADDED
+  'USDC_TRX': 'USDC_TRX',           // USDC on Tron (TRC20)
   'USDC_BSC': 'USDC_BSC',           // USDC on BSC
-  'USDC_ARBITRUM': 'USDC_ARBITRUM', // USDC on Arbitrum - Already exists
+  'USDC_ARBITRUM': 'USDC_ARBITRUM', // USDC on Arbitrum
   'USDC_BASE': 'USDC_BASE',         // USDC on Base
-  'USDC_AVAX': 'USDC_AVAX',         // USDC on Avalanche C-Chain
   'USDC_POLYGON': 'USDC_POLYGON',   // USDC on Polygon (MATIC)
   'USDC_SOL': 'USDC_SOL',           // USDC on Solana
   
@@ -137,11 +136,10 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   // Polygon (MATIC)
   'POL_ETH': 'POL_ETH',
   'POL_ARBITRUM': 'POL_ARBITRUM',
-  'POL_BSC': 'POL_BSC', // MATIC on Arbitrum (if supported)
+  'POL_BSC': 'POL_BSC',
   
-  // Avalanche
-  'AVAX_BSC': 'AVAX_BSC',
-  'AVAX_ARBITRUM': 'AVAX_ARBITRUM',   // AVAX on Arbitrum (if supported)
+  // Tron
+  'TRX_TRX': 'TRX_TRX',             // TRX on Tron network
 };
 
 // Function to get the correct currency/network for obiex from schema key
@@ -166,11 +164,10 @@ const getSchemaKeyFromNetworkId = (currency, networkId) => {
     'arbitrum': 'ARBITRUM', 
     'base': 'BASE',
     'bsc': 'BSC',
-    'avax': 'AVAX',
     'polygon': 'POLYGON',
     'solana': 'SOL',
-    'tron': 'TRX',      // ADDED
-    'trx': 'TRX'        // ADDED (alternative mapping)
+    'tron': 'TRX',      // Tron network
+    'trx': 'TRX'        // Alternative mapping for Tron
   };
   
   const network = networkMap[networkId.toLowerCase()] || networkId.toUpperCase();

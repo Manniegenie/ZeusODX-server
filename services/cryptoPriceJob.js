@@ -63,7 +63,7 @@ const SUPPORTED_TOKENS = {
   USDC: { binanceSymbol: 'USDCUSDT', isStablecoin: true  },
   BNB: { binanceSymbol: 'BNBUSDT',   isStablecoin: false },
   MATIC:{ binanceSymbol: 'MATICUSDT',isStablecoin: false },
-  AVAX: { binanceSymbol: 'AVAXUSDT', isStablecoin: false },
+  TRX: { binanceSymbol: 'TRXUSDT', isStablecoin: false },
 };
 
 // ---- Global rate gate ----
