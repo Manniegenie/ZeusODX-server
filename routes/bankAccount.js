@@ -199,7 +199,10 @@ router.delete('/delete-bank', async (req, res) => {
     };
 
     try {
-      await user.removeBankAccount(bankAccount._id); // model method
+      // Modern Mongoose way - use pull() instead of remove()
+      user.bankAccounts.pull(bankAccount._id);
+      await user.save();
+      
       logger.info('Bank account deleted successfully', { userId, deletedAccount: deletedAccountInfo, source: 'delete-bank-account' });
 
       return res.json({
