@@ -13,9 +13,9 @@ router.get('/profile', async (req, res) => {
       return res.status(400).json({ message: 'Invalid token payload' });
     }
 
-    // Fetch user from database with only required fields
+    // Fetch user from database with required fields
     const user = await User.findById(userId).select(
-      'username firstname lastname email phonenumber avatarUrl avatarLastUpdated'
+      'username firstname lastname email phonenumber is2FAEnabled avatarUrl avatarLastUpdated'
     );
 
     if (!user) {
@@ -30,14 +30,15 @@ router.get('/profile', async (req, res) => {
       source: 'get-profile' 
     });
 
-    // Return profile information
+    // Return profile information (response structure unchanged)
     res.json({
       success: true,
       profile: {
         username: user.username || null,
-        fullName: user.fullName, // This uses the virtual from the schema
+        fullName: user.fullName, // virtual from schema
         email: user.email,
         phoneNumber: user.phonenumber || null,
+        is2FAEnabled: user.is2FAEnabled || false,
         avatar: {
           url: user.avatarUrl || null,
           lastUpdated: user.avatarLastUpdated || null
