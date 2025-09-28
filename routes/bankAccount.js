@@ -160,7 +160,7 @@ router.post('/add-bank', async (req, res) => {
   }
 });
 
-/ DELETE: /api/user/delete-bank - Delete a bank account using accountNumber from body or query
+// DELETE: /api/user/delete-bank - Delete a bank account using accountNumber from body or query
 router.delete('/delete-bank', async (req, res) => {
   try {
     const userId = req.user && req.user.id;
