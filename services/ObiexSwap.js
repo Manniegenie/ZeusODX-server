@@ -147,7 +147,7 @@ async function acceptQuote(quoteId) {
 /**
  * High-level helper: swap a crypto code to NGNX by selling `amount` of the crypto.
  * @param {Object} opts
- *  - sourceCode: e.g., 'USDT', 'BTC', ...
+ *  - sourceCode: e.g., 'USDT', 'BTC', 'TRX', 'ETH', ...
  *  - amount: number (crypto amount to SELL)
  */
 async function swapCryptoToNGNX({ sourceCode, amount }) {

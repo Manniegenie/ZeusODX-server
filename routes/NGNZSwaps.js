@@ -458,7 +458,7 @@ async function getCachedUserBalance(userId, currencies = []) {
     });
   } else {
     // Common NGNZ swap currencies
-    const commonCurrencies = ['ngnz', 'btc', 'eth', 'sol', 'usdt', 'usdc', 'avax', 'bnb', 'matic'];
+    const commonCurrencies = ['ngnz', 'btc', 'eth', 'sol', 'usdt', 'usdc', 'trx', 'bnb', 'matic'];
     commonCurrencies.forEach(currency => {
       selectFields.push(`${currency}Balance`);
     });
@@ -1488,7 +1488,7 @@ router.get('/supported-currencies', (req, res) => {
       { code: 'SOL', name: 'Solana', type: 'cryptocurrency' },
       { code: 'USDT', name: 'Tether', type: 'stablecoin' },
       { code: 'USDC', name: 'USD Coin', type: 'stablecoin' },
-      { code: 'AVAX', name: 'Avalanche', type: 'cryptocurrency' },
+      { code: 'TRX', name: 'Tron', type: 'cryptocurrency' },
       { code: 'BNB', name: 'BNB', type: 'cryptocurrency' },
       { code: 'MATIC', name: 'Polygon', type: 'cryptocurrency' },
       { code: 'NGNZ', name: 'Nigerian Naira Digital', type: 'fiat' }

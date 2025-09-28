@@ -18,7 +18,7 @@ const QUOTE_TTL = 30000; // 30 seconds for quotes
 const PRICE_CACHE_TTL = 5000; // 5 seconds for prices
 
 // Pre-compiled token validation
-const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'AVAX']);
+const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX']);
 const TOKEN_MAP = {
   BTC: { name: 'Bitcoin', currency: 'btc' },
   ETH: { name: 'Ethereum', currency: 'eth' },
@@ -27,12 +27,12 @@ const TOKEN_MAP = {
   USDC: { name: 'USD Coin', currency: 'usdc' },
   BNB: { name: 'BNB', currency: 'bnb' },
   MATIC: { name: 'Polygon', currency: 'matic' },
-  AVAX: { name: 'Avalanche', currency: 'avax' }
+  TRX: { name: 'Tron', currency: 'trx' }
 };
 
 // Define stablecoins and other cryptocurrencies
 const STABLECOINS = new Set(['USDT', 'USDC']);
-const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'AVAX']);
+const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'TRX']);
 
 // Default stablecoin for routing crypto-to-crypto swaps
 const DEFAULT_STABLECOIN = 'USDT';
