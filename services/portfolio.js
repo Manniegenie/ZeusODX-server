@@ -43,7 +43,7 @@ const SUPPORTED_TOKENS = {
     isStablecoin: false, 
     supportedByJob: true
   },
-  AVAX: { 
+  TRX: { 
     isStablecoin: false, 
     supportedByJob: true
   },
@@ -238,7 +238,7 @@ async function getFallbackPrices(tokens) {
     'USDC': 1,
     'BNB': 580,
     'MATIC': 0.85,
-    'AVAX': 35,
+    'TRX': 0.14,
     'NGNZ': 1 / await getNairaOfframpRate(),
   };
   
@@ -451,7 +451,7 @@ async function updateUserBalance(userId, currency, amount, session = null) {
       (user.usdcBalanceUSD || 0) +
       (user.bnbBalanceUSD || 0) +
       (user.maticBalanceUSD || 0) +
-      (user.avaxBalanceUSD || 0) +
+      (user.trxBalanceUSD || 0) +
       (user.ngnzBalanceUSD || 0);
     
     // Update total portfolio balance
