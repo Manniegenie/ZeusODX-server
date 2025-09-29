@@ -213,4 +213,71 @@ router.post('/approve', async (req, res) => {
   }
 });
 
+// Add this to your admin routes
+router.post('/kyc/reset', async (req, res) => {
+  const { phoneNumber } = req.body;
+
+  if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
+    logger.warn('Invalid or missing phone number in reset KYC request', { phoneNumber });
+    return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
+  }
+
+  try {
+    const user = await User.findOne({ phonenumber: phoneNumber });
+    if (!user) {
+      logger.warn(`User not found: ${phoneNumber}`);
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    // Reset to clean state
+    await User.findByIdAndUpdate(user._id, {
+      $set: {
+        'kyc.status': 'not_verified',
+        'kyc.inProgress': false,
+        'kyc.level2.status': 'not_submitted',
+        'kyc.level2.documentSubmitted': false,
+        'kyc.level2.documentType': null,
+        'kyc.level2.documentNumber': null,
+        'kyc.level2.rejectionReason': null,
+        'kyc.level2.approvedAt': null,
+        'kyc.level2.rejectedAt': null,
+        'kyc.level2.submittedAt': null,
+        'kycStatus': 'not_verified'
+      }
+    });
+
+    // Also cancel any pending KYC documents
+    await KYC.updateMany(
+      { userId: user._id, status: 'PENDING' },
+      {
+        $set: {
+          status: 'CANCELLED',
+          cancelledAt: new Date(),
+          cancelledReason: 'Reset by admin',
+          lastUpdated: new Date()
+        }
+      }
+    );
+
+    logger.info(`KYC reset for user: ${phoneNumber}`, { userId: user._id });
+
+    return res.status(200).json({
+      success: true,
+      message: 'KYC reset successfully.',
+      data: {
+        userId: user._id,
+        phoneNumber
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error resetting KYC', {
+      error: error.message,
+      stack: error.stack,
+      phoneNumber
+    });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
 module.exports = router;
