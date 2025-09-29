@@ -57,6 +57,7 @@ const ID_TYPE_MAPPING = {
   'NIN': 'national_id',
   'NIN_SLIP': 'nin_slip',
   'PASSPORT': 'passport',
+  'DRIVERS_LICENSE': 'drivers_license',
   'VOTER_ID': 'voter_id'
 };
 
@@ -165,7 +166,7 @@ function normalize(body) {
 
 function isValidKycDocument(idType) {
   const normalizedIdType = ID_TYPE_MAPPING[idType] || idType?.toLowerCase();
-  const validDocuments = ['bvn', 'national_id', 'passport', 'nin_slip', 'voter_id'];
+  const validDocuments = ['bvn', 'national_id', 'passport', 'drivers_license', 'nin_slip', 'voter_id'];
   return validDocuments.includes(normalizedIdType);
 }
 
@@ -305,8 +306,9 @@ router.post('/callback', async (req, res) => {
 
   const isValidDocument = isValidKycDocument(norm.idType);
   const frontendIdType = ID_TYPE_MAPPING[norm.idType] || norm.idType?.toLowerCase();
+  const isBvnVerification = frontendIdType === 'bvn';
 
-  // Upsert into KYC collection - FIXED to prevent duplicate key errors
+  // Upsert into KYC collection
   try {
     let kycDoc;
     
@@ -391,19 +393,52 @@ router.post('/callback', async (req, res) => {
       });
     }
 
-    // Update User KYC status
+    // Update User based on verification type (BVN vs Document KYC)
     const userUpdate = {
       $set: {
-        'kyc.provider': 'smile-id',
-        'kyc.status': status === 'PROVISIONAL' ? 'pending' : status.toLowerCase(),
         'kyc.updatedAt': new Date(),
         'kyc.latestKycId': kycDoc._id,
-        'kyc.resultCode': kycDoc.resultCode,
-        'kyc.resultText': kycDoc.resultText,
       },
     };
 
-    if (isValidDocument) {
+    if (isBvnVerification) {
+      // BVN verification - update separate BVN fields
+      if (status === 'APPROVED') {
+        userUpdate.$set['bvn'] = norm.idNumber;
+        userUpdate.$set['bvnVerified'] = true;
+        
+        logger.info('BVN verification approved', {
+          requestId,
+          userId,
+          bvn: norm.idNumber?.slice(0, 3) + '********',
+          confidenceValue: norm.confidenceValue
+        });
+      } else if (status === 'PROVISIONAL') {
+        userUpdate.$set['bvn'] = norm.idNumber;
+        userUpdate.$set['bvnVerified'] = false;
+        
+        logger.info('BVN verification provisional/pending', {
+          requestId,
+          userId,
+          resultText: norm.resultText
+        });
+      } else if (status === 'REJECTED') {
+        userUpdate.$set['bvn'] = null;
+        userUpdate.$set['bvnVerified'] = false;
+        
+        logger.info('BVN verification rejected', {
+          requestId,
+          userId,
+          resultText: norm.resultText
+        });
+      }
+    } else if (isValidDocument) {
+      // Document KYC verification (NIN, Passport, Driver's License, etc.)
+      userUpdate.$set['kyc.provider'] = 'smile-id';
+      userUpdate.$set['kyc.status'] = status === 'PROVISIONAL' ? 'pending' : status.toLowerCase();
+      userUpdate.$set['kyc.resultCode'] = kycDoc.resultCode;
+      userUpdate.$set['kyc.resultText'] = kycDoc.resultText;
+      
       if (status === 'APPROVED') {
         userUpdate.$set['kyc.level2.status'] = 'approved';
         userUpdate.$set['kyc.level2.documentSubmitted'] = true;
@@ -444,8 +479,8 @@ router.post('/callback', async (req, res) => {
 
     const updatedUser = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
 
-    // Trigger KYC upgrade for approved documents
-    if (isValidDocument && status === 'APPROVED') {
+    // Trigger KYC upgrade for approved DOCUMENT verifications only (not BVN)
+    if (isValidDocument && !isBvnVerification && status === 'APPROVED') {
       try {
         await updatedUser.onIdentityDocumentVerified(frontendIdType, norm.idNumber);
         logger.info('Triggered identity document verification and KYC upgrade check', {
@@ -464,16 +499,25 @@ router.post('/callback', async (req, res) => {
       }
     }
 
-    // CRITICAL: If REJECTED, cancel all other pending KYC and clear in-progress state
+    // CRITICAL: If REJECTED, cancel all other pending KYC of the SAME TYPE
     if (status === 'REJECTED') {
       try {
+        // Build filter based on verification type
         const pendingFilter = {
           userId,
           status: 'PENDING',
           _id: { $ne: kycDoc._id }
         };
 
-        const pendingDocs = await KYC.find(pendingFilter).select('_id partnerJobId smileJobId createdAt status');
+        // Only cancel same type of verification
+        if (isBvnVerification) {
+          pendingFilter.frontendIdType = 'bvn';
+        } else {
+          // Cancel other document KYC types
+          pendingFilter.frontendIdType = { $in: ['national_id', 'passport', 'drivers_license', 'nin', 'nin_slip', 'voter_id'] };
+        }
+
+        const pendingDocs = await KYC.find(pendingFilter).select('_id partnerJobId smileJobId createdAt status frontendIdType');
 
         if (pendingDocs && pendingDocs.length > 0) {
           const now = new Date();
@@ -489,31 +533,48 @@ router.post('/callback', async (req, res) => {
           logger.info('Cancelled other pending KYC documents due to final rejection', {
             requestId,
             userId,
+            verificationType: isBvnVerification ? 'BVN' : 'Document',
             cancelledCount: cancelledCount.modifiedCount,
             cancelledIds: pendingDocs.map(d => d._id),
             cancelledJobIds: pendingDocs.map(d => d.partnerJobId)
           });
         }
 
-        // Clear in-progress flag and set final rejected state
-        await User.findByIdAndUpdate(userId, {
-          $set: {
-            'kyc.status': 'rejected',
-            'kyc.updatedAt': new Date(),
-            'kyc.inProgress': false,
-            'kyc.latestKycId': kycDoc._id,
-            'kyc.level2.status': 'rejected',
-            'kyc.level2.rejectedAt': new Date(),
-            'kyc.level2.rejectionReason': norm.resultText || 'ID verification failed',
-            'kycStatus': 'rejected'
-          }
-        });
+        // Clear in-progress flag for the specific verification type
+        if (isBvnVerification) {
+          await User.findByIdAndUpdate(userId, {
+            $set: {
+              'bvn': null,
+              'bvnVerified': false,
+              'kyc.updatedAt': new Date()
+            }
+          });
 
-        logger.info('Cleared in-progress KYC state after rejection - user can submit again', {
-          requestId,
-          userId,
-          rejectionReason: norm.resultText
-        });
+          logger.info('Cleared BVN verification after rejection - user can submit again', {
+            requestId,
+            userId,
+            rejectionReason: norm.resultText
+          });
+        } else {
+          await User.findByIdAndUpdate(userId, {
+            $set: {
+              'kyc.status': 'rejected',
+              'kyc.updatedAt': new Date(),
+              'kyc.inProgress': false,
+              'kyc.latestKycId': kycDoc._id,
+              'kyc.level2.status': 'rejected',
+              'kyc.level2.rejectedAt': new Date(),
+              'kyc.level2.rejectionReason': norm.resultText || 'ID verification failed',
+              'kycStatus': 'rejected'
+            }
+          });
+
+          logger.info('Cleared in-progress KYC state after rejection - user can submit again', {
+            requestId,
+            userId,
+            rejectionReason: norm.resultText
+          });
+        }
 
       } catch (cleanupErr) {
         logger.error('Error cancelling pending KYC documents after rejection', {
@@ -525,23 +586,27 @@ router.post('/callback', async (req, res) => {
       }
     }
 
-    logger.info('SmileID webhook: User KYC status updated successfully', {
+    logger.info('SmileID webhook: User status updated successfully', {
       requestId,
       userId,
-      kycStatus: (await User.findById(userId)).kycStatus,
+      verificationType: isBvnVerification ? 'BVN' : 'Document',
       status,
       kycId: kycDoc._id,
-      inProgress: (await User.findById(userId)).kyc?.inProgress
+      bvnVerified: isBvnVerification ? (await User.findById(userId)).bvnVerified : undefined,
+      kycStatus: !isBvnVerification ? (await User.findById(userId)).kycStatus : undefined,
+      inProgress: !isBvnVerification ? (await User.findById(userId)).kyc?.inProgress : undefined
     });
 
     return res.status(200).json({ 
       success: true, 
       kycId: kycDoc._id, 
       status: kycDoc.status,
+      verificationType: isBvnVerification ? 'bvn' : 'document',
       kycLevel: updatedUser.kycLevel,
+      bvnVerified: isBvnVerification ? updatedUser.bvnVerified : undefined,
       signatureValid,
       confidenceValue: norm.confidenceValue,
-      documentInfo: status === 'APPROVED' ? kycDoc.getDocumentInfo() : null
+      documentInfo: status === 'APPROVED' && !isBvnVerification ? kycDoc.getDocumentInfo() : null
     });
 
   } catch (e) {

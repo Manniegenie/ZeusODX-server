@@ -391,25 +391,54 @@ router.post(
         });
       }
 
-      // Check for existing pending KYC
-      const existingPendingKyc = await KYC.findOne({
-        userId: user._id,
-        status: 'PENDING'
-      });
-      if (existingPendingKyc) {
-        logger.info("KYC verification already in progress", {
+      // BVN verification is separate from document KYC
+      const isBvnVerification = idType === 'bvn';
+      
+      if (isBvnVerification) {
+        // Check for existing pending BVN verification
+        const existingPendingBvn = await KYC.findOne({
           userId: user._id,
-          kycId: existingPendingKyc._id
+          frontendIdType: 'bvn',
+          status: 'PENDING'
         });
-        return res.status(400).json({
-          success: false,
-          message: "KYC verification already in progress",
-          data: {
+        if (existingPendingBvn) {
+          logger.info("BVN verification already in progress", {
+            userId: user._id,
+            kycId: existingPendingBvn._id
+          });
+          return res.status(400).json({
+            success: false,
+            message: "BVN verification already in progress",
+            data: {
+              kycId: existingPendingBvn._id,
+              status: existingPendingBvn.status,
+              submittedAt: existingPendingBvn.createdAt
+            }
+          });
+        }
+      } else {
+        // Check for existing pending document KYC (NIN, Passport, Driver's License)
+        const existingPendingKyc = await KYC.findOne({
+          userId: user._id,
+          frontendIdType: { $in: ['national_id', 'passport', 'drivers_license', 'nin', 'nin_slip', 'voter_id'] },
+          status: 'PENDING'
+        });
+        if (existingPendingKyc) {
+          logger.info("KYC verification already in progress", {
+            userId: user._id,
             kycId: existingPendingKyc._id,
-            status: existingPendingKyc.status,
-            submittedAt: existingPendingKyc.createdAt
-          }
-        });
+            type: existingPendingKyc.frontendIdType
+          });
+          return res.status(400).json({
+            success: false,
+            message: "KYC verification already in progress",
+            data: {
+              kycId: existingPendingKyc._id,
+              status: existingPendingKyc.status,
+              submittedAt: existingPendingKyc.createdAt
+            }
+          });
+        }
       }
 
       // Map frontend ID type to Smile ID format
@@ -464,14 +493,27 @@ router.post(
         }
       });
 
-      // Update user with pending KYC status
-      await User.findByIdAndUpdate(user._id, {
-        $set: {
-          'kyc.status': 'pending',
-          'kyc.updatedAt': new Date(),
-          'kyc.latestKycId': kycDoc._id
-        }
-      });
+      // Update user status based on verification type
+      if (isBvnVerification) {
+        // For BVN, update bvn field and set pending status
+        await User.findByIdAndUpdate(user._id, {
+          $set: {
+            bvn: idNumber,
+            bvnVerified: false, // Will be set to true by webhook on approval
+            'kyc.updatedAt': new Date(),
+            'kyc.latestKycId': kycDoc._id
+          }
+        });
+      } else {
+        // For document KYC, update kyc.level2 status
+        await User.findByIdAndUpdate(user._id, {
+          $set: {
+            'kyc.status': 'pending',
+            'kyc.updatedAt': new Date(),
+            'kyc.latestKycId': kycDoc._id
+          }
+        });
+      }
 
       // Prepare verification data for background processing
       const verificationData = {
@@ -494,18 +536,24 @@ router.post(
         jobId,
         kycId: kycDoc._id,
         idType,
+        verificationType: isBvnVerification ? 'BVN' : 'Document KYC',
         processingTime: Date.now() - startTime
       });
 
+      const successMessage = isBvnVerification 
+        ? "BVN verification submitted! Your Bank Verification Number is being processed."
+        : "Submission complete! Your ID verification is being processed.";
+
       return res.status(200).json({
         success: true,
-        message: "Submission complete! Your ID verification is being processed.",
+        message: successMessage,
         data: {
           jobId,
           kycId: kycDoc._id,
           status: "pending",
           submittedAt: kycDoc.createdAt,
           idType,
+          verificationType: isBvnVerification ? 'bvn' : 'document',
           processingTime: Date.now() - startTime
         }
       });
