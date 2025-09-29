@@ -92,11 +92,6 @@ function validateSwapPair(from, to) {
  */
 async function applyMarkdownReduction(obiexAmount, currency) {
   try {
-    // Do not apply to stablecoins
-    if (STABLECOINS.has(currency.toUpperCase())) {
-      return { adjustedAmount: obiexAmount, markdownApplied: false, markdownPercentage: 0, reductionAmount: 0 };
-    }
-
     // Read markdown document directly from DB
     const markdownDoc = await GlobalMarkdown.getCurrentMarkdown();
 
