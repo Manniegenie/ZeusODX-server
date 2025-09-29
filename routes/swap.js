@@ -247,21 +247,21 @@ async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
     side: quoteSide
   });
   
+  // 🔍 LOG OBIEX RAW RESPONSE - This shows what Obiex API actually returns
+  logger.info('🔍 RAW OBIEX API RESPONSE', {
+    swap: `${from} → ${to}`,
+    quoteSide,
+    inputAmount: quoteAmount,
+    obiexSuccess: quoteResult.success,
+    obiexQuoteId: quoteResult.quoteId || quoteResult.id,
+    obiexData: JSON.stringify(quoteResult.data, null, 2),
+    obiexDataKeys: quoteResult.data ? Object.keys(quoteResult.data) : [],
+    fullObiexResponse: JSON.stringify(quoteResult, null, 2)
+  });
+  
   if (!quoteResult.success) {
     throw new Error(`Obiex quote creation failed: ${JSON.stringify(quoteResult.error)}`);
   }
-  
-  // Log the complete Obiex response structure for debugging
-  logger.info('Obiex Quote Response Structure', {
-    from,
-    to,
-    quoteSide,
-    quoteAmount,
-    fullResponse: JSON.stringify(quoteResult, null, 2),
-    responseKeys: Object.keys(quoteResult),
-    dataKeys: quoteResult.data ? Object.keys(quoteResult.data) : [],
-    timestamp: new Date().toISOString()
-  });
   
   // Extract the amount user will receive from Obiex
   let obiexAmount;
