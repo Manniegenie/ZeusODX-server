@@ -214,7 +214,7 @@ router.post('/approve', async (req, res) => {
 });
 
 // Add this to your admin routes
-router.post('/kyc/reset', async (req, res) => {
+router.post('/reset', async (req, res) => {
   const { phoneNumber } = req.body;
 
   if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
