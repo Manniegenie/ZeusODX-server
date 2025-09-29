@@ -6,7 +6,7 @@ const validator = require('validator');
 const logger = require('../utils/logger');
 
 // POST: Cancel user's KYC by phone number
-router.post('/kyc/cancel', async (req, res) => {
+router.post('/cancel', async (req, res) => {
   const { phoneNumber, reason } = req.body;
 
   if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
@@ -88,7 +88,7 @@ router.post('/kyc/cancel', async (req, res) => {
 });
 
 // POST: Approve user's KYC by phone number  
-router.post('/kyc/approve', async (req, res) => {
+router.post('/approve', async (req, res) => {
   const { phoneNumber, idType, idNumber, fullName } = req.body;
 
   if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
