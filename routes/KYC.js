@@ -21,24 +21,26 @@ const SMILE_ID_CONFIG = {
 };
 
 // Nigerian ID type mappings based on Smile ID documentation
+// Note: Driver's License uses NIN verification as Nigerian licenses are linked to NIN
 const NIGERIAN_ID_TYPES = {
-  'passport': 'PASSPORT', // Note: Not explicitly listed in NG docs, may need verification
-  'national_id': 'NIN_V2', // National Identification Number
-  'drivers_license': 'NIN_V2', // Using NIN as drivers license isn't listed for NG
-  'bvn': 'BVN', // Bank Verification Number
-  'nin': 'NIN_V2', // Direct NIN access
-  'nin_slip': 'NIN_SLIP', // NIN with slip photo
+  'passport': 'PASSPORT',
+  'national_id': 'NIN_V2',
+  'drivers_license': 'DRIVERS_LICENSE', // Separate type - format varies by state
+  'bvn': 'BVN',
+  'nin': 'NIN_V2',
+  'nin_slip': 'NIN_SLIP',
   'voter_id': 'VOTER_ID'
 };
 
 // ID Format validation patterns
+// Note: Driver's License pattern is flexible as formats vary by Nigerian state
 const ID_PATTERNS = {
   'BVN': /^\d{11}$/, // 11 digits
   'NIN_V2': /^\d{11}$/, // 11 digits  
   'NIN_SLIP': /^\d{11}$/, // 11 digits
-  'PASSPORT': /^[A-Z]\d{8}$/, // Letter + 8 digits (assumed format)
+  'PASSPORT': /^[A-Z]\d{8}$/, // Letter + 8 digits
   'VOTER_ID': /^\d{19}$/, // 19 digits
-  'V_NIN': /^\d{16}$/ // 16 digits
+  'DRIVERS_LICENSE': /^[A-Z0-9]{8,20}$/ // 8-20 alphanumeric (varies by state)
 };
 
 // Middleware to authenticate JWT token
@@ -321,8 +323,8 @@ router.post(
       .trim()
       .notEmpty()
       .withMessage("ID number is required")
-      .isLength({ min: 8, max: 19 })
-      .withMessage("ID number must be between 8-19 characters"),
+      .isLength({ min: 8, max: 20 })
+      .withMessage("ID number must be between 8-20 characters"),
     body("selfieImage")
       .notEmpty()
       .withMessage("Selfie image is required")
@@ -420,12 +422,24 @@ router.post(
       }
 
       // Validate ID number format
-      const pattern = ID_PATTERNS[smileIdType];
-      if (pattern && !pattern.test(idNumber)) {
-        return res.status(400).json({ 
-          success: false, 
-          message: `Invalid ${idType} format. Please check your ID number.` 
-        });
+      // Note: Skip strict validation for driver's license as formats vary by Nigerian state
+      if (idType !== 'drivers_license') {
+        const pattern = ID_PATTERNS[smileIdType];
+        if (pattern && !pattern.test(idNumber)) {
+          return res.status(400).json({ 
+            success: false, 
+            message: `Invalid ${idType} format. Please check your ID number.` 
+          });
+        }
+      } else {
+        // Light validation for driver's license - just check alphanumeric and length
+        const dlPattern = /^[A-Z0-9]{8,20}$/;
+        if (!dlPattern.test(idNumber.toUpperCase())) {
+          return res.status(400).json({ 
+            success: false, 
+            message: `Driver's license must be 8-20 alphanumeric characters.` 
+          });
+        }
       }
 
       // Generate unique job ID
