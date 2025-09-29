@@ -247,18 +247,6 @@ async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
     side: quoteSide
   });
   
-  // 🔍 LOG OBIEX RAW RESPONSE - This shows what Obiex API actually returns
-  logger.info('🔍 RAW OBIEX API RESPONSE', {
-    swap: `${from} → ${to}`,
-    quoteSide,
-    inputAmount: quoteAmount,
-    obiexSuccess: quoteResult.success,
-    obiexQuoteId: quoteResult.quoteId || quoteResult.id,
-    obiexData: JSON.stringify(quoteResult.data, null, 2),
-    obiexDataKeys: quoteResult.data ? Object.keys(quoteResult.data) : [],
-    fullObiexResponse: JSON.stringify(quoteResult, null, 2)
-  });
-  
   if (!quoteResult.success) {
     throw new Error(`Obiex quote creation failed: ${JSON.stringify(quoteResult.error)}`);
   }
@@ -267,7 +255,9 @@ async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
   let obiexAmount;
   
   // Try to get the received amount from various possible fields
-  if (quoteResult.data?.estimatedAmount) {
+  if (quoteResult.data?.amountReceived) {
+    obiexAmount = quoteResult.data.amountReceived;
+  } else if (quoteResult.data?.estimatedAmount) {
     obiexAmount = quoteResult.data.estimatedAmount;
   } else if (quoteResult.data?.receiveAmount) {
     obiexAmount = quoteResult.data.receiveAmount;
@@ -282,8 +272,8 @@ async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
       // When buying crypto with stablecoin: receivedCrypto = stablecoinAmount × rate
       obiexAmount = inputAmount * rate;
     } else {
-      // When selling crypto for stablecoin: receivedStablecoin = cryptoAmount / rate
-      obiexAmount = inputAmount / rate;
+      // When selling crypto for stablecoin: receivedStablecoin = cryptoAmount × rate
+      obiexAmount = inputAmount * rate;
     }
     
     logger.info('Calculated Obiex received amount from rate', {
