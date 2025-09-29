@@ -7,7 +7,7 @@ const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
-const GlobalMarkdown = require('../models/pricemarkdown'); // ensure path matches your project
+const GlobalMarkdown = require('../models/pricemarkdown');
 
 const router = express.Router();
 
@@ -89,14 +89,6 @@ function validateSwapPair(from, to) {
 /**
  * Apply markdown reduction to Obiex amounts (reduce what Obiex gives us by percentage).
  * Reads markdown directly from the GlobalMarkdown model.
- *
- * Returns:
- *  {
- *    adjustedAmount,        // obiexAmount after reduction
- *    markdownApplied,       // boolean
- *    markdownPercentage,    // numeric (e.g. 0.3 for 0.3%)
- *    reductionAmount        // positive number removed from obiexAmount
- *  }
  */
 async function applyMarkdownReduction(obiexAmount, currency) {
   try {
@@ -259,17 +251,66 @@ async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
     throw new Error(`Obiex quote creation failed: ${JSON.stringify(quoteResult.error)}`);
   }
   
+  // Log the complete Obiex response structure for debugging
+  logger.info('Obiex Quote Response Structure', {
+    from,
+    to,
+    quoteSide,
+    quoteAmount,
+    fullResponse: JSON.stringify(quoteResult, null, 2),
+    responseKeys: Object.keys(quoteResult),
+    dataKeys: quoteResult.data ? Object.keys(quoteResult.data) : [],
+    timestamp: new Date().toISOString()
+  });
+  
   // Extract the amount user will receive from Obiex
-  const obiexAmount = quoteResult.data?.estimatedAmount || 
-                      quoteResult.data?.receiveAmount || 
-                      quoteResult.data?.amount || 0;
+  let obiexAmount;
+  
+  // Try to get the received amount from various possible fields
+  if (quoteResult.data?.estimatedAmount) {
+    obiexAmount = quoteResult.data.estimatedAmount;
+  } else if (quoteResult.data?.receiveAmount) {
+    obiexAmount = quoteResult.data.receiveAmount;
+  } else if (quoteResult.data?.estimatedReceiveAmount) {
+    obiexAmount = quoteResult.data.estimatedReceiveAmount;
+  } else if (quoteResult.data?.rate && quoteResult.data?.amount) {
+    // Calculate received amount from rate and input amount
+    const rate = quoteResult.data.rate;
+    const inputAmount = quoteResult.data.amount;
+    
+    if (quoteSide === 'BUY') {
+      // When buying crypto with stablecoin: receivedCrypto = stablecoinAmount × rate
+      obiexAmount = inputAmount * rate;
+    } else {
+      // When selling crypto for stablecoin: receivedStablecoin = cryptoAmount / rate
+      obiexAmount = inputAmount / rate;
+    }
+    
+    logger.info('Calculated Obiex received amount from rate', {
+      quoteSide,
+      inputAmount,
+      rate,
+      calculatedAmount: obiexAmount,
+      from,
+      to
+    });
+  } else {
+    // Fallback - but this is likely wrong
+    obiexAmount = quoteResult.data?.amount || 0;
+    logger.warn('Could not find received amount in Obiex quote, using fallback', {
+      quoteData: quoteResult.data,
+      from,
+      to,
+      quoteSide
+    });
+  }
   
   // Apply markdown reduction (reduce Obiex amount by configured percentage)
   const markdownResult = await applyMarkdownReduction(obiexAmount, to);
   
   return {
     success: true,
-    obiexQuoteId: quoteResult.quoteId || quoteResult.quoteId || null,
+    obiexQuoteId: quoteResult.quoteId || quoteResult.id || null,
     obiexData: quoteResult.data,
     obiexAmount,
     adjustedAmount: markdownResult.adjustedAmount,
