@@ -6,7 +6,7 @@ const validator = require('validator');
 const logger = require('../utils/logger');
 
 // POST: Cancel user's KYC by phone number
-router.post('/cancel', async (req, res) => {
+router.post('/kyc/cancel', async (req, res) => {
   const { phoneNumber, reason } = req.body;
 
   if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
@@ -15,14 +15,12 @@ router.post('/cancel', async (req, res) => {
   }
 
   try {
-    // Find user by phone number
     const user = await User.findOne({ phonenumber: phoneNumber });
     if (!user) {
       logger.warn(`User not found: ${phoneNumber}`);
       return res.status(404).json({ success: false, error: 'User not found.' });
     }
 
-    // Find pending KYC documents
     const pendingKycs = await KYC.find({
       userId: user._id,
       status: 'PENDING'
@@ -39,7 +37,6 @@ router.post('/cancel', async (req, res) => {
     const now = new Date();
     const cancellationReason = reason || 'Manually cancelled by admin';
 
-    // Cancel all pending KYC documents
     const cancelResult = await KYC.updateMany(
       { userId: user._id, status: 'PENDING' },
       {
@@ -52,13 +49,13 @@ router.post('/cancel', async (req, res) => {
       }
     );
 
-    // Clear user's in-progress flag
+    // Use valid enum value 'rejected' instead of 'cancelled'
     await User.findByIdAndUpdate(user._id, {
       $set: {
-        'kyc.status': 'cancelled',
+        'kyc.status': 'rejected',
         'kyc.updatedAt': now,
         'kyc.inProgress': false,
-        'kyc.level2.status': 'cancelled',
+        'kyc.level2.status': 'rejected',
         'kyc.level2.rejectionReason': cancellationReason
       }
     });
@@ -90,8 +87,8 @@ router.post('/cancel', async (req, res) => {
   }
 });
 
-// POST: Approve user's KYC by phone number
-router.post('/approve', async (req, res) => {
+// POST: Approve user's KYC by phone number  
+router.post('/kyc/approve', async (req, res) => {
   const { phoneNumber, idType, idNumber, fullName } = req.body;
 
   if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
@@ -105,14 +102,12 @@ router.post('/approve', async (req, res) => {
   }
 
   try {
-    // Find user by phone number
     const user = await User.findOne({ phonenumber: phoneNumber });
     if (!user) {
       logger.warn(`User not found: ${phoneNumber}`);
       return res.status(404).json({ success: false, error: 'User not found.' });
     }
 
-    // Find latest pending or rejected KYC
     const latestKyc = await KYC.findOne({
       userId: user._id,
       status: { $in: ['PENDING', 'REJECTED'] }
@@ -122,7 +117,6 @@ router.post('/approve', async (req, res) => {
     let kycDoc;
 
     if (latestKyc) {
-      // Update existing KYC to approved
       kycDoc = await KYC.findByIdAndUpdate(
         latestKyc._id,
         {
@@ -141,7 +135,6 @@ router.post('/approve', async (req, res) => {
         { new: true }
       );
     } else {
-      // Create new approved KYC document
       kycDoc = await KYC.create({
         userId: user._id,
         provider: 'manual-admin',
@@ -163,7 +156,6 @@ router.post('/approve', async (req, res) => {
       });
     }
 
-    // Update user with approved status
     await User.findByIdAndUpdate(user._id, {
       $set: {
         'kyc.provider': 'manual-admin',
@@ -181,7 +173,6 @@ router.post('/approve', async (req, res) => {
       }
     });
 
-    // Trigger KYC upgrade check
     const updatedUser = await User.findById(user._id);
     try {
       await updatedUser.onIdentityDocumentVerified(idType, idNumber);
