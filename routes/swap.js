@@ -7,7 +7,7 @@ const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
-const GlobalMarkdown = require('../models/pricemarkdown'); // adjust path if needed
+const GlobalMarkdown = require('../models/pricemarkdown'); // ensure path matches your project
 
 const router = express.Router();
 
@@ -38,205 +38,117 @@ const DEFAULT_STABLECOIN = 'USDT';
  * Validate swap pair
  */
 function validateSwapPair(from, to) {
-  const fromUpper = String(from).toUpperCase();
-  const toUpper = String(to).toUpperCase();
+  const fromUpper = from.toUpperCase();
+  const toUpper = to.toUpperCase();
+  
   if (!SUPPORTED_TOKENS.has(fromUpper) || !SUPPORTED_TOKENS.has(toUpper)) {
     return {
       success: false,
       message: `Unsupported currency. Supported tokens: ${Array.from(SUPPORTED_TOKENS).join(', ')}`
     };
   }
+  
   if (fromUpper === toUpper) {
-    return { success: false, message: 'Cannot swap the same currency' };
+    return {
+      success: false,
+      message: 'Cannot swap the same currency'
+    };
   }
+  
   const fromIsStablecoin = STABLECOINS.has(fromUpper);
   const toIsStablecoin = STABLECOINS.has(toUpper);
   const fromIsCrypto = CRYPTOCURRENCIES.has(fromUpper);
   const toIsCrypto = CRYPTOCURRENCIES.has(toUpper);
-
+  
   if ((fromIsCrypto && toIsStablecoin) || (fromIsStablecoin && toIsCrypto)) {
     return { success: true, swapType: 'DIRECT' };
   }
+  
   if (fromIsCrypto && toIsCrypto) {
-    return { success: true, swapType: 'CRYPTO_TO_CRYPTO', routingRequired: true, intermediateToken: DEFAULT_STABLECOIN };
+    return { 
+      success: true, 
+      swapType: 'CRYPTO_TO_CRYPTO',
+      routingRequired: true,
+      intermediateToken: DEFAULT_STABLECOIN
+    };
   }
+  
   if (fromIsStablecoin && toIsStablecoin) {
-    return { success: false, message: 'Stablecoin-to-stablecoin swaps are not supported' };
+    return {
+      success: false,
+      message: 'Stablecoin-to-stablecoin swaps are not supported'
+    };
   }
-  return { success: false, message: 'Invalid swap pair' };
+  
+  return {
+    success: false,
+    message: 'Invalid swap pair'
+  };
 }
 
 /**
- * Apply markdown reduction to Obiex target amount (what user will receive).
- * Returns adjusted amount and reduction metadata.
+ * Apply markdown reduction to Obiex amounts (reduce what Obiex gives us by percentage).
+ * Reads markdown directly from the GlobalMarkdown model.
+ *
+ * Returns:
+ *  {
+ *    adjustedAmount,        // obiexAmount after reduction
+ *    markdownApplied,       // boolean
+ *    markdownPercentage,    // numeric (e.g. 0.3 for 0.3%)
+ *    reductionAmount        // positive number removed from obiexAmount
+ *  }
  */
 async function applyMarkdownReduction(obiexAmount, currency) {
   try {
-    const currencyUpper = String(currency).toUpperCase();
-    if (STABLECOINS.has(currencyUpper)) {
-      return { adjustedAmount: Number(obiexAmount), markdownApplied: false, markdownPercentage: 0, reductionAmount: 0 };
+    // Do not apply to stablecoins
+    if (STABLECOINS.has(currency.toUpperCase())) {
+      return { adjustedAmount: obiexAmount, markdownApplied: false, markdownPercentage: 0, reductionAmount: 0 };
     }
+
+    // Read markdown document directly from DB
     const markdownDoc = await GlobalMarkdown.getCurrentMarkdown();
+
     if (!markdownDoc || !markdownDoc.isActive || !markdownDoc.markdownPercentage || markdownDoc.markdownPercentage <= 0) {
-      return { adjustedAmount: Number(obiexAmount), markdownApplied: false, markdownPercentage: 0, reductionAmount: 0 };
+      return { adjustedAmount: obiexAmount, markdownApplied: false, markdownPercentage: 0, reductionAmount: 0 };
     }
-    const percent = Number(markdownDoc.markdownPercentage); // treat as percent (e.g., 0.3 = 0.3%)
-    const multiplier = 1 - (percent / 100);
-    const adjustedAmount = Number(obiexAmount) * multiplier;
-    const reductionAmount = Number(obiexAmount) - adjustedAmount;
+
+    const percent = markdownDoc.markdownPercentage; // e.g. 0.3 for 0.3%
+    const reductionMultiplier = 1 - (percent / 100);
+    const adjustedAmount = obiexAmount * reductionMultiplier;
+    const reductionAmount = obiexAmount - adjustedAmount;
+
     logger.info('Applied markdown reduction to Obiex amount', {
-      currency: currencyUpper,
+      currency,
       obiexAmount,
       markdownPercentage: percent,
       adjustedAmount,
       reductionAmount,
       markdownSource: markdownDoc.source
     });
-    return { adjustedAmount, markdownApplied: true, markdownPercentage: percent, reductionAmount };
+
+    return {
+      adjustedAmount,
+      markdownApplied: true,
+      markdownPercentage: percent,
+      reductionAmount
+    };
   } catch (err) {
     logger.warn('applyMarkdownReduction failed, returning original amount', { error: err.message });
-    return { adjustedAmount: Number(obiexAmount), markdownApplied: false, markdownPercentage: 0, reductionAmount: 0 };
+    return { adjustedAmount: obiexAmount, markdownApplied: false, markdownPercentage: 0, reductionAmount: 0 };
   }
 }
 
 /**
- * Helper to safely read numeric fields (returns undefined if not present)
- */
-function pickNumber(obj, ...keys) {
-  for (const k of keys) {
-    if (!obj) continue;
-    const parts = String(k).split('.');
-    let cur = obj;
-    let ok = true;
-    for (const p of parts) {
-      if (cur && (cur[p] !== undefined && cur[p] !== null)) cur = cur[p];
-      else { ok = false; break; }
-    }
-    if (ok && cur !== undefined && cur !== null) {
-      const n = Number(cur);
-      if (!Number.isNaN(n)) return n;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Create Obiex quote for direct swap (defensive & returns structured result instead of throwing).
- * - returns { success: true, ... } or { success: false, statusCode, error }
- */
-async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
-  const from = String(fromCurrency).toUpperCase();
-  const to = String(toCurrency).toUpperCase();
-  const quoteSide = String((side || 'SELL')).toUpperCase();
-  const quoteAmount = Number(amount);
-
-  // Resolve currency IDs safely
-  let sourceId, targetId;
-  try {
-    sourceId = await getCurrencyIdByCode(from);
-    targetId = await getCurrencyIdByCode(to);
-  } catch (err) {
-    logger.error('Failed to resolve currency IDs for createQuote', { from, to, err: err.message });
-    return { success: false, statusCode: 400, error: `OBIEX_CURRENCY_ID_ERROR: ${err.message}` };
-  }
-
-  // Call Obiex
-  const quoteResult = await createQuote({ sourceId, targetId, amount: quoteAmount, side: quoteSide });
-  if (!quoteResult || !quoteResult.success) {
-    logger.warn('Obiex createQuote returned error', { payload: { sourceId, targetId, amount: quoteAmount, side: quoteSide }, quoteResult });
-    return { success: false, statusCode: quoteResult?.statusCode || 502, error: quoteResult?.error || 'OBIEX_QUOTE_FAILED' };
-  }
-
-  const data = quoteResult.data || {};
-
-  // Determine rate and candidate fields
-  const rate = pickNumber(data, 'rate', 'price', 'summary.rate', 'summary.price') || undefined;
-
-  // Determine raw source (authoritative: the requested amount)
-  const rawSource = quoteAmount;
-
-  // Determine raw target (what Obiex intends to deliver) deterministically by side
-  let rawTarget = 0;
-  if (quoteSide === 'BUY') {
-    // User is spending 'from' to BUY 'to' (e.g., spending USDT to buy BTC)
-    if (rate && rawSource > 0) {
-      rawTarget = rawSource * rate;
-    } else {
-      rawTarget = pickNumber(data, 'receiveAmount', 'amountReceived', 'estimatedAmount', 'summary.receiveAmount', 'summary.amount') || 0;
-    }
-  } else {
-    // SELL: user sends crypto -> receives stablecoin (provider typically returns estimated/receive fields)
-    rawTarget = pickNumber(data, 'estimatedAmount', 'amountReceived', 'receiveAmount', 'summary.amount') || 0;
-    if ((!rawTarget || rawTarget === 0) && rate && rawSource > 0) {
-      rawTarget = rawSource * rate;
-    }
-  }
-
-  // final fallback to generic fields
-  if (!rawTarget || rawTarget === 0) {
-    rawTarget = Number(data?.estimatedAmount || data?.receiveAmount || data?.amount || 0) || 0;
-  }
-
-  // Apply markdown reduction to the target (user receives less after markdown)
-  const markdownResult = await applyMarkdownReduction(rawTarget, to);
-
-  return {
-    success: true,
-    obiexQuoteId: quoteResult.quoteId || data?.id || null,
-    obiexData: data,
-    rawSourceAmount: rawSource,
-    rawTargetAmount: rawTarget,
-    adjustedAmount: markdownResult.adjustedAmount,
-    markdownApplied: markdownResult.markdownApplied,
-    markdownPercentage: markdownResult.markdownPercentage,
-    reductionAmount: markdownResult.reductionAmount,
-    rate: rate || (rawSource ? (rawTarget / rawSource) : 0)
-  };
-}
-
-/**
- * Create Obiex quote for crypto-to-crypto swap (two steps).
- * Returns { success: true, step1, step2, overall } or { success: false, ... }
- */
-async function createObiexCryptoToCryptoQuote(fromCurrency, toCurrency, amount) {
-  const from = String(fromCurrency).toUpperCase();
-  const to = String(toCurrency).toUpperCase();
-  const intermediate = DEFAULT_STABLECOIN;
-
-  // Step 1: sell `from` -> intermediate stablecoin
-  const step1 = await createObiexDirectQuote(from, intermediate, amount, 'SELL');
-  if (!step1.success) return step1;
-
-  // Step 2: buy `to` using intermediate stablecoin amount (use adjustedAmount after markdown)
-  const step2 = await createObiexDirectQuote(intermediate, to, step1.adjustedAmount, 'BUY');
-  if (!step2.success) return step2;
-
-  return {
-    success: true,
-    step1: {
-      ...step1
-    },
-    step2: {
-      ...step2
-    },
-    overall: {
-      fromCurrency: from,
-      toCurrency: to,
-      amount,
-      adjustedAmount: step2.adjustedAmount,
-      rate: step2.rate || (step2.adjustedAmount / amount)
-    }
-  };
-}
-
-/**
- * Create audit entry (safe)
+ * Create audit entry
  */
 async function createAuditEntry(auditData) {
   try {
     await TransactionAudit.createAudit(auditData);
-  } catch (err) {
-    logger.error('Failed to create audit entry', { error: err.message });
+  } catch (error) {
+    logger.error('Failed to create audit entry', {
+      error: error.message,
+      auditData: { ...auditData, requestData: '[REDACTED]', responseData: '[REDACTED]' }
+    });
   }
 }
 
@@ -261,20 +173,31 @@ function getSystemContext(req) {
 async function getCachedUserBalance(userId, currencies = []) {
   const cacheKey = `user_balance_${userId}`;
   const cached = userCache.get(cacheKey);
-  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) return cached.user;
-
+  
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    return cached.user;
+  }
+  
   const selectFields = ['_id', 'lastBalanceUpdate', 'portfolioLastUpdated'];
   if (currencies.length > 0) {
-    currencies.forEach(currency => selectFields.push(`${currency.toLowerCase()}Balance`));
+    currencies.forEach(currency => {
+      selectFields.push(`${currency.toLowerCase()}Balance`);
+    });
   } else {
-    Object.values(TOKEN_MAP).forEach(token => selectFields.push(`${token.currency}Balance`));
+    Object.values(TOKEN_MAP).forEach(token => {
+      selectFields.push(`${token.currency}Balance`);
+    });
   }
-
-  const user = await User.findById(userId).select(selectFields.join(' ')).lean();
+  
+  const user = await User.findById(userId)
+    .select(selectFields.join(' '))
+    .lean();
+  
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
     setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
   }
+  
   return user;
 }
 
@@ -284,73 +207,234 @@ async function getCachedUserBalance(userId, currencies = []) {
 async function validateUserBalance(userId, currency, amount) {
   const user = await getCachedUserBalance(userId, [currency]);
   if (!user) return { success: false, message: 'User not found' };
+  
   const field = `${currency.toLowerCase()}Balance`;
   const available = user[field] || 0;
+  
   if (available < amount) {
-    return { success: false, message: `Insufficient ${currency} balance. Available: ${available}, Required: ${amount}`, availableBalance: available };
+    return {
+      success: false,
+      message: `Insufficient ${currency} balance. Available: ${available}, Required: ${amount}`,
+      availableBalance: available
+    };
   }
+  
   return { success: true, availableBalance: available };
 }
 
 /**
+ * Create Obiex quote for direct crypto swap
+ */
+async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  
+  const isCryptoToStablecoin = CRYPTOCURRENCIES.has(from) && STABLECOINS.has(to);
+  
+  let sourceId, targetId, quoteSide, quoteAmount;
+  
+  if (isCryptoToStablecoin) {
+    // Crypto → Stablecoin (e.g., BTC → USDT): SELL crypto
+    sourceId = await getCurrencyIdByCode(from);
+    targetId = await getCurrencyIdByCode(to);
+    quoteSide = 'SELL';
+    quoteAmount = amount;
+  } else {
+    // Stablecoin → Crypto (e.g., USDT → BTC): BUY crypto
+    // For Obiex, source is always the crypto, target is stablecoin
+    sourceId = await getCurrencyIdByCode(to); // crypto
+    targetId = await getCurrencyIdByCode(from); // stablecoin
+    quoteSide = 'BUY';
+    quoteAmount = amount; // stablecoin amount to spend
+  }
+  
+  const quoteResult = await createQuote({
+    sourceId,
+    targetId,
+    amount: quoteAmount,
+    side: quoteSide
+  });
+  
+  if (!quoteResult.success) {
+    throw new Error(`Obiex quote creation failed: ${JSON.stringify(quoteResult.error)}`);
+  }
+  
+  // Extract the amount user will receive from Obiex
+  const obiexAmount = quoteResult.data?.estimatedAmount || 
+                      quoteResult.data?.receiveAmount || 
+                      quoteResult.data?.amount || 0;
+  
+  // Apply markdown reduction (reduce Obiex amount by configured percentage)
+  const markdownResult = await applyMarkdownReduction(obiexAmount, to);
+  
+  return {
+    success: true,
+    obiexQuoteId: quoteResult.quoteId || quoteResult.quoteId || null,
+    obiexData: quoteResult.data,
+    obiexAmount,
+    adjustedAmount: markdownResult.adjustedAmount,
+    markdownApplied: markdownResult.markdownApplied,
+    markdownPercentage: markdownResult.markdownPercentage,
+    reductionAmount: markdownResult.reductionAmount,
+    rate: (markdownResult.adjustedAmount / amount) || 0
+  };
+}
+
+/**
+ * Create Obiex quote for crypto-to-crypto swap (two steps)
+ */
+async function createObiexCryptoToCryptoQuote(fromCurrency, toCurrency, amount) {
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  const intermediate = DEFAULT_STABLECOIN;
+  
+  // Step 1: Crypto → Stablecoin (e.g., BTC → USDT)
+  const step1Result = await createObiexDirectQuote(from, intermediate, amount, 'SELL');
+  if (!step1Result.success) {
+    throw new Error(`Obiex step 1 quote failed`);
+  }
+  
+  // Step 2: Stablecoin → Crypto (e.g., USDT → ETH)
+  const step2Result = await createObiexDirectQuote(intermediate, to, step1Result.adjustedAmount, 'BUY');
+  if (!step2Result.success) {
+    throw new Error(`Obiex step 2 quote failed`);
+  }
+  
+  return {
+    success: true,
+    step1: {
+      obiexQuoteId: step1Result.obiexQuoteId,
+      fromCurrency: from,
+      toCurrency: intermediate,
+      amount,
+      adjustedAmount: step1Result.adjustedAmount,
+      markdownApplied: step1Result.markdownApplied,
+      markdownPercentage: step1Result.markdownPercentage,
+      reductionAmount: step1Result.reductionAmount
+    },
+    step2: {
+      obiexQuoteId: step2Result.obiexQuoteId,
+      fromCurrency: intermediate,
+      toCurrency: to,
+      amount: step1Result.adjustedAmount,
+      adjustedAmount: step2Result.adjustedAmount,
+      markdownApplied: step2Result.markdownApplied,
+      markdownPercentage: step2Result.markdownPercentage,
+      reductionAmount: step2Result.reductionAmount
+    },
+    overall: {
+      fromCurrency: from,
+      toCurrency: to,
+      amount,
+      adjustedAmount: step2Result.adjustedAmount,
+      rate: step2Result.adjustedAmount / amount
+    }
+  };
+}
+
+/**
  * Execute Obiex swap and update user balances
- * (left largely as-is but uses deterministic parsing on accept)
  */
 async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, systemContext) {
   const session = await mongoose.startSession();
   session.startTransaction();
   const startTime = new Date();
-
+  
   try {
     const { sourceCurrency, targetCurrency, amount, swapType } = quote;
+    
+    // Validate balance before executing
     const validation = await validateUserBalance(userId, sourceCurrency, amount);
-    if (!validation.success) throw new Error(validation.message);
-
+    if (!validation.success) {
+      throw new Error(validation.message);
+    }
+    
     let obiexResult, finalAmountReceived;
-
+    
     if (swapType === 'CRYPTO_TO_CRYPTO') {
+      // Execute two-step Obiex swap
       const step1QuoteId = quote.obiexStep1QuoteId;
       const step2QuoteId = quote.obiexStep2QuoteId;
-
+      
+      // Accept step 1
       const step1Accept = await acceptQuote(step1QuoteId);
-      if (!step1Accept.success) throw new Error(`Obiex step1 accept failed: ${JSON.stringify(step1Accept.error)}`);
-
+      if (!step1Accept.success) {
+        throw new Error(`Obiex step 1 failed: ${JSON.stringify(step1Accept.error)}`);
+      }
+      
+      // Accept step 2
       const step2Accept = await acceptQuote(step2QuoteId);
-      if (!step2Accept.success) throw new Error(`Obiex step2 accept failed: ${JSON.stringify(step2Accept.error)}`);
-
-      // For execution we rely on provider accept response fields (defensive)
-      const step2Received = Number(step2Accept.data?.amountReceived || step2Accept.data?.receiveAmount || step2Accept.data?.estimatedAmount || step2Accept.data?.amount || 0);
-      const markdown = await applyMarkdownReduction(step2Received, targetCurrency);
-      finalAmountReceived = markdown.adjustedAmount;
-
-      obiexResult = { step1: step1Accept.data, step2: step2Accept.data, markdownReduction: markdown };
+      if (!step2Accept.success) {
+        throw new Error(`Obiex step 2 failed: ${JSON.stringify(step2Accept.error)}`);
+      }
+      
+      // Get final amount from Obiex (what Obiex will provide) and apply markdown reduction
+      const step2Amount = step2Accept.data?.amountReceived || step2Accept.data?.amount || 0;
+      const markdownResult = await applyMarkdownReduction(step2Amount, targetCurrency);
+      finalAmountReceived = markdownResult.adjustedAmount;
+      
+      obiexResult = {
+        step1: step1Accept.data,
+        step2: step2Accept.data,
+        markdownReduction: markdownResult
+      };
+      
     } else {
+      // Execute direct Obiex swap
       const obiexQuoteId = quote.obiexQuoteId;
+      
       const acceptResult = await acceptQuote(obiexQuoteId);
-      if (!acceptResult.success) throw new Error(`Obiex accept failed: ${JSON.stringify(acceptResult.error)}`);
-
-      const rawReceived = Number(acceptResult.data?.amountReceived || acceptResult.data?.receiveAmount || acceptResult.data?.estimatedAmount || acceptResult.data?.amount || 0);
-      const markdown = await applyMarkdownReduction(rawReceived, targetCurrency);
-      finalAmountReceived = markdown.adjustedAmount;
-
-      obiexResult = { acceptData: acceptResult.data, markdownReduction: markdown };
+      if (!acceptResult.success) {
+        throw new Error(`Obiex swap failed: ${JSON.stringify(acceptResult.error)}`);
+      }
+      
+      // Get amount and apply markdown reduction
+      const obiexAmount = acceptResult.data?.amountReceived || acceptResult.data?.amount || 0;
+      const markdownResult = await applyMarkdownReduction(obiexAmount, targetCurrency);
+      finalAmountReceived = markdownResult.adjustedAmount;
+      
+      obiexResult = {
+        acceptData: acceptResult.data,
+        markdownReduction: markdownResult
+      };
     }
-
-    // Update balances
+    
+    // Update user balances
     const fromKey = `${sourceCurrency.toLowerCase()}Balance`;
     const toKey = `${targetCurrency.toLowerCase()}Balance`;
     const swapReference = `OBIEX_SWAP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
+    
+    const userBefore = await User.findById(userId).select(`${fromKey} ${toKey}`).lean();
+    
     const updatedUser = await User.findOneAndUpdate(
-      { _id: userId, [fromKey]: { $gte: amount } },
-      { $inc: { [fromKey]: -amount, [toKey]: finalAmountReceived }, $set: { lastBalanceUpdate: new Date(), portfolioLastUpdated: new Date() } },
-      { new: true, runValidators: true, session }
+      { 
+        _id: userId, 
+        [fromKey]: { $gte: amount }
+      },
+      {
+        $inc: {
+          [fromKey]: -amount,
+          [toKey]: finalAmountReceived
+        },
+        $set: { 
+          lastBalanceUpdate: new Date(),
+          portfolioLastUpdated: new Date()
+        }
+      },
+      { 
+        new: true, 
+        runValidators: true, 
+        session 
+      }
     );
 
-    if (!updatedUser) throw new Error(`Balance update failed - insufficient ${sourceCurrency} balance`);
+    if (!updatedUser) {
+      throw new Error(`Balance update failed - insufficient ${sourceCurrency} balance`);
+    }
+
     userCache.delete(`user_balance_${userId}`);
 
-    // Create transactions & audit
+    // Create transaction records
     const metadata = {
       swapType,
       exchangeRate: finalAmountReceived / amount,
@@ -363,11 +447,14 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       swapPair: `${sourceCurrency}-${targetCurrency}`,
       executionTimestamp: new Date(),
       correlationId,
-      obiexQuoteId: quote.obiexQuoteId || null,
+      obiexQuoteId: quote.obiexQuoteId,
       markdownApplied: obiexResult.markdownReduction?.markdownApplied || false,
       markdownPercentage: obiexResult.markdownReduction?.markdownPercentage || 0,
       reductionAmount: obiexResult.markdownReduction?.reductionAmount || 0,
-      ...(swapType === 'CRYPTO_TO_CRYPTO' && { intermediateToken: quote.intermediateToken, routingPath: quote.routingPath })
+      ...(swapType === 'CRYPTO_TO_CRYPTO' && {
+        intermediateToken: quote.intermediateToken,
+        routingPath: quote.routingPath
+      })
     };
 
     const swapOutTransaction = new Transaction({
@@ -403,11 +490,22 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
 
     await session.commitTransaction();
     session.endSession();
+    
+    const endTime = new Date();
 
     logger.info('Obiex swap executed successfully', {
-      userId, swapReference, correlationId, sourceCurrency, targetCurrency, sourceAmount: amount, targetAmount: finalAmountReceived
+      userId,
+      swapReference,
+      correlationId,
+      sourceCurrency,
+      targetCurrency,
+      sourceAmount: amount,
+      targetAmount: finalAmountReceived,
+      markdownApplied: metadata.markdownApplied,
+      markdownPercentage: metadata.markdownPercentage,
+      reductionAmount: metadata.reductionAmount
     });
-
+    
     await createAuditEntry({
       userId,
       eventType: 'SWAP_COMPLETED',
@@ -415,18 +513,54 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       source: 'OBIEX',
       action: 'Complete Obiex Swap',
       description: `Successfully completed Obiex swap with markdown reduction`,
-      swapDetails: { swapId: swapReference, sourceCurrency, targetCurrency, sourceAmount: amount, targetAmount: finalAmountReceived, exchangeRate: finalAmountReceived / amount, provider: 'OBIEX', swapType },
-      relatedEntities: { correlationId, relatedTransactionIds: [swapOutTransaction._id, swapInTransaction._id] },
+      swapDetails: {
+        swapId: swapReference,
+        sourceCurrency,
+        targetCurrency,
+        sourceAmount: amount,
+        targetAmount: finalAmountReceived,
+        exchangeRate: finalAmountReceived / amount,
+        provider: 'OBIEX',
+        swapType,
+        markdownApplied: metadata.markdownApplied,
+        markdownPercentage: metadata.markdownPercentage,
+        reductionAmount: metadata.reductionAmount
+      },
+      relatedEntities: {
+        correlationId,
+        relatedTransactionIds: [swapOutTransaction._id, swapInTransaction._id]
+      },
       systemContext,
-      timing: { startTime, endTime: new Date(), duration: new Date() - startTime },
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
       tags: ['swap', 'obiex', 'completed', 'success', 'markdown-reduced']
     });
 
-    return { user: updatedUser, swapOutTransaction, swapInTransaction, swapId: swapReference, obiexResult };
+    return {
+      user: updatedUser,
+      swapOutTransaction,
+      swapInTransaction,
+      swapId: swapReference,
+      obiexResult
+    };
+
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    logger.error('Obiex swap execution failed', { error: err.message, stack: err.stack, userId: userId, quote });
+    
+    const endTime = new Date();
+    
+    logger.error('Obiex swap execution failed', {
+      error: err.message,
+      stack: err.stack,
+      userId,
+      correlationId,
+      quote
+    });
+    
     await createAuditEntry({
       userId,
       eventType: 'SWAP_FAILED',
@@ -434,16 +568,33 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       source: 'OBIEX',
       action: 'Failed Obiex Swap',
       description: `Obiex swap failed: ${err.message}`,
-      errorDetails: { message: err.message, stack: err.stack },
-      swapDetails: { sourceCurrency: quote?.sourceCurrency, targetCurrency: quote?.targetCurrency, sourceAmount: quote?.amount, provider: 'OBIEX', swapType: quote?.swapType },
-      relatedEntities: { correlationId },
+      errorDetails: {
+        message: err.message,
+        code: 'OBIEX_SWAP_ERROR',
+        stack: err.stack
+      },
+      swapDetails: {
+        sourceCurrency: quote.sourceCurrency,
+        targetCurrency: quote.targetCurrency,
+        sourceAmount: quote.amount,
+        provider: 'OBIEX',
+        swapType: quote.swapType
+      },
+      relatedEntities: {
+        correlationId
+      },
       systemContext,
-      timing: { startTime, endTime: new Date(), duration: new Date() - startTime },
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
       riskLevel: 'HIGH',
       flagged: true,
       flagReason: 'Obiex swap execution failed',
       tags: ['swap', 'obiex', 'failed', 'critical-error']
     });
+    
     throw err;
   }
 }
@@ -453,21 +604,32 @@ router.post('/quote', async (req, res) => {
   const correlationId = generateCorrelationId();
   const systemContext = getSystemContext(req);
   const startTime = new Date();
-
+  
   try {
     const { from, to, amount, side } = req.body;
     const userId = req.user?.id;
-
+    
+    // Validation
     if (!from || !to || !amount || !side) {
-      return res.status(400).json({ success: false, message: 'Missing required fields: from, to, amount, side' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields: from, to, amount, side' 
+      });
     }
+    
     if (typeof amount !== 'number' || amount <= 0) {
-      return res.status(400).json({ success: false, message: 'Invalid amount. Must be a positive number.' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid amount. Must be a positive number.' 
+      });
     }
 
     const pairValidation = validateSwapPair(from, to);
     if (!pairValidation.success) {
-      return res.status(400).json({ success: false, message: pairValidation.message });
+      return res.status(400).json({ 
+        success: false, 
+        message: pairValidation.message 
+      });
     }
 
     const id = `obiex_swap_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -476,11 +638,9 @@ router.post('/quote', async (req, res) => {
     let payload;
 
     if (pairValidation.swapType === 'CRYPTO_TO_CRYPTO') {
+      // Crypto-to-crypto via stablecoin routing
       const cryptoQuote = await createObiexCryptoToCryptoQuote(from, to, amount);
-      if (!cryptoQuote.success) {
-        return res.status(502).json({ success: false, message: 'Failed to create crypto->crypto quote', error: cryptoQuote.error || cryptoQuote });
-      }
-
+      
       payload = {
         id,
         amount,
@@ -504,20 +664,23 @@ router.post('/quote', async (req, res) => {
         reductionAmount: cryptoQuote.step2.reductionAmount
       };
 
-      logger.info('Crypto-to-crypto Obiex quote created', { sourceAmount: amount, sourceCurrency: from.toUpperCase(), targetAmount: cryptoQuote.overall.adjustedAmount, targetCurrency: to.toUpperCase(), correlationId });
+      logger.info('Crypto-to-crypto Obiex quote created', {
+        sourceAmount: amount,
+        sourceCurrency: from.toUpperCase(),
+        targetAmount: cryptoQuote.overall.adjustedAmount,
+        targetCurrency: to.toUpperCase(),
+        intermediateToken: pairValidation.intermediateToken,
+        correlationId
+      });
+      
     } else {
-      // DIRECT
+      // Direct swap
       const directQuote = await createObiexDirectQuote(from, to, amount, side);
-      if (!directQuote.success) {
-        return res.status(directQuote.statusCode || 502).json({ success: false, message: 'Failed to create Obiex quote', error: directQuote.error });
-      }
-
+      
       payload = {
         id,
         amount,
         amountReceived: directQuote.adjustedAmount,
-        rawTargetAmount: directQuote.rawTargetAmount,
-        rawSourceAmount: directQuote.rawSourceAmount,
         rate: directQuote.rate,
         side,
         sourceCurrency: from.toUpperCase(),
@@ -532,16 +695,32 @@ router.post('/quote', async (req, res) => {
         reductionAmount: directQuote.reductionAmount
       };
 
-      logger.info('Direct Obiex quote created', { sourceAmount: amount, sourceCurrency: from.toUpperCase(), targetAmount: directQuote.adjustedAmount, targetCurrency: to.toUpperCase(), markdownApplied: directQuote.markdownApplied, correlationId });
+      logger.info('Direct Obiex quote created', {
+        sourceAmount: amount,
+        sourceCurrency: from.toUpperCase(),
+        targetAmount: directQuote.adjustedAmount,
+        targetCurrency: to.toUpperCase(),
+        markdownApplied: directQuote.markdownApplied,
+        correlationId
+      });
     }
 
     quoteCache.set(id, payload);
     setTimeout(() => quoteCache.delete(id), QUOTE_TTL);
 
-    return res.json({ success: true, message: 'Obiex swap quote created successfully', data: { data: payload, ...payload } });
+    return res.json({
+      success: true,
+      message: 'Obiex swap quote created successfully',
+      data: { data: payload, ...payload }
+    });
+
   } catch (err) {
     logger.error('POST /swap/quote error', { error: err.stack, correlationId });
-    return res.status(500).json({ success: false, error: 'Internal Server Error' });
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: err.message || 'Failed to create quote' 
+    });
   }
 });
 
@@ -549,22 +728,53 @@ router.post('/quote', async (req, res) => {
 router.post('/quote/:quoteId', async (req, res) => {
   const systemContext = getSystemContext(req);
   const startTime = new Date();
-
+  
   try {
     const { quoteId } = req.params;
     const userId = req.user.id;
     const quote = quoteCache.get(quoteId);
+    
     const correlationId = quote?.correlationId || generateCorrelationId();
 
-    if (!quote) return res.status(404).json({ success: false, message: 'Quote not found or expired' });
-    if (new Date() > new Date(quote.expiresAt)) { quoteCache.delete(quoteId); return res.status(410).json({ success: false, message: 'Quote has expired' }); }
+    if (!quote) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Quote not found or expired' 
+      });
+    }
+
+    if (new Date() > new Date(quote.expiresAt)) {
+      quoteCache.delete(quoteId);
+      return res.status(410).json({ 
+        success: false, 
+        message: 'Quote has expired' 
+      });
+    }
 
     const validation = await validateUserBalance(userId, quote.sourceCurrency, quote.amount);
-    if (!validation.success) return res.status(400).json({ success: false, message: validation.message, balanceError: true, availableBalance: validation.availableBalance });
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+        balanceError: true,
+        availableBalance: validation.availableBalance
+      });
+    }
 
-    const swapResult = await executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, systemContext);
+    // Execute Obiex swap and update balances
+    const swapResult = await executeObiexSwapWithBalanceUpdate(
+      userId, 
+      quote, 
+      correlationId, 
+      systemContext
+    );
 
-    logger.info('Obiex swap completed successfully', { userId, quoteId, correlationId, swapId: swapResult.swapId });
+    logger.info('Obiex swap completed successfully', { 
+      userId, 
+      quoteId, 
+      correlationId,
+      swapId: swapResult.swapId
+    });
 
     quoteCache.delete(quoteId);
 
@@ -585,7 +795,11 @@ router.post('/quote/:quoteId', async (req, res) => {
         markdownPercentage: quote.markdownPercentage,
         reductionAmount: quote.reductionAmount
       },
-      transactions: { swapId: swapResult.swapId, swapOutTransactionId: swapResult.swapOutTransaction._id, swapInTransactionId: swapResult.swapInTransaction._id },
+      transactions: {
+        swapId: swapResult.swapId,
+        swapOutTransactionId: swapResult.swapOutTransaction._id,
+        swapInTransactionId: swapResult.swapInTransaction._id
+      },
       balanceUpdated: true,
       newBalances: {
         [quote.sourceCurrency.toLowerCase()]: swapResult.user[`${quote.sourceCurrency.toLowerCase()}Balance`],
@@ -593,21 +807,47 @@ router.post('/quote/:quoteId', async (req, res) => {
       }
     };
 
-    return res.json({ success: true, message: 'Obiex swap completed successfully', data: { data: responsePayload, ...responsePayload } });
+    return res.json({
+      success: true,
+      message: 'Obiex swap completed successfully',
+      data: { data: responsePayload, ...responsePayload }
+    });
+
   } catch (err) {
-    logger.error('POST /swap/quote/:quoteId error', { error: err.stack, userId: req.user?.id, quoteId: req.params?.quoteId });
-    return res.status(500).json({ success: false, message: 'Swap failed - please try again' });
+    logger.error('POST /swap/quote/:quoteId error', { 
+      error: err.stack,
+      userId: req.user?.id,
+      quoteId: req.params?.quoteId
+    });
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: err.message || 'Swap failed - please try again'
+    });
   }
 });
 
-// GET /swap/tokens
+// GET /swap/tokens - Get supported tokens
 router.get('/tokens', (req, res) => {
   try {
-    const tokens = Object.entries(TOKEN_MAP).map(([code, info]) => ({ code, name: info.name, currency: info.currency }));
-    res.json({ success: true, message: 'Supported tokens retrieved successfully', data: tokens, total: tokens.length });
+    const tokens = Object.entries(TOKEN_MAP).map(([code, info]) => ({
+      code, 
+      name: info.name, 
+      currency: info.currency
+    }));
+    
+    res.json({
+      success: true,
+      message: 'Supported tokens retrieved successfully',
+      data: tokens,
+      total: tokens.length
+    });
   } catch (err) {
     logger.error('GET /swap/tokens error', { error: err.stack });
-    return res.status(500).json({ success: false, message: 'Internal server error' });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
   }
 });
 
@@ -615,10 +855,14 @@ router.get('/tokens', (req, res) => {
 setInterval(() => {
   const now = Date.now();
   for (const [key, quote] of quoteCache.entries()) {
-    if (now > new Date(quote.expiresAt).getTime()) quoteCache.delete(key);
+    if (now > new Date(quote.expiresAt).getTime()) {
+      quoteCache.delete(key);
+    }
   }
   for (const [key, entry] of userCache.entries()) {
-    if (now - entry.timestamp > CACHE_TTL) userCache.delete(key);
+    if (now - entry.timestamp > CACHE_TTL) {
+      userCache.delete(key);
+    }
   }
 }, 60000);
 
