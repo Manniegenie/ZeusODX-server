@@ -191,6 +191,7 @@ const KYCRoutes = require('./routes/KYC');
 const ForgotPinRoutes = require('./routes/forgotpasswordpin');
 const AccountnameRoutes = require('./routes/Accountname');
 const Pushnotification = require('./adminRoutes/pushnotification');
+const AdminKYCRoutes = require('./adminRoutes/kyc');
 
 
 
@@ -224,6 +225,7 @@ app.use("/marker", pricemarkdownRoutes);
 app.use("/2FA-Disable", TwooFARoutes);
 app.use('/admingiftcard', admingiftcardRoutes);
 app.use('/notification', Pushnotification);
+app.use('/admin-kyc', AdminKYCRoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
