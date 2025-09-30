@@ -192,6 +192,7 @@ const ForgotPinRoutes = require('./routes/forgotpasswordpin');
 const AccountnameRoutes = require('./routes/Accountname');
 const Pushnotification = require('./adminRoutes/pushnotification');
 const AdminKYCRoutes = require('./adminRoutes/kyc');
+const collectionRoutes = require('./routes/collections');
 
 
 
@@ -270,6 +271,7 @@ app.use("/nin", authenticateToken, NINRoutes);
 app.use("/email", authenticateToken, EmailVerifyRoutes)
 app.use("/kyc", authenticateToken, KYCRoutes);
 app.use("/forgot-pin", ForgotPinRoutes);
+app.use("/collection", authenticateToken, collectionRoutes);
 
 
 
