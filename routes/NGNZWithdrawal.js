@@ -267,6 +267,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
           pagaBankCode: destination.pagaBankCode,
           merchantCode: destination.merchantCode,
           accountName: destination.accountName,
+          accountNumber: destination.accountNumber, // ✅ ADDED: Full unmasked account number
           accountNumberMasked: maskAccountNumber(destination.accountNumber),
           accountNumberLast4: last4,
           accountNumberHash: hashAccountNumber(destination.accountNumber),
@@ -284,7 +285,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         providerStatus: 'PENDING',
         bankName: destination.bankName,
         accountName: destination.accountName,
-        accountNumber: maskAccountNumber(destination.accountNumber),
+        accountNumber: destination.accountNumber, // ✅ CHANGED: Use unmasked account number
         currency: 'NGNZ',
         amount: formatCurrency(totalDeducted, 'NGNZ'),
         fee: formatCurrency(feeAmount),
@@ -1411,7 +1412,7 @@ router.get('/status/:withdrawalId', async (req, res) => {
         destination: {
           bankName: dest.bankName ?? transaction.metadata?.destinationBank,
           accountName: dest.accountName ?? transaction.metadata?.destinationAccountName,
-          accountNumber: dest.accountNumberMasked ?? transaction.metadata?.destinationAccount // Already masked
+          accountNumber: dest.accountNumberMasked ?? transaction.metadata?.destinationAccount // Show masked in status for security
         },
         obiex: (obiex.id || transaction.metadata?.obiexId) ? {
           transactionId: obiex.id ?? transaction.metadata?.obiexId,
