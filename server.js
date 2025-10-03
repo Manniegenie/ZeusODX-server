@@ -62,7 +62,7 @@ const webhookLimiter = rateLimit({
 // Passport Init
 app.use(passport.initialize());
 
-// JWT Middleware
+// Regular user authentication middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -74,6 +74,62 @@ const authenticateToken = (req, res, next) => {
     req.user = user;
     next();
   });
+};
+
+// Admin authentication middleware
+const authenticateAdminToken = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      error: "Unauthorized: No admin token provided." 
+    });
+  }
+  
+  jwt.verify(token, process.env.ADMIN_JWT_SECRET, (err, admin) => {
+    if (err) {
+      return res.status(403).json({ 
+        success: false, 
+        error: "Forbidden: Invalid admin token." 
+      });
+    }
+    
+    req.admin = admin;
+    next();
+  });
+};
+
+// Role-specific middlewares
+const requireSuperAdmin = (req, res, next) => {
+  if (req.admin.adminRole !== 'super_admin') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Super admin access required." 
+    });
+  }
+  next();
+};
+
+const requireAdmin = (req, res, next) => {
+  if (!['admin', 'super_admin'].includes(req.admin.adminRole)) {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Admin access required." 
+    });
+  }
+  next();
+};
+
+const requireModerator = (req, res, next) => {
+  if (!['moderator', 'admin', 'super_admin'].includes(req.admin.adminRole)) {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Moderator access required." 
+    });
+  }
+  next();
 };
 
 // Database Index Fix Function
@@ -193,8 +249,8 @@ const AccountnameRoutes = require('./routes/Accountname');
 const Pushnotification = require('./adminRoutes/pushnotification');
 const AdminKYCRoutes = require('./adminRoutes/kyc');
 const collectionRoutes = require('./routes/collections');
-
-
+const adminsigninRoutes = require("./adminRoutes/adminsign-in");
+const adminRegisterRoutes = require("./adminRoutes/registeradmin");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -205,35 +261,40 @@ app.use("/passwordpin", passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
 app.use("/naira", nairaAccountsRoutes);
 app.use("/accountname", AccountnameRoutes);
-
+app.use("/adminsignin", adminsigninRoutes);
 
 // Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
 app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 
-// Admin/Utility Routes
-app.use("/deleteuser", deleteuserRoutes);
-app.use("/updateuseraddress", updateuseraddressRoutes);
-app.use("/fetch-wallet", fetchwalletRoutes);
-app.use("/delete-pin", deletepinRoutes);
-app.use("/fetch", fetchtransactionRoutes);
-app.use("/set-fee", SetfeeRoutes);
-app.use("/pending", clearpendingRoutes);
-app.use("/fetching", fetchrefreshtoken);
-app.use("/fund", FunduserRoutes);
-app.use("/marker", pricemarkdownRoutes);
-app.use("/2FA-Disable", TwooFARoutes);
-app.use('/admingiftcard', admingiftcardRoutes);
-app.use('/notification', Pushnotification);
-app.use('/admin-kyc', AdminKYCRoutes);
+// SUPER ADMIN ONLY ROUTES (highest permissions)
+app.use("/deleteuser", authenticateAdminToken, requireSuperAdmin, deleteuserRoutes);
+app.use("/fund", authenticateAdminToken, requireSuperAdmin, FunduserRoutes);
+app.use("/delete-pin", authenticateAdminToken, requireSuperAdmin, deletepinRoutes);
+app.use("/admin", adminRegisterRoutes);
+
+// ADMIN LEVEL ROUTES (admin + super_admin)
+app.use("/set-fee", authenticateAdminToken, requireAdmin, SetfeeRoutes);
+app.use("/updateuseraddress", authenticateAdminToken, requireAdmin, updateuseraddressRoutes);
+app.use("/marker", authenticateAdminToken, requireAdmin, pricemarkdownRoutes);
+app.use('/admingiftcard', authenticateAdminToken, requireAdmin, admingiftcardRoutes);
+app.use('/notification', authenticateAdminToken, requireAdmin, Pushnotification);
+
+// MODERATOR LEVEL ROUTES (all admin roles can access)
+app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
+app.use("/fetch", authenticateAdminToken, requireModerator, fetchtransactionRoutes);
+app.use("/pending", authenticateAdminToken, requireModerator, clearpendingRoutes);
+app.use("/fetching", authenticateAdminToken, requireModerator, fetchrefreshtoken);
+app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
+app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
 app.use("/onramp", onrampRoutes);
 app.use("/offramp", offrampRoutes);
 
-// Protected Routes
+// Protected User Routes
 app.use("/logout", authenticateToken, logoutRoutes);
 app.use("/username", authenticateToken, usernameRoutes);
 app.use("/balance", authenticateToken, balanceRoutes);
@@ -273,8 +334,6 @@ app.use("/kyc", authenticateToken, KYCRoutes);
 app.use("/forgot-pin", ForgotPinRoutes);
 app.use("/collection", authenticateToken, collectionRoutes);
 
-
-
 // Health Check
 app.get("/", (req, res) => {
   res.send(`🚀 API Running at ${new Date().toISOString()}`);
@@ -311,6 +370,7 @@ const startServer = async () => {
       console.log(`🔥 Server running on port ${PORT}`);
       console.log('📦 Body parser limit: 50MB (for KYC image uploads)');
       console.log('⏰ Crypto price update job scheduled every 15 minutes');
+      console.log('🔐 Admin authentication enabled with role-based access control');
       
       // Run price update immediately on startup
       setTimeout(async () => {
