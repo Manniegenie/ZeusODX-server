@@ -19,8 +19,9 @@ async function calculateTransactionVolume() {
     const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
     console.log('Offramp rate:', offrampRate);
 
-    // Get all successful transactions
+    // Get only successful swaps and giftcard trades
     const transactions = await Transaction.find({
+      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
       status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] }
     }).select('currency amount type');
 
