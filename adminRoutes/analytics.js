@@ -1,8 +1,98 @@
 // routes/analytics.js
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const User = require('../models/user');
 const Transaction = require('../models/transaction');
+const NairaMarkdown = require('../models/offramp');
+const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
+
+/**
+ * Helper function to calculate total transaction volume in USD
+ */
+async function calculateTransactionVolume() {
+  try {
+    console.log('=== Starting Transaction Volume Calculation ===');
+    
+    // Get offramp rate for NGNZ conversion
+    const nairaMarkdown = await NairaMarkdown.findOne();
+    const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
+    console.log('Offramp rate:', offrampRate);
+
+    // Get all successful transactions
+    const transactions = await Transaction.find({
+      status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] }
+    }).select('currency amount type');
+
+    console.log('Total successful transactions found:', transactions.length);
+
+    if (!transactions || transactions.length === 0) {
+      console.log('No transactions found, returning 0');
+      return 0;
+    }
+
+    // Log first 5 transactions for debugging
+    console.log('Sample transactions:', transactions.slice(0, 5).map(t => ({
+      currency: t.currency,
+      amount: t.amount,
+      type: t.type
+    })));
+
+    // Get unique currencies from transactions
+    const currencies = [...new Set(
+      transactions
+        .map(t => t.currency?.toUpperCase())
+        .filter(c => c && SUPPORTED_TOKENS[c])
+    )];
+
+    console.log('Unique currencies found:', currencies);
+
+    // Fetch current prices for all currencies (except NGNZ)
+    const nonNGNZCurrencies = currencies.filter(c => c !== 'NGNZ');
+    console.log('Fetching prices for:', nonNGNZCurrencies);
+    
+    const prices = await getPricesWithCache(nonNGNZCurrencies);
+    console.log('Prices received:', prices);
+
+    // Calculate total volume in USD
+    let totalVolumeUSD = 0;
+    let ngnzVolume = 0;
+    let cryptoVolume = 0;
+    let processedCount = 0;
+
+    for (const transaction of transactions) {
+      const currency = transaction.currency?.toUpperCase();
+      const amount = Math.abs(transaction.amount || 0);
+
+      if (!currency || amount === 0) continue;
+
+      if (currency === 'NGNZ') {
+        // Convert NGNZ to USD using offramp rate
+        const usdValue = amount / offrampRate;
+        totalVolumeUSD += usdValue;
+        ngnzVolume += usdValue;
+      } else if (prices[currency]) {
+        // Convert other currencies using current prices
+        const usdValue = amount * prices[currency];
+        totalVolumeUSD += usdValue;
+        cryptoVolume += usdValue;
+      }
+      processedCount++;
+    }
+
+    console.log('Transactions processed:', processedCount);
+    console.log('NGNZ volume (USD):', ngnzVolume.toFixed(2));
+    console.log('Crypto volume (USD):', cryptoVolume.toFixed(2));
+    console.log('Total volume (USD):', totalVolumeUSD.toFixed(2));
+    console.log('=== Transaction Volume Calculation Complete ===');
+
+    return parseFloat(totalVolumeUSD.toFixed(2));
+  } catch (error) {
+    console.error('Error calculating transaction volume:', error);
+    console.error('Stack trace:', error.stack);
+    return 0;
+  }
+}
 
 /**
  * GET /analytics/dashboard
@@ -10,13 +100,16 @@ const Transaction = require('../models/transaction');
  */
 router.get('/dashboard', async (req, res) => {
   try {
+    console.log('=== Dashboard Analytics Request Started ===');
+    
     const [
       userStats,
       transactionStats,
       swapStats,
       withdrawalStats,
       recentActivity,
-      tokenStats
+      tokenStats,
+      transactionVolume
     ] = await Promise.all([
       // Basic user statistics
       User.aggregate([
@@ -133,8 +226,13 @@ router.get('/dashboard', async (req, res) => {
         },
         { $sort: { totalVolume: -1 } },
         { $limit: 10 }
-      ])
+      ]),
+
+      // Calculate total transaction volume in USD
+      calculateTransactionVolume()
     ]);
+
+    console.log('Transaction Volume Result:', transactionVolume);
 
     const response = {
       success: true,
@@ -184,7 +282,6 @@ router.get('/dashboard', async (req, res) => {
         },
 
         // Chatbot Trades (for backward compatibility with frontend)
-        // Map from general transaction stats to match expected format
         chatbotTrades: {
           overview: {
             total: transactionStats[0]?.swaps || 0,
@@ -222,14 +319,24 @@ router.get('/dashboard', async (req, res) => {
         },
 
         // Token Statistics
-        tokenStats: tokenStats
+        tokenStats: tokenStats,
+
+        // Transaction Volume in USD (NEW)
+        transactionVolume: transactionVolume
       }
     };
+
+    console.log('=== Sending Response to Client ===');
+    console.log('Response data.transactionVolume:', response.data.transactionVolume);
+    console.log('Response data.users.total:', response.data.users.total);
+    console.log('Response data.chatbotTrades.overview.total:', response.data.chatbotTrades.overview.total);
+    console.log('=== Dashboard Analytics Request Complete ===');
 
     res.json(response);
 
   } catch (error) {
     console.error('Error fetching dashboard analytics:', error);
+    console.error('Stack trace:', error.stack);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch analytics data',
