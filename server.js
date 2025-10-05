@@ -251,6 +251,8 @@ const AdminKYCRoutes = require('./adminRoutes/kyc');
 const collectionRoutes = require('./routes/collections');
 const adminsigninRoutes = require("./adminRoutes/adminsign-in");
 const adminRegisterRoutes = require("./adminRoutes/registeradmin");
+const usermanagementRoutes = require("./adminRoutes/usermanagement");
+const analyticsRoutes = require("./adminRoutes/analytics");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -288,6 +290,8 @@ app.use("/pending", authenticateAdminToken, requireModerator, clearpendingRoutes
 app.use("/fetching", authenticateAdminToken, requireModerator, fetchrefreshtoken);
 app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
 app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
+app.use("/usermanagement", authenticateAdminToken, requireModerator, usermanagementRoutes);
+app.use("/analytics", authenticateAdminToken, requireModerator, analyticsRoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
