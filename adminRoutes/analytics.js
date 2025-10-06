@@ -346,6 +346,102 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
+
+router.get('/recent-transactions', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const skip = (page - 1) * limit;
+
+    // Fetch transactions and total count
+    const [transactions, totalCount] = await Promise.all([
+      Transaction.find({})
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .skip(skip)
+        .populate('userId', 'username email firstname lastname')
+        .populate('recipientUserId', 'username')
+        .populate('senderUserId', 'username')
+        .lean(),
+      Transaction.countDocuments({})
+    ]);
+
+    // Format transactions for response
+    const formattedTransactions = transactions.map(tx => ({
+      id: tx._id.toString(),
+      userId: tx.userId?._id?.toString(),
+      username: tx.userId?.username || tx.userId?.firstname || 'Unknown',
+      userEmail: tx.userId?.email,
+      type: tx.type,
+      status: tx.status,
+      currency: tx.currency,
+      amount: tx.amount,
+      fee: tx.fee || 0,
+      narration: tx.narration,
+      reference: tx.reference,
+      source: tx.source,
+      createdAt: tx.createdAt,
+      updatedAt: tx.updatedAt,
+      completedAt: tx.completedAt,
+      
+      // Swap details
+      ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
+        fromCurrency: tx.fromCurrency,
+        toCurrency: tx.toCurrency,
+        fromAmount: tx.fromAmount,
+        toAmount: tx.toAmount,
+        swapType: tx.swapType,
+        exchangeRate: tx.exchangeRate
+      } : {}),
+      
+      // NGNZ withdrawal details
+      ...(tx.isNGNZWithdrawal ? {
+        bankName: tx.ngnzWithdrawal?.destination?.bankName,
+        accountName: tx.ngnzWithdrawal?.destination?.accountName,
+        accountNumberMasked: tx.ngnzWithdrawal?.destination?.accountNumberMasked,
+        withdrawalFee: tx.withdrawalFee
+      } : {}),
+      
+      // Internal transfer details
+      ...(tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED' ? {
+        recipientUsername: tx.recipientUsername,
+        senderUsername: tx.senderUsername
+      } : {}),
+      
+      // Giftcard details
+      ...(tx.type === 'GIFTCARD' ? {
+        cardType: tx.cardType,
+        country: tx.country,
+        expectedRate: tx.expectedRate
+      } : {})
+    }));
+
+    const totalPages = Math.ceil(totalCount / limit);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      pagination: {
+        currentPage: page,
+        totalPages,
+        limit,
+        totalCount,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1
+      },
+      data: formattedTransactions
+    });
+
+  } catch (error) {
+    console.error('Error fetching recent transactions:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch recent transactions',
+      message: error.message
+    });
+  }
+});
+
 /**
  * GET /analytics/swap-pairs
  * Get analytics for specific swap pairs
