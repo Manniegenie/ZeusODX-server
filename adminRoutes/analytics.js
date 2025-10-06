@@ -2,96 +2,182 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const Decimal = require('decimal.js');
+
 const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const NairaMarkdown = require('../models/offramp');
 const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 
 /**
- * Helper function to calculate total transaction volume in USD
+ * Helper: optional base unit map for tokens stored in smallest units.
+ * If your transaction.amount is stored in base units (e.g. wei for ETH = 1e18),
+ * fill this map with the appropriate divisor. By default every token is assumed
+ * to be in "human" units (divisor = 1).
+ */
+const BASE_UNIT_DIVISOR = {
+  // Example: 'ETH': new Decimal('1e18'),
+  // 'BTC': new Decimal('1e8'),
+  // add tokens here if your amounts are stored in base units
+};
+
+/**
+ * Calculate total transaction volume in USD (robust & efficient)
+ * - Aggregates by currency in MongoDB to avoid iterating huge transaction lists
+ * - Uses Decimal for numeric precision
+ * - Validates offramp rate
+ * - Only fetches prices for supported currencies
+ * - Provides a per-currency breakdown and logs missing prices
+ *
+ * Return value: an object {
+ *   totalVolumeUSD: number,
+ *   breakdown: { [currency]: { totalAmount: string, usdValue: string, price?: number, note?: string } },
+ *   counts: { totalCurrencies: number, processedCurrencies: number, skippedCurrencies: number },
+ *   totalSkippedUSD: string
+ * }
  */
 async function calculateTransactionVolume() {
   try {
-    console.log('=== Starting Transaction Volume Calculation ===');
-    
+    console.log('=== Starting Transaction Volume Calculation (optimized) ===');
+
     // Get offramp rate for NGNZ conversion
     const nairaMarkdown = await NairaMarkdown.findOne();
-    const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
-    console.log('Offramp rate:', offrampRate);
+    let offrampRate = nairaMarkdown?.offrampRate || 1554.42;
 
-    // Get only successful swaps and giftcard trades
-    const transactions = await Transaction.find({
-      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
-      status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] }
-    }).select('currency amount type');
-
-    console.log('Total successful transactions found:', transactions.length);
-
-    if (!transactions || transactions.length === 0) {
-      console.log('No transactions found, returning 0');
-      return 0;
+    if (!offrampRate || isNaN(offrampRate) || Number(offrampRate) === 0) {
+      console.warn('Invalid or missing offrampRate from DB; falling back to default 1554.42');
+      offrampRate = 1554.42;
     }
 
-    // Log first 5 transactions for debugging
-    console.log('Sample transactions:', transactions.slice(0, 5).map(t => ({
-      currency: t.currency,
-      amount: t.amount,
-      type: t.type
-    })));
+    // Aggregate absolute amounts per currency (one row per currency)
+    const agg = await Transaction.aggregate([
+      {
+        $match: {
+          type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
+          status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
+          currency: { $exists: true, $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: { $toUpper: '$currency' },
+          totalAmount: { $sum: { $abs: '$amount' } },
+          count: { $sum: 1 }
+        }
+      }
+    ]).option ? await Transaction.aggregate : agg; // defensive (keeps lint happy)
 
-    // Get unique currencies from transactions
-    const currencies = [...new Set(
-      transactions
-        .map(t => t.currency?.toUpperCase())
-        .filter(c => c && SUPPORTED_TOKENS[c])
-    )];
+    if (!agg || agg.length === 0) {
+      console.log('No matching transactions found. Returning 0.');
+      return {
+        totalVolumeUSD: 0,
+        breakdown: {},
+        counts: { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 },
+        totalSkippedUSD: '0'
+      };
+    }
 
-    console.log('Unique currencies found:', currencies);
+    // Prepare currencies to fetch prices for (exclude NGNZ)
+    const currencies = agg
+      .map(r => r._id)
+      .filter(c => c && c !== 'NGNZ' && SUPPORTED_TOKENS[c]);
 
-    // Fetch current prices for all currencies (except NGNZ)
-    const nonNGNZCurrencies = currencies.filter(c => c !== 'NGNZ');
-    console.log('Fetching prices for:', nonNGNZCurrencies);
-    
-    const prices = await getPricesWithCache(nonNGNZCurrencies);
-    console.log('Prices received:', prices);
+    console.log('Currencies to fetch prices for:', currencies);
 
-    // Calculate total volume in USD
-    let totalVolumeUSD = 0;
-    let ngnzVolume = 0;
-    let cryptoVolume = 0;
-    let processedCount = 0;
+    const prices = await getPricesWithCache(currencies);
+    console.log('Prices received for currencies:', Object.keys(prices || {}));
 
-    for (const transaction of transactions) {
-      const currency = transaction.currency?.toUpperCase();
-      const amount = Math.abs(transaction.amount || 0);
+    // Now compute USD values per currency using Decimal for precision
+    let totalVolumeUSD = new Decimal(0);
+    let totalSkippedUSD = new Decimal(0);
+    const breakdown = {};
+    let processedCurrencies = 0;
+    let skippedCurrencies = 0;
 
-      if (!currency || amount === 0) continue;
+    for (const row of agg) {
+      const currency = row._id;
+      // Convert totalAmount using base unit divisor configured by user (default 1)
+      const divisor = BASE_UNIT_DIVISOR[currency] || new Decimal(1);
+
+      // Use Decimal throughout
+      const totalAmountDecimal = new Decimal(row.totalAmount || 0).div(divisor);
 
       if (currency === 'NGNZ') {
-        // Convert NGNZ to USD using offramp rate
-        const usdValue = amount / offrampRate;
-        totalVolumeUSD += usdValue;
-        ngnzVolume += usdValue;
-      } else if (prices[currency]) {
-        // Convert other currencies using current prices
-        const usdValue = amount * prices[currency];
-        totalVolumeUSD += usdValue;
-        cryptoVolume += usdValue;
+        // NGNZ conversion: NGN -> USD via offrampRate
+        if (!offrampRate || isNaN(offrampRate) || Number(offrampRate) === 0) {
+          console.warn('Invalid offrampRate, skipping NGNZ conversion');
+          breakdown[currency] = {
+            totalAmount: totalAmountDecimal.toString(),
+            usdValue: '0',
+            note: 'invalid offrampRate'
+          };
+          skippedCurrencies++;
+          continue;
+        }
+
+        const usdValue = totalAmountDecimal.div(new Decimal(offrampRate));
+        totalVolumeUSD = totalVolumeUSD.plus(usdValue);
+        breakdown[currency] = {
+          totalAmount: totalAmountDecimal.toString(),
+          usdValue: usdValue.toString(),
+          price: (1 / Number(offrampRate))
+        };
+        processedCurrencies++;
+
+      } else {
+        const price = prices?.[currency];
+
+        if (typeof price === 'number' || typeof price === 'string') {
+          // price should be USD per 1 token
+          const usdValue = totalAmountDecimal.times(new Decimal(price));
+          totalVolumeUSD = totalVolumeUSD.plus(usdValue);
+          breakdown[currency] = {
+            totalAmount: totalAmountDecimal.toString(),
+            usdValue: usdValue.toString(),
+            price: Number(price)
+          };
+          processedCurrencies++;
+        } else {
+          // Missing price — skip and log
+          console.warn(`Missing price for ${currency}. Skipping conversion for ${totalAmountDecimal.toString()} ${currency}`);
+          breakdown[currency] = {
+            totalAmount: totalAmountDecimal.toString(),
+            usdValue: '0',
+            note: 'price missing'
+          };
+          skippedCurrencies++;
+          // If you want a fallback strategy, implement it here (e.g. convert via intermediary pairs)
+          totalSkippedUSD = totalSkippedUSD.plus(new Decimal(0));
+        }
       }
-      processedCount++;
     }
 
-    console.log('Transactions processed:', processedCount);
-    console.log('NGNZ volume (USD):', ngnzVolume.toFixed(2));
-    console.log('Crypto volume (USD):', cryptoVolume.toFixed(2));
-    console.log('Total volume (USD):', totalVolumeUSD.toFixed(2));
-    console.log('=== Transaction Volume Calculation Complete ===');
+    const result = {
+      totalVolumeUSD: Number(totalVolumeUSD.toFixed(2)),
+      breakdown,
+      counts: {
+        totalCurrencies: agg.length,
+        processedCurrencies,
+        skippedCurrencies
+      },
+      totalSkippedUSD: totalSkippedUSD.toString()
+    };
 
-    return parseFloat(totalVolumeUSD.toFixed(2));
+    console.log('Transaction Volume Calculation Complete. Summary:');
+    console.log('Total USD:', result.totalVolumeUSD);
+    console.log('Counts:', result.counts);
+    console.log('Skipped USD total (approx):', result.totalSkippedUSD);
+
+    return result;
   } catch (error) {
     console.error('Error calculating transaction volume:', error);
     console.error('Stack trace:', error.stack);
-    return 0;
+    return {
+      totalVolumeUSD: 0,
+      breakdown: {},
+      counts: { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 },
+      totalSkippedUSD: '0'
+    };
   }
 }
 
@@ -102,7 +188,7 @@ async function calculateTransactionVolume() {
 router.get('/dashboard', async (req, res) => {
   try {
     console.log('=== Dashboard Analytics Request Started ===');
-    
+
     const [
       userStats,
       transactionStats,
@@ -110,7 +196,7 @@ router.get('/dashboard', async (req, res) => {
       withdrawalStats,
       recentActivity,
       tokenStats,
-      transactionVolume
+      transactionVolumeResult
     ] = await Promise.all([
       // Basic user statistics
       User.aggregate([
@@ -229,11 +315,11 @@ router.get('/dashboard', async (req, res) => {
         { $limit: 10 }
       ]),
 
-      // Calculate total transaction volume in USD
+      // Calculate total transaction volume in USD (optimized function)
       calculateTransactionVolume()
     ]);
 
-    console.log('Transaction Volume Result:', transactionVolume);
+    console.log('Transaction Volume Result:', transactionVolumeResult);
 
     const response = {
       success: true,
@@ -322,8 +408,10 @@ router.get('/dashboard', async (req, res) => {
         // Token Statistics
         tokenStats: tokenStats,
 
-        // Transaction Volume in USD (NEW)
-        transactionVolume: transactionVolume
+        // Transaction Volume in USD (NEW) — expose the numeric total and breakdown for debugging
+        transactionVolume: transactionVolumeResult?.totalVolumeUSD ?? 0,
+        transactionVolumeBreakdown: transactionVolumeResult?.breakdown ?? {},
+        transactionVolumeCounts: transactionVolumeResult?.counts ?? { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 }
       }
     };
 
@@ -345,7 +433,6 @@ router.get('/dashboard', async (req, res) => {
     });
   }
 });
-
 
 router.get('/recent-transactions', async (req, res) => {
   try {
@@ -383,7 +470,7 @@ router.get('/recent-transactions', async (req, res) => {
       createdAt: tx.createdAt,
       updatedAt: tx.updatedAt,
       completedAt: tx.completedAt,
-      
+
       // Swap details
       ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
         fromCurrency: tx.fromCurrency,
@@ -393,7 +480,7 @@ router.get('/recent-transactions', async (req, res) => {
         swapType: tx.swapType,
         exchangeRate: tx.exchangeRate
       } : {}),
-      
+
       // NGNZ withdrawal details
       ...(tx.isNGNZWithdrawal ? {
         bankName: tx.ngnzWithdrawal?.destination?.bankName,
@@ -401,13 +488,13 @@ router.get('/recent-transactions', async (req, res) => {
         accountNumberMasked: tx.ngnzWithdrawal?.destination?.accountNumberMasked,
         withdrawalFee: tx.withdrawalFee
       } : {}),
-      
+
       // Internal transfer details
       ...(tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED' ? {
         recipientUsername: tx.recipientUsername,
         senderUsername: tx.senderUsername
       } : {}),
-      
+
       // Giftcard details
       ...(tx.type === 'GIFTCARD' ? {
         cardType: tx.cardType,
@@ -449,7 +536,7 @@ router.get('/recent-transactions', async (req, res) => {
 router.get('/swap-pairs', async (req, res) => {
   try {
     const { timeframe = '24h' } = req.query;
-    
+
     const timeAgo = new Date();
     const hours = timeframe === '24h' ? 24 : 
                   timeframe === '7d' ? 24 * 7 : 
