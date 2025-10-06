@@ -11,14 +11,10 @@ const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio'
 
 /**
  * Optional base unit map for tokens stored in smallest units.
- * If your transaction.amount is stored in base units (e.g. wei for ETH = 1e18),
- * fill this map with the appropriate divisor. By default every token is assumed
- * to be in "human" units (divisor = 1).
  */
 const BASE_UNIT_DIVISOR = {
   // Example: 'ETH': new Decimal('1e18'),
   // 'BTC': new Decimal('1e8'),
-  // add tokens here if your amounts are stored in base units
 };
 
 /**
@@ -28,7 +24,6 @@ async function calculateTransactionVolume() {
   try {
     console.log('=== Starting Transaction Volume Calculation (optimized) ===');
 
-    // Get offramp rate for NGNZ conversion
     const nairaMarkdown = await NairaMarkdown.findOne();
     let offrampRate = nairaMarkdown?.offrampRate || 1554.42;
 
@@ -37,7 +32,6 @@ async function calculateTransactionVolume() {
       offrampRate = 1554.42;
     }
 
-    // Aggregate absolute amounts per currency (one row per currency)
     let agg = await Transaction.aggregate([
       {
         $match: {
@@ -55,7 +49,6 @@ async function calculateTransactionVolume() {
       }
     ]).exec();
 
-    // Ensure agg is an array
     if (!Array.isArray(agg) && agg && typeof agg.toArray === 'function') {
       try {
         agg = await agg.toArray();
@@ -74,7 +67,6 @@ async function calculateTransactionVolume() {
       };
     }
 
-    // Prepare currencies to fetch prices for (exclude NGNZ)
     const currencies = agg
       .map(r => r._id)
       .filter(c => c && c !== 'NGNZ' && SUPPORTED_TOKENS[c]);
@@ -91,7 +83,6 @@ async function calculateTransactionVolume() {
 
     console.log('Prices received for currencies:', Object.keys(prices));
 
-    // Compute USD values per currency using Decimal for precision
     let totalVolumeUSD = new Decimal(0);
     let totalSkippedUSD = new Decimal(0);
     const breakdown = {};
@@ -162,7 +153,6 @@ async function calculateTransactionVolume() {
     console.log('Transaction Volume Calculation Complete. Summary:');
     console.log('Total USD:', result.totalVolumeUSD);
     console.log('Counts:', result.counts);
-    console.log('Skipped USD total (approx):', result.totalSkippedUSD);
 
     return result;
   } catch (error) {
@@ -179,7 +169,6 @@ async function calculateTransactionVolume() {
 
 /**
  * GET /analytics/dashboard
- * Fetch essential dashboard statistics
  */
 router.get('/dashboard', async (req, res) => {
   try {
@@ -194,7 +183,6 @@ router.get('/dashboard', async (req, res) => {
       tokenStats,
       transactionVolumeResult
     ] = await Promise.all([
-      // Basic user statistics
       User.aggregate([
         {
           $group: {
@@ -207,7 +195,6 @@ router.get('/dashboard', async (req, res) => {
         }
       ]),
 
-      // Overall transaction statistics
       Transaction.aggregate([
         {
           $group: {
@@ -224,7 +211,6 @@ router.get('/dashboard', async (req, res) => {
         }
       ]),
 
-      // Enhanced swap statistics
       Transaction.aggregate([
         {
           $match: {
@@ -249,7 +235,6 @@ router.get('/dashboard', async (req, res) => {
         }
       ]),
 
-      // NGNZ Withdrawal statistics
       Transaction.aggregate([
         {
           $match: {
@@ -270,7 +255,6 @@ router.get('/dashboard', async (req, res) => {
         }
       ]),
 
-      // Recent activity (last 24 hours)
       Transaction.aggregate([
         {
           $match: {
@@ -289,7 +273,6 @@ router.get('/dashboard', async (req, res) => {
         }
       ]),
 
-      // Token/Currency distribution
       Transaction.aggregate([
         {
           $match: {
@@ -311,25 +294,19 @@ router.get('/dashboard', async (req, res) => {
         { $limit: 10 }
       ]),
 
-      // Calculate total transaction volume in USD (optimized function)
       calculateTransactionVolume()
     ]);
-
-    console.log('Transaction Volume Result:', transactionVolumeResult);
 
     const response = {
       success: true,
       timestamp: new Date().toISOString(),
       data: {
-        // User Overview
         users: {
           total: userStats[0]?.totalUsers || 0,
           emailVerified: userStats[0]?.verifiedEmails || 0,
           bvnVerified: userStats[0]?.verifiedBVNs || 0,
           chatbotVerified: userStats[0]?.chatbotVerified || 0
         },
-
-        // Overall Transaction Statistics
         transactions: {
           total: transactionStats[0]?.totalTransactions || 0,
           deposits: transactionStats[0]?.deposits || 0,
@@ -340,8 +317,6 @@ router.get('/dashboard', async (req, res) => {
           pending: transactionStats[0]?.pending || 0,
           failed: transactionStats[0]?.failed || 0
         },
-
-        // Enhanced Swap Statistics
         swapStats: {
           total: swapStats[0]?.totalSwaps || 0,
           onramps: swapStats[0]?.onramps || 0,
@@ -352,8 +327,6 @@ router.get('/dashboard', async (req, res) => {
           totalVolume: swapStats[0]?.totalVolume || 0,
           totalFees: swapStats[0]?.totalFees || 0
         },
-
-        // NGNZ Withdrawal Statistics
         ngnzWithdrawals: {
           total: withdrawalStats[0]?.totalWithdrawals || 0,
           completed: withdrawalStats[0]?.completedWithdrawals || 0,
@@ -363,8 +336,6 @@ router.get('/dashboard', async (req, res) => {
           totalBankAmount: withdrawalStats[0]?.totalBankAmount || 0,
           totalFees: withdrawalStats[0]?.totalFees || 0
         },
-
-        // Chatbot Trades (for backward compatibility with frontend)
         chatbotTrades: {
           overview: {
             total: transactionStats[0]?.swaps || 0,
@@ -391,8 +362,6 @@ router.get('/dashboard', async (req, res) => {
             volume: recentActivity[0]?.volume24h || 0
           }
         },
-
-        // Recent Activity (24h)
         recentActivity: {
           transactions: recentActivity[0]?.transactions24h || 0,
           deposits: recentActivity[0]?.deposits24h || 0,
@@ -400,28 +369,18 @@ router.get('/dashboard', async (req, res) => {
           swaps: recentActivity[0]?.swaps24h || 0,
           volume: recentActivity[0]?.volume24h || 0
         },
-
-        // Token Statistics
         tokenStats: tokenStats,
-
-        // Transaction Volume in USD (NEW) — expose the numeric total and breakdown for debugging
         transactionVolume: transactionVolumeResult?.totalVolumeUSD ?? 0,
         transactionVolumeBreakdown: transactionVolumeResult?.breakdown ?? {},
         transactionVolumeCounts: transactionVolumeResult?.counts ?? { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 }
       }
     };
 
-    console.log('=== Sending Response to Client ===');
-    console.log('Response data.transactionVolume:', response.data.transactionVolume);
-    console.log('Response data.users.total:', response.data.users.total);
-    console.log('Response data.chatbotTrades.overview.total:', response.data.chatbotTrades.overview.total);
     console.log('=== Dashboard Analytics Request Complete ===');
-
     res.json(response);
 
   } catch (error) {
     console.error('Error fetching dashboard analytics:', error);
-    console.error('Stack trace:', error.stack);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch analytics data',
@@ -432,7 +391,6 @@ router.get('/dashboard', async (req, res) => {
 
 /**
  * GET /analytics/recent-transactions
- * Fetch recent transactions with optional filters
  */
 router.get('/recent-transactions', async (req, res) => {
   try {
@@ -440,15 +398,10 @@ router.get('/recent-transactions', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const skip = (page - 1) * limit;
 
-    // Filtering query params
     const { username, transactionId, date, dateFrom, dateTo, type, status } = req.query;
-
-    // Build MongoDB filter
     const filter = {};
 
-    // If username provided, try to find the user and filter by userId
     if (username) {
-      // Case-insensitive exact match for username (or fallback to firstname/lastname)
       const escapeForRegex = (s) => {
         if (!s) return s;
         const specials = ['.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\', '/'];
@@ -471,7 +424,6 @@ router.get('/recent-transactions', async (req, res) => {
       if (user && user._id) {
         filter.userId = user._id;
       } else {
-        // No user found — make query return empty set
         return res.json({
           success: true,
           timestamp: new Date().toISOString(),
@@ -481,23 +433,17 @@ router.get('/recent-transactions', async (req, res) => {
       }
     }
 
-    // If transactionId provided, try matching against _id, transactionId, reference, receiptDetails.transactionId
     if (transactionId) {
       const orClauses = [];
-
-      // If looks like an ObjectId, add _id match
       if (mongoose.Types.ObjectId.isValid(transactionId)) {
         orClauses.push({ _id: mongoose.Types.ObjectId(transactionId) });
       }
-
       orClauses.push({ transactionId: transactionId });
       orClauses.push({ reference: transactionId });
       orClauses.push({ 'receiptDetails.transactionId': transactionId });
-
       filter.$or = orClauses;
     }
 
-    // Date filtering: accept `date` (single day) or `dateFrom`/`dateTo` (range)
     if (date) {
       const d = new Date(date);
       if (!isNaN(d.getTime())) {
@@ -518,11 +464,9 @@ router.get('/recent-transactions', async (req, res) => {
       if (Object.keys(range).length) filter.createdAt = range;
     }
 
-    // Optional filters (type, status)
     if (type) filter.type = type;
     if (status) filter.status = status;
 
-    // Fetch transactions and total count using the same filter
     const [transactions, totalCount] = await Promise.all([
       Transaction.find(filter)
         .sort({ createdAt: -1 })
@@ -535,7 +479,6 @@ router.get('/recent-transactions', async (req, res) => {
       Transaction.countDocuments(filter)
     ]);
 
-    // Format transactions for response
     const formattedTransactions = transactions.map(tx => ({
       id: tx._id.toString(),
       userId: tx.userId?._id?.toString(),
@@ -552,8 +495,6 @@ router.get('/recent-transactions', async (req, res) => {
       createdAt: tx.createdAt,
       updatedAt: tx.updatedAt,
       completedAt: tx.completedAt,
-
-      // Swap details
       ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
         fromCurrency: tx.fromCurrency,
         toCurrency: tx.toCurrency,
@@ -562,22 +503,16 @@ router.get('/recent-transactions', async (req, res) => {
         swapType: tx.swapType,
         exchangeRate: tx.exchangeRate
       } : {}),
-
-      // NGNZ withdrawal details
       ...(tx.isNGNZWithdrawal ? {
         bankName: tx.ngnzWithdrawal?.destination?.bankName,
         accountName: tx.ngnzWithdrawal?.destination?.accountName,
         accountNumberMasked: tx.ngnzWithdrawal?.destination?.accountNumberMasked,
         withdrawalFee: tx.withdrawalFee
       } : {}),
-
-      // Internal transfer details
       ...(tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED' ? {
         recipientUsername: tx.recipientUsername,
         senderUsername: tx.senderUsername
       } : {}),
-
-      // Giftcard details
       ...(tx.type === 'GIFTCARD' ? {
         cardType: tx.cardType,
         country: tx.country,
@@ -613,7 +548,7 @@ router.get('/recent-transactions', async (req, res) => {
 
 /**
  * GET /analytics/filter
- * Universal filter endpoint for searching across all data types
+ * Universal filter endpoint - FIXED search logic
  */
 router.get('/filter', async (req, res) => {
   try {
@@ -683,13 +618,13 @@ router.get('/filter', async (req, res) => {
       userFilter.bvnVerified = false;
     }
 
-    // If searchTerm is provided, search across multiple fields
+    // FIXED: Search logic - build $or array for EITHER user match OR transaction field match
     let userIds = [];
     if (searchTerm) {
       const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(escapeRegex(searchTerm), 'i');
 
-      // Search for users matching the search term
+      // Search for matching users
       const matchingUsers = await User.find({
         $or: [
           { username: regex },
@@ -703,23 +638,29 @@ router.get('/filter', async (req, res) => {
 
       userIds = matchingUsers.map(u => u._id);
 
-      // Add user ID filter to transactions if users found
+      // Build $or array for EITHER user match OR transaction field match
+      const searchOrClauses = [];
+      
+      // Add user ID matches
       if (userIds.length > 0) {
-        transactionFilter.userId = { $in: userIds };
-      }
-
-      // Also search in transaction references and IDs
-      if (!transactionFilter.$or) {
-        transactionFilter.$or = [];
+        searchOrClauses.push({ userId: { $in: userIds } });
       }
       
+      // Add transaction field matches
       if (mongoose.Types.ObjectId.isValid(searchTerm)) {
-        transactionFilter.$or.push({ _id: mongoose.Types.ObjectId(searchTerm) });
+        searchOrClauses.push({ _id: mongoose.Types.ObjectId(searchTerm) });
       }
-      transactionFilter.$or.push({ transactionId: regex });
-      transactionFilter.$or.push({ reference: regex });
-      transactionFilter.$or.push({ narration: regex });
+      searchOrClauses.push({ transactionId: regex });
+      searchOrClauses.push({ reference: regex });
+      searchOrClauses.push({ narration: regex });
+      
+      // Set as $or so ANY condition matches
+      if (searchOrClauses.length > 0) {
+        transactionFilter.$or = searchOrClauses;
+      }
     }
+
+    console.log('Filter query:', JSON.stringify(transactionFilter, null, 2));
 
     // Execute queries in parallel
     const [transactions, transactionCount, users, userCount] = await Promise.all([
@@ -732,7 +673,7 @@ router.get('/filter', async (req, res) => {
       Transaction.countDocuments(transactionFilter),
       searchTerm || Object.keys(userFilter).length > 0
         ? User.find({
-            ...(searchTerm ? { _id: { $in: userIds.length > 0 ? userIds : [null] } } : {}),
+            ...(searchTerm && userIds.length > 0 ? { _id: { $in: userIds } } : {}),
             ...userFilter
           })
           .sort({ createdAt: -1 })
@@ -742,11 +683,13 @@ router.get('/filter', async (req, res) => {
         : [],
       searchTerm || Object.keys(userFilter).length > 0
         ? User.countDocuments({
-            ...(searchTerm ? { _id: { $in: userIds.length > 0 ? userIds : [null] } } : {}),
+            ...(searchTerm && userIds.length > 0 ? { _id: { $in: userIds } } : {}),
             ...userFilter
           })
         : 0
     ]);
+
+    console.log(`Found ${transactions.length} transactions, ${users.length} users`);
 
     // Format transactions
     const formattedTransactions = transactions.map(tx => ({
@@ -763,8 +706,6 @@ router.get('/filter', async (req, res) => {
       reference: tx.reference,
       createdAt: tx.createdAt,
       updatedAt: tx.updatedAt,
-
-      // Swap details
       ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
         fromCurrency: tx.fromCurrency,
         toCurrency: tx.toCurrency,
@@ -772,8 +713,6 @@ router.get('/filter', async (req, res) => {
         toAmount: tx.toAmount,
         swapType: tx.swapType
       } : {}),
-
-      // NGNZ withdrawal details
       ...(tx.isNGNZWithdrawal ? {
         bankName: tx.ngnzWithdrawal?.destination?.bankName,
         accountName: tx.ngnzWithdrawal?.destination?.accountName,
@@ -794,7 +733,7 @@ router.get('/filter', async (req, res) => {
       createdAt: user.createdAt
     }));
 
-    // Calculate aggregate statistics for filtered results
+    // Calculate aggregate statistics
     const aggregateStats = await Transaction.aggregate([
       { $match: transactionFilter },
       {
@@ -870,7 +809,6 @@ router.get('/filter', async (req, res) => {
 
 /**
  * GET /analytics/swap-pairs
- * Get analytics for specific swap pairs
  */
 router.get('/swap-pairs', async (req, res) => {
   try {
