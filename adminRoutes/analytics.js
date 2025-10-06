@@ -436,9 +436,91 @@ router.get('/recent-transactions', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const skip = (page - 1) * limit;
 
-    // Fetch transactions and total count
+    // Filtering query params
+    const { username, transactionId, date, dateFrom, dateTo, type, status } = req.query;
+
+    // Build MongoDB filter
+    const filter = {};
+
+    // If username provided, try to find the user and filter by userId
+    if (username) {
+      // Case-insensitive exact match for username (or fallback to firstname/lastname)
+      const escapeForRegex = (s) => {
+        if (!s) return s;
+        const specials = ['.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\', '/'];
+        let out = s;
+        for (const ch of specials) out = out.split(ch).join('\\' + ch);
+        return out;
+      };
+
+      const escaped = escapeForRegex(username);
+      const regex = new RegExp(`^${escaped}$`, 'i');
+
+      const user = await User.findOne({
+        $or: [
+          { username: regex },
+          { firstname: regex },
+          { lastname: regex }
+        ]
+      }).select('_id').lean();
+
+      if (user && user._id) {
+        filter.userId = user._id;
+      } else {
+        // No user found — make query return empty set
+        return res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          pagination: { currentPage: page, totalPages: 0, limit, totalCount: 0, hasNextPage: false, hasPreviousPage: false },
+          data: []
+        });
+      }
+    }
+
+    // If transactionId provided, try matching against _id, transactionId, reference, receiptDetails.transactionId
+    if (transactionId) {
+      const orClauses = [];
+
+      // If looks like an ObjectId, add _id match
+      if (mongoose.Types.ObjectId.isValid(transactionId)) {
+        orClauses.push({ _id: mongoose.Types.ObjectId(transactionId) });
+      }
+
+      orClauses.push({ transactionId: transactionId });
+      orClauses.push({ reference: transactionId });
+      orClauses.push({ 'receiptDetails.transactionId': transactionId });
+
+      filter.$or = orClauses;
+    }
+
+    // Date filtering: accept `date` (single day) or `dateFrom`/`dateTo` (range)
+    if (date) {
+      const d = new Date(date);
+      if (!isNaN(d.getTime())) {
+        const start = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0));
+        const end = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999));
+        filter.createdAt = { $gte: start, $lte: end };
+      }
+    } else if (dateFrom || dateTo) {
+      const range = {};
+      if (dateFrom) {
+        const d1 = new Date(dateFrom);
+        if (!isNaN(d1.getTime())) range.$gte = new Date(Date.UTC(d1.getFullYear(), d1.getMonth(), d1.getDate(), 0, 0, 0));
+      }
+      if (dateTo) {
+        const d2 = new Date(dateTo);
+        if (!isNaN(d2.getTime())) range.$lte = new Date(Date.UTC(d2.getFullYear(), d2.getMonth(), d2.getDate(), 23, 59, 59, 999));
+      }
+      if (Object.keys(range).length) filter.createdAt = range;
+    }
+
+    // Optional filters (type, status)
+    if (type) filter.type = type;
+    if (status) filter.status = status;
+
+    // Fetch transactions and total count using the same filter
     const [transactions, totalCount] = await Promise.all([
-      Transaction.find({})
+      Transaction.find(filter)
         .sort({ createdAt: -1 })
         .limit(limit)
         .skip(skip)
@@ -446,10 +528,10 @@ router.get('/recent-transactions', async (req, res) => {
         .populate('recipientUserId', 'username')
         .populate('senderUserId', 'username')
         .lean(),
-      Transaction.countDocuments({})
+      Transaction.countDocuments(filter)
     ]);
 
-    // Format transactions for response
+    // Format transactions for response (same as before)
     const formattedTransactions = transactions.map(tx => ({
       id: tx._id.toString(),
       userId: tx.userId?._id?.toString(),
