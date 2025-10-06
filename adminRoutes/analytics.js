@@ -430,6 +430,10 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
+/**
+ * GET /analytics/recent-transactions
+ * Fetch recent transactions with optional filters
+ */
 router.get('/recent-transactions', async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -531,7 +535,7 @@ router.get('/recent-transactions', async (req, res) => {
       Transaction.countDocuments(filter)
     ]);
 
-    // Format transactions for response (same as before)
+    // Format transactions for response
     const formattedTransactions = transactions.map(tx => ({
       id: tx._id.toString(),
       userId: tx.userId?._id?.toString(),
@@ -602,6 +606,263 @@ router.get('/recent-transactions', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch recent transactions',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /analytics/filter
+ * Universal filter endpoint for searching across all data types
+ */
+router.get('/filter', async (req, res) => {
+  try {
+    const {
+      searchTerm,
+      dateFrom,
+      dateTo,
+      transactionType,
+      transactionStatus,
+      userVerificationStatus,
+      currency,
+      minAmount,
+      maxAmount,
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(parseInt(limit), 200);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build date range filter
+    const dateFilter = {};
+    if (dateFrom) {
+      const d1 = new Date(dateFrom);
+      if (!isNaN(d1.getTime())) {
+        dateFilter.$gte = new Date(Date.UTC(d1.getFullYear(), d1.getMonth(), d1.getDate(), 0, 0, 0));
+      }
+    }
+    if (dateTo) {
+      const d2 = new Date(dateTo);
+      if (!isNaN(d2.getTime())) {
+        dateFilter.$lte = new Date(Date.UTC(d2.getFullYear(), d2.getMonth(), d2.getDate(), 23, 59, 59, 999));
+      }
+    }
+
+    // Build transaction filter
+    const transactionFilter = {};
+    if (Object.keys(dateFilter).length) {
+      transactionFilter.createdAt = dateFilter;
+    }
+    if (transactionType) {
+      transactionFilter.type = transactionType;
+    }
+    if (transactionStatus) {
+      transactionFilter.status = transactionStatus;
+    }
+    if (currency) {
+      transactionFilter.currency = currency.toUpperCase();
+    }
+    if (minAmount || maxAmount) {
+      transactionFilter.amount = {};
+      if (minAmount) transactionFilter.amount.$gte = parseFloat(minAmount);
+      if (maxAmount) transactionFilter.amount.$lte = parseFloat(maxAmount);
+    }
+
+    // Build user filter
+    const userFilter = {};
+    if (userVerificationStatus === 'emailVerified') {
+      userFilter.emailVerified = true;
+    } else if (userVerificationStatus === 'bvnVerified') {
+      userFilter.bvnVerified = true;
+    } else if (userVerificationStatus === 'chatbotVerified') {
+      userFilter.chatbotTransactionVerified = true;
+    } else if (userVerificationStatus === 'unverified') {
+      userFilter.emailVerified = false;
+      userFilter.bvnVerified = false;
+    }
+
+    // If searchTerm is provided, search across multiple fields
+    let userIds = [];
+    if (searchTerm) {
+      const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escapeRegex(searchTerm), 'i');
+
+      // Search for users matching the search term
+      const matchingUsers = await User.find({
+        $or: [
+          { username: regex },
+          { email: regex },
+          { firstname: regex },
+          { lastname: regex },
+          { phoneNumber: regex }
+        ],
+        ...userFilter
+      }).select('_id').lean();
+
+      userIds = matchingUsers.map(u => u._id);
+
+      // Add user ID filter to transactions if users found
+      if (userIds.length > 0) {
+        transactionFilter.userId = { $in: userIds };
+      }
+
+      // Also search in transaction references and IDs
+      if (!transactionFilter.$or) {
+        transactionFilter.$or = [];
+      }
+      
+      if (mongoose.Types.ObjectId.isValid(searchTerm)) {
+        transactionFilter.$or.push({ _id: mongoose.Types.ObjectId(searchTerm) });
+      }
+      transactionFilter.$or.push({ transactionId: regex });
+      transactionFilter.$or.push({ reference: regex });
+      transactionFilter.$or.push({ narration: regex });
+    }
+
+    // Execute queries in parallel
+    const [transactions, transactionCount, users, userCount] = await Promise.all([
+      Transaction.find(transactionFilter)
+        .sort({ createdAt: -1 })
+        .limit(limitNum)
+        .skip(skip)
+        .populate('userId', 'username email firstname lastname')
+        .lean(),
+      Transaction.countDocuments(transactionFilter),
+      searchTerm || Object.keys(userFilter).length > 0
+        ? User.find({
+            ...(searchTerm ? { _id: { $in: userIds.length > 0 ? userIds : [null] } } : {}),
+            ...userFilter
+          })
+          .sort({ createdAt: -1 })
+          .limit(limitNum)
+          .select('username email firstname lastname emailVerified bvnVerified chatbotTransactionVerified createdAt')
+          .lean()
+        : [],
+      searchTerm || Object.keys(userFilter).length > 0
+        ? User.countDocuments({
+            ...(searchTerm ? { _id: { $in: userIds.length > 0 ? userIds : [null] } } : {}),
+            ...userFilter
+          })
+        : 0
+    ]);
+
+    // Format transactions
+    const formattedTransactions = transactions.map(tx => ({
+      id: tx._id.toString(),
+      userId: tx.userId?._id?.toString(),
+      username: tx.userId?.username || tx.userId?.firstname || 'Unknown',
+      userEmail: tx.userId?.email,
+      type: tx.type,
+      status: tx.status,
+      currency: tx.currency,
+      amount: tx.amount,
+      fee: tx.fee || 0,
+      narration: tx.narration,
+      reference: tx.reference,
+      createdAt: tx.createdAt,
+      updatedAt: tx.updatedAt,
+
+      // Swap details
+      ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
+        fromCurrency: tx.fromCurrency,
+        toCurrency: tx.toCurrency,
+        fromAmount: tx.fromAmount,
+        toAmount: tx.toAmount,
+        swapType: tx.swapType
+      } : {}),
+
+      // NGNZ withdrawal details
+      ...(tx.isNGNZWithdrawal ? {
+        bankName: tx.ngnzWithdrawal?.destination?.bankName,
+        accountName: tx.ngnzWithdrawal?.destination?.accountName,
+        withdrawalFee: tx.withdrawalFee
+      } : {})
+    }));
+
+    // Format users
+    const formattedUsers = users.map(user => ({
+      id: user._id.toString(),
+      username: user.username,
+      email: user.email,
+      firstname: user.firstname,
+      lastname: user.lastname,
+      emailVerified: user.emailVerified || false,
+      bvnVerified: user.bvnVerified || false,
+      chatbotVerified: user.chatbotTransactionVerified || false,
+      createdAt: user.createdAt
+    }));
+
+    // Calculate aggregate statistics for filtered results
+    const aggregateStats = await Transaction.aggregate([
+      { $match: transactionFilter },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: { $abs: '$amount' } },
+          totalFees: { $sum: '$fee' },
+          avgAmount: { $avg: { $abs: '$amount' } },
+          successfulCount: {
+            $sum: {
+              $cond: [{ $in: ['$status', ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED']] }, 1, 0]
+            }
+          },
+          pendingCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] }
+          },
+          failedCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'FAILED'] }, 1, 0] }
+          }
+        }
+      }
+    ]);
+
+    const totalPages = Math.ceil(Math.max(transactionCount, userCount) / limitNum);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      filters: {
+        searchTerm: searchTerm || null,
+        dateFrom: dateFrom || null,
+        dateTo: dateTo || null,
+        transactionType: transactionType || null,
+        transactionStatus: transactionStatus || null,
+        userVerificationStatus: userVerificationStatus || null,
+        currency: currency || null,
+        minAmount: minAmount || null,
+        maxAmount: maxAmount || null
+      },
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        limit: limitNum,
+        totalCount: Math.max(transactionCount, userCount),
+        transactionCount,
+        userCount,
+        hasNextPage: pageNum < totalPages,
+        hasPreviousPage: pageNum > 1
+      },
+      aggregateStats: {
+        totalAmount: aggregateStats[0]?.totalAmount || 0,
+        totalFees: aggregateStats[0]?.totalFees || 0,
+        avgAmount: aggregateStats[0]?.avgAmount || 0,
+        successfulCount: aggregateStats[0]?.successfulCount || 0,
+        pendingCount: aggregateStats[0]?.pendingCount || 0,
+        failedCount: aggregateStats[0]?.failedCount || 0
+      },
+      data: {
+        transactions: formattedTransactions,
+        users: formattedUsers
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in universal filter endpoint:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to filter data',
       message: error.message
     });
   }
