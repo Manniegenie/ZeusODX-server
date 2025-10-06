@@ -10,7 +10,7 @@ const NairaMarkdown = require('../models/offramp');
 const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 
 /**
- * Helper: optional base unit map for tokens stored in smallest units.
+ * Optional base unit map for tokens stored in smallest units.
  * If your transaction.amount is stored in base units (e.g. wei for ETH = 1e18),
  * fill this map with the appropriate divisor. By default every token is assumed
  * to be in "human" units (divisor = 1).
@@ -23,18 +23,6 @@ const BASE_UNIT_DIVISOR = {
 
 /**
  * Calculate total transaction volume in USD (robust & efficient)
- * - Aggregates by currency in MongoDB to avoid iterating huge transaction lists
- * - Uses Decimal for numeric precision
- * - Validates offramp rate
- * - Only fetches prices for supported currencies
- * - Provides a per-currency breakdown and logs missing prices
- *
- * Return value: an object {
- *   totalVolumeUSD: number,
- *   breakdown: { [currency]: { totalAmount: string, usdValue: string, price?: number, note?: string } },
- *   counts: { totalCurrencies: number, processedCurrencies: number, skippedCurrencies: number },
- *   totalSkippedUSD: string
- * }
  */
 async function calculateTransactionVolume() {
   try {
@@ -50,7 +38,7 @@ async function calculateTransactionVolume() {
     }
 
     // Aggregate absolute amounts per currency (one row per currency)
-    const agg = await Transaction.aggregate([
+    let agg = await Transaction.aggregate([
       {
         $match: {
           type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
@@ -65,7 +53,16 @@ async function calculateTransactionVolume() {
           count: { $sum: 1 }
         }
       }
-    ]).option ? await Transaction.aggregate : agg; // defensive (keeps lint happy)
+    ]).exec();
+
+    // Ensure agg is an array
+    if (!Array.isArray(agg) && agg && typeof agg.toArray === 'function') {
+      try {
+        agg = await agg.toArray();
+      } catch (e) {
+        console.warn('Unable to convert aggregation cursor to array:', e.message);
+      }
+    }
 
     if (!agg || agg.length === 0) {
       console.log('No matching transactions found. Returning 0.');
@@ -84,10 +81,17 @@ async function calculateTransactionVolume() {
 
     console.log('Currencies to fetch prices for:', currencies);
 
-    const prices = await getPricesWithCache(currencies);
-    console.log('Prices received for currencies:', Object.keys(prices || {}));
+    let prices = {};
+    try {
+      prices = await getPricesWithCache(currencies) || {};
+    } catch (e) {
+      console.warn('getPricesWithCache threw an error, proceeding with empty prices:', e.message);
+      prices = {};
+    }
 
-    // Now compute USD values per currency using Decimal for precision
+    console.log('Prices received for currencies:', Object.keys(prices));
+
+    // Compute USD values per currency using Decimal for precision
     let totalVolumeUSD = new Decimal(0);
     let totalSkippedUSD = new Decimal(0);
     const breakdown = {};
@@ -96,14 +100,10 @@ async function calculateTransactionVolume() {
 
     for (const row of agg) {
       const currency = row._id;
-      // Convert totalAmount using base unit divisor configured by user (default 1)
       const divisor = BASE_UNIT_DIVISOR[currency] || new Decimal(1);
-
-      // Use Decimal throughout
       const totalAmountDecimal = new Decimal(row.totalAmount || 0).div(divisor);
 
       if (currency === 'NGNZ') {
-        // NGNZ conversion: NGN -> USD via offrampRate
         if (!offrampRate || isNaN(offrampRate) || Number(offrampRate) === 0) {
           console.warn('Invalid offrampRate, skipping NGNZ conversion');
           breakdown[currency] = {
@@ -128,7 +128,6 @@ async function calculateTransactionVolume() {
         const price = prices?.[currency];
 
         if (typeof price === 'number' || typeof price === 'string') {
-          // price should be USD per 1 token
           const usdValue = totalAmountDecimal.times(new Decimal(price));
           totalVolumeUSD = totalVolumeUSD.plus(usdValue);
           breakdown[currency] = {
@@ -138,7 +137,6 @@ async function calculateTransactionVolume() {
           };
           processedCurrencies++;
         } else {
-          // Missing price — skip and log
           console.warn(`Missing price for ${currency}. Skipping conversion for ${totalAmountDecimal.toString()} ${currency}`);
           breakdown[currency] = {
             totalAmount: totalAmountDecimal.toString(),
@@ -146,8 +144,6 @@ async function calculateTransactionVolume() {
             note: 'price missing'
           };
           skippedCurrencies++;
-          // If you want a fallback strategy, implement it here (e.g. convert via intermediary pairs)
-          totalSkippedUSD = totalSkippedUSD.plus(new Decimal(0));
         }
       }
     }
