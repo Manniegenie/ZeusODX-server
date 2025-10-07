@@ -187,7 +187,8 @@ router.get('/dashboard', async (req, res) => {
       withdrawalStats,
       recentActivity,
       tokenStats,
-      transactionVolumeResult
+      transactionVolumeResult,
+      pendingTradesStats
     ] = await Promise.all([
       User.aggregate([
         {
@@ -306,7 +307,28 @@ router.get('/dashboard', async (req, res) => {
         { $limit: 10 }
       ]),
 
-      calculateTransactionVolume()
+      calculateTransactionVolume(),
+
+      // FIXED: Pending trades calculation - includes swaps (OUT only) and giftcards
+      Transaction.aggregate([
+        {
+          $match: {
+            status: 'PENDING',
+            $or: [
+              { type: 'GIFTCARD' },
+              { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: 'OUT' }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalPendingTrades: { $sum: 1 },
+            pendingSwaps: { $sum: { $cond: [{ $in: ['$type', ['SWAP', 'OBIEX_SWAP']] }, 1, 0] } },
+            pendingGiftcards: { $sum: { $cond: [{ $eq: ['$type', 'GIFTCARD'] }, 1, 0] } }
+          }
+        }
+      ])
     ]);
 
     const response = {
@@ -340,6 +362,11 @@ router.get('/dashboard', async (req, res) => {
           totalVolume: swapStats[0]?.totalVolume || 0,
           totalFees: swapStats[0]?.totalFees || 0
         },
+        pendingTrades: {
+          total: pendingTradesStats[0]?.totalPendingTrades || 0,
+          swaps: pendingTradesStats[0]?.pendingSwaps || 0,
+          giftcards: pendingTradesStats[0]?.pendingGiftcards || 0
+        },
         ngnzWithdrawals: {
           total: withdrawalStats[0]?.totalWithdrawals || 0,
           completed: withdrawalStats[0]?.completedWithdrawals || 0,
@@ -355,7 +382,7 @@ router.get('/dashboard', async (req, res) => {
             sell: swapStats[0]?.offramps || 0,
             buy: swapStats[0]?.onramps || 0,
             completed: swapStats[0]?.successfulSwaps || 0, // FIXED: Now accurate
-            pending: swapStats[0]?.pendingSwaps || 0, // FIXED: Now accurate
+            pending: pendingTradesStats[0]?.totalPendingTrades || 0, // FIXED: Includes swaps + giftcards
             expired: 0,
             cancelled: 0
           },
