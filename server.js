@@ -338,7 +338,7 @@ app.use("/email", authenticateToken, EmailVerifyRoutes)
 app.use("/kyc", authenticateToken, KYCRoutes);
 app.use("/forgot-pin", ForgotPinRoutes);
 app.use("/collection", authenticateToken, collectionRoutes);
-app.use("/resend-otp", authenticateToken, resendOtpRoutes);
+app.use("/signup", authenticateToken, resendOtpRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
