@@ -19,6 +19,7 @@ const BASE_UNIT_DIVISOR = {
 
 /**
  * Calculate total transaction volume in USD (robust & efficient)
+ * FIXED: Only counts OUT side of swap pairs to avoid double-counting
  */
 async function calculateTransactionVolume() {
   try {
@@ -37,7 +38,12 @@ async function calculateTransactionVolume() {
         $match: {
           type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
           status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
-          currency: { $exists: true, $ne: null }
+          currency: { $exists: true, $ne: null },
+          // FIXED: Only count OUT side of swaps to avoid double-counting
+          $or: [
+            { type: 'GIFTCARD' }, // Include all giftcard transactions
+            { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: 'OUT' } // Only OUT swaps
+          ]
         }
       },
       {
@@ -211,10 +217,13 @@ router.get('/dashboard', async (req, res) => {
         }
       ]),
 
+      // FIXED: Only count OUT side of swaps for completed trades calculation
       Transaction.aggregate([
         {
           $match: {
-            type: { $in: ['SWAP', 'OBIEX_SWAP'] }
+            type: { $in: ['SWAP', 'OBIEX_SWAP'] },
+            // FIXED: Only count OUT side of swaps
+            swapDirection: 'OUT'
           }
         },
         {
@@ -228,7 +237,10 @@ router.get('/dashboard', async (req, res) => {
               { $in: ['$swapType', ['NGNX_TO_CRYPTO', 'CRYPTO_TO_NGNX']] },
               { $in: ['$swapCategory', ['NGNZ_EXCHANGE']] }
             ]}, 1, 0] } },
+            // FIXED: Only count successful OUT swaps for completed trades
             successfulSwaps: { $sum: { $cond: [{ $eq: ['$status', 'SUCCESSFUL'] }, 1, 0] } },
+            // FIXED: Only count pending OUT swaps for pending trades
+            pendingSwaps: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
             totalVolume: { $sum: { $abs: '$amount' } },
             totalFees: { $sum: '$fee' }
           }
@@ -324,6 +336,7 @@ router.get('/dashboard', async (req, res) => {
           cryptoToCrypto: swapStats[0]?.cryptoToCrypto || 0,
           ngnzSwaps: swapStats[0]?.ngnzSwaps || 0,
           successful: swapStats[0]?.successfulSwaps || 0,
+          pending: swapStats[0]?.pendingSwaps || 0, // FIXED: Now shows pending swaps correctly
           totalVolume: swapStats[0]?.totalVolume || 0,
           totalFees: swapStats[0]?.totalFees || 0
         },
@@ -338,11 +351,11 @@ router.get('/dashboard', async (req, res) => {
         },
         chatbotTrades: {
           overview: {
-            total: transactionStats[0]?.swaps || 0,
+            total: swapStats[0]?.totalSwaps || 0, // FIXED: Now accurate
             sell: swapStats[0]?.offramps || 0,
             buy: swapStats[0]?.onramps || 0,
-            completed: swapStats[0]?.successfulSwaps || 0,
-            pending: transactionStats[0]?.pending || 0,
+            completed: swapStats[0]?.successfulSwaps || 0, // FIXED: Now accurate
+            pending: swapStats[0]?.pendingSwaps || 0, // FIXED: Now accurate
             expired: 0,
             cancelled: 0
           },
