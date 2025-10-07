@@ -14,7 +14,7 @@ const GLYDE_API_KEY = process.env.GLYDE_API_KEY;
  */
 async function initializeGlydeCollection(collectionData) {
   try {
-    const response = await axios.get(
+    const response = await axios.post(
       `${GLYDE_API_BASE_URL}/v1/collection/initialise`,
       collectionData,
       {
