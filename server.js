@@ -253,6 +253,7 @@ const adminsigninRoutes = require("./adminRoutes/adminsign-in");
 const adminRegisterRoutes = require("./adminRoutes/registeradmin");
 const usermanagementRoutes = require("./adminRoutes/usermanagement");
 const analyticsRoutes = require("./adminRoutes/analytics");
+const resendOtpRoutes = require("./routes/resendOtp");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -337,6 +338,7 @@ app.use("/email", authenticateToken, EmailVerifyRoutes)
 app.use("/kyc", authenticateToken, KYCRoutes);
 app.use("/forgot-pin", ForgotPinRoutes);
 app.use("/collection", authenticateToken, collectionRoutes);
+app.use("/resend-otp", authenticateToken, resendOtpRoutes);
 
 // Health Check
 app.get("/", (req, res) => {
