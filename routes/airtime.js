@@ -9,7 +9,8 @@ const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 
-const { sendUtilityTransactionEmail } = require('../services/EmailService'); // <-- new import
+const { sendUtilityTransactionEmail } = require('../services/EmailService');
+const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 
 const router = express.Router();
 
@@ -17,7 +18,7 @@ const router = express.Router();
 const userCache = new Map();
 const CACHE_TTL = 30000; // 30 seconds
 
-// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
+// Supported tokens
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' }, 
@@ -30,7 +31,7 @@ const SUPPORTED_TOKENS = {
   NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations (NGNB changed to NGNZ)
+// Token field mapping for balance operations
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth', 
@@ -56,11 +57,10 @@ async function getCachedUser(userId) {
   
   const user = await User.findById(userId).select(
     'twoFASecret is2FAEnabled passwordpin ngnzBalance lastBalanceUpdate email firstName username'
-  ).lean(); // Use lean() for better performance, include email/name fields
+  ).lean();
   
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
-    // Auto-cleanup cache
     setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
   }
   
@@ -68,11 +68,7 @@ async function getCachedUser(userId) {
 }
 
 /**
- * SIMPLIFIED: Direct balance update only (no reservations, no portfolio updates)
- * @param {String} userId - User ID
- * @param {String} currency - Currency code
- * @param {Number} amount - Amount to add/subtract (negative for deductions)
- * @returns {Promise<Object>} Updated user
+ * Direct balance update
  */
 async function updateUserBalance(userId, currency, amount) {
   if (!userId || !currency || typeof amount !== 'number') {
@@ -82,16 +78,13 @@ async function updateUserBalance(userId, currency, amount) {
   try {
     const currencyUpper = currency.toUpperCase();
     
-    // Validate currency is supported
     if (!SUPPORTED_TOKENS[currencyUpper]) {
       throw new Error(`Unsupported currency: ${currencyUpper}`);
     }
     
-    // Map currency to correct balance field
     const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
     const balanceField = `${currencyLower}Balance`;
     
-    // Simple atomic update
     const updateFields = {
       $inc: { [balanceField]: amount },
       $set: { lastBalanceUpdate: new Date() }
@@ -107,7 +100,6 @@ async function updateUserBalance(userId, currency, amount) {
       throw new Error(`User not found: ${userId}`);
     }
     
-    // Clear cache
     userCache.delete(`user_${userId}`);
     
     logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
@@ -124,7 +116,7 @@ async function updateUserBalance(userId, currency, amount) {
 }
 
 /**
- * Compare password pin with user's hashed password pin
+ * Compare password pin
  */
 async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
   if (!candidatePasswordPin || !hashedPasswordPin) return false;
@@ -137,7 +129,7 @@ async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
 }
 
 /**
- * Validate phone number format according to eBills API specs
+ * Validate phone number format
  */
 function validatePhoneNumber(phone) {
   if (!phone || typeof phone !== 'string') return false;
@@ -154,13 +146,12 @@ function validatePhoneNumber(phone) {
 }
 
 /**
- * Sanitize and validate airtime request body
+ * Validate airtime request
  */
 function validateAirtimeRequest(body) {
   const errors = [];
   const sanitized = {};
   
-  // Phone validation
   if (!body.phone) {
     errors.push('Phone number is required');
   } else {
@@ -170,7 +161,6 @@ function validateAirtimeRequest(body) {
     }
   }
   
-  // Service ID validation
   if (!body.service_id) {
     errors.push('Service ID is required');
   } else {
@@ -180,7 +170,6 @@ function validateAirtimeRequest(body) {
     }
   }
   
-  // Amount validation - UPDATED: Minimum changed to ₦50 and references NGNZ
   if (body.amount === undefined || body.amount === null || body.amount === '') {
     errors.push('Amount is required');
   } else {
@@ -192,25 +181,23 @@ function validateAirtimeRequest(body) {
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
       
-      const minAmount = 50; // UPDATED: Minimum changed from 100 to 50
+      const minAmount = 50;
       const maxAmount = 50000;
       if (sanitized.amount < minAmount) {
-        errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNZ`); // UPDATED: NGNB to NGNZ
+        errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNZ`);
       }
       if (sanitized.amount > maxAmount) {
-        errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNZ`); // UPDATED: NGNB to NGNZ
+        errors.push(`Amount above maximum. Maximum airtime purchase is ${maxAmount} NGNZ`);
       }
     }
   }
   
-  // 2FA validation
   if (!body.twoFactorCode?.trim()) {
     errors.push('Two-factor authentication code is required');
   } else {
     sanitized.twoFactorCode = String(body.twoFactorCode).trim();
   }
   
-  // Password PIN validation
   if (!body.passwordpin?.trim()) {
     errors.push('Password PIN is required');
   } else {
@@ -220,7 +207,7 @@ function validateAirtimeRequest(body) {
     }
   }
   
-  sanitized.payment_currency = 'NGNZ'; // UPDATED: NGNB to NGNZ
+  sanitized.payment_currency = 'NGNZ';
   
   return {
     isValid: errors.length === 0,
@@ -230,7 +217,7 @@ function validateAirtimeRequest(body) {
 }
 
 /**
- * Call eBills API for airtime purchase
+ * Call eBills API
  */
 async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) {
   try {
@@ -241,7 +228,7 @@ async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) 
     });
 
     const response = await vtuAuth.makeRequest('POST', '/api/v2/airtime', payload, {
-      timeout: 25000 // Reduced from 45s for faster failure
+      timeout: 25000
     });
 
     logger.info(`eBills API response for ${request_id}:`, {
@@ -281,7 +268,7 @@ async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) 
 }
 
 /**
- * STREAMLINED airtime purchase endpoint - ATOMIC IMMEDIATE DEBIT
+ * AIRTIME PURCHASE ENDPOINT - ONLY SUCCESS/FAILURE NOTIFICATIONS
  */
 router.post('/purchase', async (req, res) => {
   const startTime = Date.now();
@@ -313,7 +300,7 @@ router.post('/purchase', async (req, res) => {
     const { phone, service_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
     const currency = 'NGNZ';
     
-    // Step 2: Get user data (with caching) and run validations in parallel
+    // Step 2: Get user data and validations
     const [user, kycValidation] = await Promise.all([
       getCachedUser(userId),
       validateTransactionLimit(userId, amount, 'NGNZ', 'AIRTIME')
@@ -326,7 +313,7 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 2.1: EARLY BALANCE CHECK - Check balance immediately after getting user
+    // Step 2.1: Balance check
     const availableBalance = user.ngnzBalance || 0;
     if (availableBalance < amount) {
       logger.info(`Insufficient NGNZ balance for user ${userId}: Available=${availableBalance}, Required=${amount}`);
@@ -343,6 +330,7 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
+    // 2FA validation
     if (!user.twoFASecret || !user.is2FAEnabled) {
       return res.status(400).json({
         success: false,
@@ -363,7 +351,7 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ 2FA validation successful for airtime purchase', { userId });
 
-    // Step 3: Validate password pin
+    // Password PIN validation
     if (!user.passwordpin) {
       return res.status(400).json({
         success: false,
@@ -385,7 +373,7 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ Password PIN validation successful for airtime purchase', { userId });
 
-    // Step 4: KYC validation
+    // KYC validation
     if (!kycValidation.allowed) {
       return res.status(403).json({
         success: false,
@@ -406,8 +394,7 @@ router.post('/purchase', async (req, res) => {
     const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
     
-    // Step 6: REDUNDANT BALANCE CHECK (in case balance changed between cache and now)
-    // Re-fetch latest balance from database for final confirmation
+    // Step 6: Final balance check
     const latestUser = await User.findById(userId).select('ngnzBalance').lean();
     if (!latestUser) {
       return res.status(404).json({
@@ -432,7 +419,7 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 7: Create minimal transaction record
+    // Step 7: Create transaction record
     const initialTransactionData = {
       orderId: uniqueOrderId,
       status: 'initiated-api',
@@ -487,6 +474,28 @@ router.post('/purchase', async (req, res) => {
         }]
       });
       
+      // ✅ SEND FAILURE NOTIFICATION
+      try {
+        await sendAirtimePurchaseNotification(
+          userId,
+          amount,
+          service_id,
+          phone,
+          'failed',
+          {
+            requestId: finalRequestId,
+            error: apiError.message,
+            currency: 'NGNZ'
+          }
+        );
+        logger.info('Airtime purchase failure notification sent', { userId, requestId: finalRequestId });
+      } catch (notificationError) {
+        logger.error('Failed to send airtime failure notification', {
+          userId,
+          error: notificationError.message
+        });
+      }
+      
       return res.status(500).json({
         success: false,
         error: 'EBILLS_API_ERROR',
@@ -494,12 +503,9 @@ router.post('/purchase', async (req, res) => {
       });
     }
     
-    // =====================================
-    // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
-    // =====================================
+    // Step 9: Deduct balance
     const ebillsStatus = ebillsResponse.data.status;
     
-    // Deduct balance immediately regardless of eBills status (as long as API call succeeded)
     logger.info(`✅ eBills API succeeded (${ebillsStatus}), deducting balance immediately for ${finalRequestId}`);
     
     try {
@@ -518,7 +524,6 @@ router.post('/purchase', async (req, res) => {
         ebills_order_id: ebillsResponse.data?.order_id
       });
 
-      // Check if this is an insufficient balance error during deduction
       if (balanceError.message.includes('insufficient') || 
           balanceError.message.includes('balance') ||
           balanceError.message.toLowerCase().includes('ngnz')) {
@@ -569,12 +574,12 @@ router.post('/purchase', async (req, res) => {
       });
     }
     
-    // Step 10: Update transaction with eBills response
+    // Step 10: Update transaction
     const updateData = {
       orderId: ebillsResponse.data.order_id.toString(),
       status: ebillsResponse.data.status,
       productName: ebillsResponse.data.product_name,
-      balanceCompleted: true, // Always true since we deduct immediately
+      balanceCompleted: true,
       metaData: {
         ...initialTransactionData.metaData,
         service_name: ebillsResponse.data.service_name,
@@ -595,9 +600,7 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
-    // -------------------------------
-    // SEND UTILITY EMAIL (non-blocking)
-    // -------------------------------
+    // Send email (non-blocking)
     try {
       if (user && user.email) {
         const emailOptions = {
@@ -618,20 +621,45 @@ router.post('/purchase', async (req, res) => {
 
         await sendUtilityTransactionEmail(user.email, user.firstName || user.username || 'User', emailOptions);
         logger.info(`Utility email (Airtime) sent to ${user.email} for request ${finalRequestId}`);
-      } else {
-        logger.warn(`No email on file for user ${userId} — skipping utility email`);
       }
     } catch (emailErr) {
       logger.error('Failed to send utility email for airtime transaction', {
         userId,
-        error: emailErr.message,
-        stack: emailErr.stack
+        error: emailErr.message
       });
-      // don't fail the request — email errors are non-blocking
     }
 
-    // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
+    // Step 11: Return response - ONLY NOTIFICATION ON SUCCESS
     if (ebillsStatus === 'completed-api') {
+      
+      // ✅ SEND SUCCESS NOTIFICATION
+      try {
+        await sendAirtimePurchaseNotification(
+          userId,
+          amount,
+          service_id,
+          phone,
+          'completed',
+          {
+            orderId: ebillsResponse.data.order_id.toString(),
+            requestId: finalRequestId,
+            serviceName: ebillsResponse.data.service_name,
+            currency: 'NGNZ'
+          }
+        );
+        
+        logger.info('Airtime purchase notification sent (completed)', { 
+          userId, 
+          orderId: ebillsResponse.data.order_id 
+        });
+      } catch (notificationError) {
+        logger.error('Failed to send airtime purchase notification', {
+          userId,
+          orderId: ebillsResponse.data.order_id,
+          error: notificationError.message
+        });
+      }
+      
       return res.status(200).json({
         success: true,
         message: 'Airtime purchase completed successfully',
@@ -651,6 +679,9 @@ router.post('/purchase', async (req, res) => {
         }
       });
     } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
+      
+      // ❌ NO NOTIFICATION FOR PROCESSING
+      
       return res.status(202).json({
         success: true,
         message: 'Airtime purchase is being processed',
@@ -695,17 +726,11 @@ router.post('/purchase', async (req, res) => {
       processingTime: Date.now() - startTime
     });
 
-    // Check if the error is related to insufficient balance
     if (error.message && 
         (error.message.toLowerCase().includes('insufficient') || 
          error.message.toLowerCase().includes('balance') ||
          error.message.toLowerCase().includes('ngnz'))) {
       
-      logger.info('Detected balance-related error in catch block', { 
-        userId: req.user?.id, 
-        error: error.message 
-      });
-
       return res.status(400).json({
         success: false,
         error: 'INSUFFICIENT_NGNZ_BALANCE',
@@ -717,10 +742,10 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // SIMPLIFIED CLEANUP: If balance was deducted but something failed, reverse it
+    // Cleanup
     if (balanceDeducted) {
       try {
-        await updateUserBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0); // Add back
+        await updateUserBalance(req.user.id, 'NGNZ', validation?.sanitized?.amount || 0);
         logger.info('🔄 Reversed balance deduction due to error');
       } catch (reverseError) {
         logger.error('❌ CRITICAL: Failed to reverse balance deduction after error:', reverseError.message);
@@ -750,7 +775,7 @@ router.post('/purchase', async (req, res) => {
   }
 });
 
-// Clean up user cache periodically
+// Clean up cache
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of userCache.entries()) {
@@ -758,6 +783,6 @@ setInterval(() => {
       userCache.delete(key);
     }
   }
-}, 60000); // Clean every minute
+}, 60000);
 
 module.exports = router;
