@@ -4,7 +4,11 @@ const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const webhookAuth = require('../auth/webhookauth');
 const logger = require('../utils/logger');
-const { sendDepositEmail } = require('../services/EmailService'); // Import email service
+const { sendDepositEmail } = require('../services/EmailService');
+const { 
+  sendDepositNotification, 
+  sendWithdrawalNotification 
+} = require('../services/pushNotificationService');
 
 // Supported tokens - aligned with user schema (DOGE REMOVED)
 const SUPPORTED_TOKENS = {
@@ -312,6 +316,30 @@ router.post('/transaction', webhookAuth, async (req, res) => {
           // Log email error but don't fail the transaction
           logger.error(`Failed to send deposit notification email to user ${user._id}:`, emailError);
         }
+
+        // Send deposit push notification
+        try {
+          const pushResult = await sendDepositNotification(
+            user._id.toString(),
+            parseFloat(amount),
+            normalizedCurrency,
+            'confirmed',
+            {
+              reference: reference,
+              transactionId: transactionId,
+              hash: hash
+            }
+          );
+          
+          if (pushResult.success) {
+            logger.info(`Deposit push notification sent to user ${user._id} for ${amount} ${normalizedCurrency}`);
+          } else if (!pushResult.skipped) {
+            logger.warn(`Failed to send deposit push notification to user ${user._id}: ${pushResult.message}`);
+          }
+        } catch (pushError) {
+          // Log push notification error but don't fail the transaction
+          logger.error(`Error sending deposit push notification to user ${user._id}:`, pushError);
+        }
       } catch (err) {
         logger.error(`Error crediting balance for confirmed deposit:`, err);
         return res.status(500).json({ 
@@ -345,6 +373,29 @@ router.post('/transaction', webhookAuth, async (req, res) => {
           const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
           await releaseReservedBalance(user._id, normalizedCurrency, totalReservedAmount);
           logger.info(`Released reserved balance for failed/rejected withdrawal: ${totalReservedAmount} ${normalizedCurrency}`);
+
+          // Send withdrawal failed push notification
+          try {
+            const pushResult = await sendWithdrawalNotification(
+              user._id.toString(),
+              parseFloat(amount),
+              normalizedCurrency,
+              'failed',
+              {
+                reference: reference,
+                transactionId: transactionId,
+                reason: narration || 'Withdrawal failed'
+              }
+            );
+            
+            if (pushResult.success) {
+              logger.info(`Withdrawal failed push notification sent to user ${user._id}`);
+            } else if (!pushResult.skipped) {
+              logger.warn(`Failed to send withdrawal failed push notification to user ${user._id}: ${pushResult.message}`);
+            }
+          } catch (pushError) {
+            logger.error(`Error sending withdrawal failed push notification to user ${user._id}:`, pushError);
+          }
         } catch (err) {
           logger.error(`Error releasing reserved balance for failed withdrawal:`, err);
         }
@@ -367,6 +418,30 @@ router.post('/transaction', webhookAuth, async (req, res) => {
           );
 
           logger.info(`Reduced user ${user._id} pending balance field ${pendingBalanceField} by ${totalReservedAmount} (amount: ${amount} + fee: ${transaction.fee || 0}). New value: ${newPendingBalance}`);
+
+          // Send withdrawal completed push notification
+          try {
+            const pushResult = await sendWithdrawalNotification(
+              user._id.toString(),
+              parseFloat(amount),
+              normalizedCurrency,
+              'completed',
+              {
+                reference: reference,
+                transactionId: transactionId,
+                hash: hash,
+                fee: transaction.fee || 0
+              }
+            );
+            
+            if (pushResult.success) {
+              logger.info(`Withdrawal completed push notification sent to user ${user._id} for ${amount} ${normalizedCurrency}`);
+            } else if (!pushResult.skipped) {
+              logger.warn(`Failed to send withdrawal completed push notification to user ${user._id}: ${pushResult.message}`);
+            }
+          } catch (pushError) {
+            logger.error(`Error sending withdrawal completed push notification to user ${user._id}:`, pushError);
+          }
         } catch (err) {
           logger.error(`Error reducing pending balance for user ${user._id}:`, err);
         }
