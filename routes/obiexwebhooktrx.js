@@ -8,7 +8,7 @@ const { sendDepositEmail } = require('../services/EmailService');
 const { 
   sendDepositNotification, 
   sendWithdrawalNotification 
-} = require('../services/pushNotificationService');
+} = require('../services/notificationService');
 
 // Supported tokens - aligned with user schema (DOGE REMOVED)
 const SUPPORTED_TOKENS = {
