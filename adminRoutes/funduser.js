@@ -3,14 +3,18 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
 
+// Updated to include ALL balance fields from User schema
 const currencyFieldMap = {
   BTC: 'btcBalance',
   ETH: 'ethBalance',
   SOL: 'solBalance',
   USDT: 'usdtBalance',
   USDC: 'usdcBalance',
+  BNB: 'bnbBalance',      // Added
+  MATIC: 'maticBalance',  // Added
+  TRX: 'trxBalance',
   NGNB: 'ngnzBalance',
-  TRX: 'trxBalance'
+  NGNZ: 'ngnzBalance'     // Alias for NGNB
 };
 
 /**
@@ -37,15 +41,15 @@ router.post('/fund-user', async (req, res) => {
       });
     }
 
-    const fieldToUpdate = currencyFieldMap[currency];
+    const fieldToUpdate = currencyFieldMap[currency.toUpperCase()];
     if (!fieldToUpdate) {
       return res.status(400).json({ 
         success: false, 
-        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, NGNB, TRX` 
+        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, BNB, MATIC, TRX, NGNB/NGNZ` 
       });
     }
 
-    // Build update object with $inc for atomic increment - ONLY update the specific currency balance
+    // Build update object with $inc for atomic increment
     const update = { 
       $inc: {
         [fieldToUpdate]: numericAmount
@@ -57,7 +61,7 @@ router.post('/fund-user', async (req, res) => {
       { email },
       update,
       { new: true, runValidators: true }
-    ).select('email trxBalance btcBalance ethBalance solBalance usdtBalance usdcBalance ngnzBalance bnbBalance maticBalance');
+    ).select('email btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance ngnzBalance');
 
     if (!updatedUser) {
       return res.status(404).json({ 
@@ -76,7 +80,7 @@ router.post('/fund-user', async (req, res) => {
       message: `Successfully funded ${numericAmount} ${currency} to ${email}`,
       data: {
         email: updatedUser.email,
-        currency,
+        currency: currency.toUpperCase(),
         amountFunded: numericAmount,
         newBalance,
         balances: {
@@ -85,10 +89,10 @@ router.post('/fund-user', async (req, res) => {
           SOL: updatedUser.solBalance,
           USDT: updatedUser.usdtBalance,
           USDC: updatedUser.usdcBalance,
-          TRX: updatedUser.trxBalance,
-          NGNZ: updatedUser.ngnzBalance,
           BNB: updatedUser.bnbBalance,
-          MATIC: updatedUser.maticBalance
+          MATIC: updatedUser.maticBalance,
+          TRX: updatedUser.trxBalance,
+          NGNZ: updatedUser.ngnzBalance
         }
       }
     });
@@ -126,11 +130,11 @@ router.post('/deduct-user', async (req, res) => {
       });
     }
 
-    const fieldToUpdate = currencyFieldMap[currency];
+    const fieldToUpdate = currencyFieldMap[currency.toUpperCase()];
     if (!fieldToUpdate) {
       return res.status(400).json({ 
         success: false, 
-        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, NGNB, TRX` 
+        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, BNB, MATIC, TRX, NGNB/NGNZ` 
       });
     }
 
@@ -145,7 +149,7 @@ router.post('/deduct-user', async (req, res) => {
       { email },
       update,
       { new: true, runValidators: true }
-    ).select('email trxBalance btcBalance ethBalance solBalance usdtBalance usdcBalance ngnzBalance bnbBalance maticBalance');
+    ).select('email btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance ngnzBalance');
 
     if (!updatedUser) {
       return res.status(404).json({ 
@@ -163,7 +167,7 @@ router.post('/deduct-user', async (req, res) => {
       message: `Successfully deducted ${numericAmount} ${currency} from ${email}`,
       data: {
         email: updatedUser.email,
-        currency,
+        currency: currency.toUpperCase(),
         amountDeducted: numericAmount,
         newBalance,
         balances: {
@@ -172,10 +176,10 @@ router.post('/deduct-user', async (req, res) => {
           SOL: updatedUser.solBalance,
           USDT: updatedUser.usdtBalance,
           USDC: updatedUser.usdcBalance,
-          TRX: updatedUser.trxBalance,
-          NGNZ: updatedUser.ngnzBalance,
           BNB: updatedUser.bnbBalance,
-          MATIC: updatedUser.maticBalance
+          MATIC: updatedUser.maticBalance,
+          TRX: updatedUser.trxBalance,
+          NGNZ: updatedUser.ngnzBalance
         }
       }
     });
