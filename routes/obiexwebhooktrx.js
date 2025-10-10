@@ -10,7 +10,7 @@ const {
   sendWithdrawalNotification 
 } = require('../services/notificationService');
 
-// Supported tokens - aligned with user schema (DOGE REMOVED)
+// Supported tokens - aligned with user schema balance fields
 const SUPPORTED_TOKENS = {
   BTC: 'btc',
   ETH: 'eth', 
@@ -19,8 +19,8 @@ const SUPPORTED_TOKENS = {
   USDC: 'usdc',
   BNB: 'bnb',
   MATIC: 'matic',
-  AVAX: 'avax',
-  NGNB: 'ngnb'
+  TRX: 'trx',      // Added TRX
+  NGNZ: 'ngnz'     // Changed from NGNB to NGNZ to match user schema
 };
 
 /**
