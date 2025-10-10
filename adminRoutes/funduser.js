@@ -1,7 +1,6 @@
 // routes/fundUser.js
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
 const User = require('../models/user');
 
 const currencyFieldMap = {
@@ -10,45 +9,16 @@ const currencyFieldMap = {
   SOL: 'solBalance',
   USDT: 'usdtBalance',
   USDC: 'usdcBalance',
-  NGNB: 'ngnzBalance',   // note: your model has ngnzBalance
+  NGNB: 'ngnzBalance',
   TRX: 'trxBalance'
 };
-
-// Middleware: verify token and ensure admin privileges
-function verifyAdmin(req, res, next) {
-  const authHeader = req.headers.authorization || req.headers.Authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ success: false, message: 'Missing Authorization header' });
-  }
-
-  const token = authHeader.split(' ')[1];
-  try {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) return res.status(500).json({ success: false, message: 'Server misconfiguration: missing JWT secret' });
-
-    const decoded = jwt.verify(token, secret);
-
-    // allow if role is admin OR permissions indicate admin capability
-    const isAdmin = decoded && (decoded.role === 'admin' || (decoded.permissions && decoded.permissions.canManageAdmins));
-    if (!isAdmin) {
-      return res.status(403).json({ success: false, message: 'Forbidden: admin privileges required' });
-    }
-
-    // attach decoded to request for auditing if needed
-    req.userToken = decoded;
-    next();
-  } catch (err) {
-    console.error('JWT verify error:', err);
-    return res.status(401).json({ success: false, message: 'Invalid or expired token' });
-  }
-}
 
 /**
  * POST /fund-user
  * Body: { email: string, amount: number, currency: string }
- * Requires: Authorization: Bearer <admin-token>
+ * Note: Already protected by authenticateAdminToken and requireSuperAdmin in server.js
  */
-router.post('/fund-user', verifyAdmin, async (req, res) => {
+router.post('/fund-user', async (req, res) => {
   try {
     const { email, amount, currency } = req.body;
 
