@@ -29,7 +29,7 @@ const SUPPORTED_TOKENS = {
   USDC: { name: 'USD Coin', symbol: 'USDC', decimals: 6, isStablecoin: true },
   BNB: { name: 'Binance Coin', symbol: 'BNB', decimals: 18, isStablecoin: false },
   MATIC: { name: 'Polygon', symbol: 'MATIC', decimals: 18, isStablecoin: false },
-  AVAX: { name: 'Avalanche', symbol: 'AVAX', decimals: 18, isStablecoin: false },
+  TRX: { name: 'Tron', symbol: 'TRX', decimals: 6, isStablecoin: false },
   NGNB: { name: 'NGNB Token', symbol: 'NGNB', decimals: 2, isStablecoin: true, isNairaPegged: true }
 };
 
@@ -42,7 +42,7 @@ const TOKEN_FIELD_MAPPING = {
   USDC: 'usdc',
   BNB: 'bnb',
   MATIC: 'matic',
-  AVAX: 'avax',
+  TRX: 'trx',
   NGNB: 'ngnb'
 };
 
@@ -59,7 +59,7 @@ const WITHDRAWAL_CONFIG = {
     USDC: 12,
     BNB: 15,
     MATIC: 15,
-    AVAX: 15,
+    TRX: 1,
     NGNB: 1,
   },
 };
@@ -80,7 +80,7 @@ function getBalanceFieldName(currency) {
     'USDC': 'usdcBalance',
     'BNB': 'bnbBalance',
     'MATIC': 'maticBalance',
-    'AVAX': 'avaxBalance',
+    'TRX': 'trxBalance',
     'NGNB': 'ngnbBalance'
   };
   return fieldMap[currency.toUpperCase()];
@@ -100,7 +100,7 @@ function getPendingBalanceFieldName(currency) {
     'USDC': 'usdcPendingBalance',
     'BNB': 'bnbPendingBalance',
     'MATIC': 'maticPendingBalance',
-    'AVAX': 'avaxPendingBalance',
+    'TRX': 'trxPendingBalance',
     'NGNB': 'ngnbPendingBalance'
   };
   return fieldMap[currency.toUpperCase()];
@@ -511,16 +511,18 @@ async function getWithdrawalFee(currency, network = null) {
 function getNetworkNativeCurrency(network) {
   const networkMap = {
     'BSC': 'BNB',
+    'BEP20': 'BNB',
     'ETH': 'ETH',
+    'ERC20': 'ETH',
+    'ETHEREUM': 'ETH',
     'MATIC': 'MATIC',
     'POLYGON': 'MATIC',
-    'AVAX': 'AVAX',
-    'AVALANCHE': 'AVAX',
     'SOL': 'SOL',
     'SOLANA': 'SOL',
     'BTC': 'BTC',
     'BITCOIN': 'BTC',
-    // Add more networks as needed
+    'TRC20': 'TRX',
+    'TRON': 'TRX',
   };
   
   return networkMap[network?.toUpperCase()] || network?.toUpperCase() || 'ETH'; // Default to ETH if unknown
