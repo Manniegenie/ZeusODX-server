@@ -8,7 +8,6 @@ const Transaction = require('../models/transaction');
 const CryptoFeeMarkup = require('../models/cryptofee');
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
-const { validateTransactionLimit } = require('../services/kyccheckservice');
 const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
@@ -634,12 +633,12 @@ async function createWithdrawalTransaction(transactionData) {
         expectedConfirmations: WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency.toUpperCase()] || 1,
         twofa_validated: true,
         passwordpin_validated: true,
-        kyc_validated: true,
+        kyc_validated: false,
         kyc_level: user?.kycLevel,
         security_validations: {
           twofa: true,
           passwordpin: true,
-          kyc: true,
+          kyc: false,
           duplicate_check: true
         },
         balance_updated_directly: true // Track that we use direct balance updates
@@ -652,7 +651,7 @@ async function createWithdrawalTransaction(transactionData) {
       currency,
       amount,
       obiexTransactionId,
-      security_status: '2FA + PIN + KYC validated'
+      security_status: '2FA + PIN validated'
     });
 
     return transaction;
@@ -767,72 +766,6 @@ router.post('/crypto', async (req, res) => {
       currency
     });
 
-    // KYC validation using validateTransactionLimit like the internal transfer
-    logger.info('Validating KYC limits for crypto withdrawal', { userId, amount, currency });
-    
-    try {
-      const kycValidation = await validateTransactionLimit(userId, amount, currency, 'WITHDRAWAL');
-      
-      if (!kycValidation.allowed) {
-        logger.warn('Crypto withdrawal blocked by KYC limits', {
-          userId,
-          amount,
-          currency,
-          address: address.substring(0, 10) + '...',
-          kycCode: kycValidation.code,
-          kycMessage: kycValidation.message,
-          kycData: kycValidation.data
-        });
-
-        return res.status(403).json({
-          success: false,
-          error: 'KYC_LIMIT_EXCEEDED',
-          message: kycValidation.message,
-          code: kycValidation.code,
-          kycDetails: {
-            kycLevel: kycValidation.data?.kycLevel,
-            limitType: kycValidation.data?.limitType,
-            requestedAmount: kycValidation.data?.requestedAmount,
-            currentLimit: kycValidation.data?.currentLimit,
-            currentSpent: kycValidation.data?.currentSpent,
-            availableAmount: kycValidation.data?.availableAmount,
-            upgradeRecommendation: kycValidation.data?.upgradeRecommendation,
-            amountInNaira: kycValidation.data?.amountInNaira,
-            currency: kycValidation.data?.currency,
-            transactionType: 'WITHDRAWAL'
-          }
-        });
-      }
-
-      logger.info('KYC validation passed for crypto withdrawal', {
-        userId,
-        amount,
-        currency,
-        address: address.substring(0, 10) + '...',
-        kycLevel: kycValidation.data?.kycLevel,
-        dailyRemaining: kycValidation.data?.dailyRemaining,
-        monthlyRemaining: kycValidation.data?.monthlyRemaining,
-        amountInNaira: kycValidation.data?.amountInNaira
-      });
-
-    } catch (kycError) {
-      logger.error('KYC validation failed with error for crypto withdrawal', {
-        userId,
-        amount,
-        currency,
-        address: address.substring(0, 10) + '...',
-        error: kycError.message,
-        stack: kycError.stack
-      });
-
-      return res.status(500).json({
-        success: false,
-        error: 'KYC_VALIDATION_ERROR',
-        message: 'Unable to validate transaction limits. Please try again or contact support.',
-        code: 'KYC_VALIDATION_ERROR'
-      });
-    }
-
     // Check for duplicate withdrawals
     const duplicateCheck = await checkDuplicateWithdrawal(userId, currency, amount, address);
     if (duplicateCheck.isDuplicate) {
@@ -902,7 +835,7 @@ router.post('/crypto', async (req, res) => {
       totalAmount,
       address: address.substring(0, 10) + '...',
       networkFee,
-      security_status: '2FA + PIN + KYC + Balance validated'
+      security_status: '2FA + PIN + Balance validated'
     });
 
     // Initiate Obiex withdrawal with the receiver amount (after fee deduction)
@@ -974,7 +907,7 @@ router.post('/crypto', async (req, res) => {
       transactionId: transaction._id,
       obiexTransactionId: obiexResult.data.transactionId,
       processingTime,
-      security_validations: 'All passed (2FA + PIN + KYC + Balance)',
+      security_validations: 'All passed (2FA + PIN + Balance)',
       balance_update_method: 'internal_direct'
     });
 
@@ -996,7 +929,7 @@ router.post('/crypto', async (req, res) => {
         security_info: {
           twofa_validated: true,
           passwordpin_validated: true,
-          kyc_validated: true,
+          kyc_validated: false,
           kyc_level: user.kycLevel,
           duplicate_check_passed: true,
           balance_updated_directly: true
