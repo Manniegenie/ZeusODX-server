@@ -4,7 +4,6 @@ const router = express.Router();
 const CryptoFeeMarkup = require('../models/cryptofee');
 const logger = require('../utils/logger');
 
-// Supported tokens configuration
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin', symbol: 'BTC', decimals: 8, isStablecoin: false },
   ETH: { name: 'Ethereum', symbol: 'ETH', decimals: 18, isStablecoin: false }, 
@@ -13,7 +12,7 @@ const SUPPORTED_TOKENS = {
   USDC: { name: 'USD Coin', symbol: 'USDC', decimals: 6, isStablecoin: true },
   BNB: { name: 'Binance Coin', symbol: 'BNB', decimals: 18, isStablecoin: false },
   MATIC: { name: 'Polygon', symbol: 'MATIC', decimals: 18, isStablecoin: false },
-  AVAX: { name: 'Avalanche', symbol: 'AVAX', decimals: 18, isStablecoin: false }
+  TRX: { name: 'Tron', symbol: 'TRX', decimals: 6, isStablecoin: false } // ✅ Added TRX
 };
 
 /**
