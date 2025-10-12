@@ -63,8 +63,6 @@ const WITHDRAWAL_CONFIG = {
   },
 };
 
-// Empty - using portfolio service for prices
-
 /**
  * Get balance field name for currency
  * @param {string} currency - Currency code
@@ -535,28 +533,29 @@ function getNetworkNativeCurrency(network) {
 async function initiateObiexWithdrawal(withdrawalData) {
   const { amount, address, currency, network, memo, narration } = withdrawalData;
   
+  // Build destination object OUTSIDE try block
+  const destination = {
+    address
+  };
+  
+  // Add optional destination fields
+  if (network) destination.network = network;
+  if (memo?.trim()) destination.memo = memo.trim();
+
+  // Build payload OUTSIDE try block so it's accessible in catch
+  const payload = {
+    amount: Number(amount),
+    destination,
+    currency: currency.toUpperCase(),
+    narration: narration || `Crypto withdrawal - ${currency}`,
+  };
+  
   try {
-    // Build destination object
-    const destination = {
-      address
-    };
-    
-    // Add optional destination fields
-    if (network) destination.network = network;
-    if (memo?.trim()) destination.memo = memo.trim();
-
-    const payload = {
-      amount: Number(amount), // Send as number, not string
-      destination,
-      currency: currency.toUpperCase(),
-      narration: narration || `Crypto withdrawal - ${currency}`,
-    };
-
     logger.info('Initiating Obiex withdrawal', { 
       currency, 
       amount, 
       address: address.substring(0, 10) + '...',
-      payload: JSON.stringify(payload) // Log the exact payload being sent
+      payload: JSON.stringify(payload)
     });
 
     const response = await obiexAxios.post('/wallets/ext/debit/crypto', payload);
@@ -569,7 +568,7 @@ async function initiateObiexWithdrawal(withdrawalData) {
     return {
       success: true,
       data: {
-        transactionId: response.data.data.id, // Use the correct field name
+        transactionId: response.data.data.id,
         reference: response.data.data.reference,
         status: response.data.data.payout?.status || 'PENDING',
         obiexResponse: response.data.data
@@ -583,7 +582,7 @@ async function initiateObiexWithdrawal(withdrawalData) {
       status: error.response?.status,
       statusText: error.response?.statusText,
       headers: error.response?.headers,
-      requestPayload: JSON.stringify(payload) // Log what we sent
+      requestPayload: JSON.stringify(payload)
     });
     
     return {
@@ -626,7 +625,7 @@ async function createWithdrawalTransaction(transactionData) {
       status: 'PENDING',
       fee,
       obiexTransactionId,
-      reference: obiexReference, // Store the Obiex reference
+      reference: obiexReference,
       narration,
       metadata: {
         initiatedAt: new Date(),
@@ -641,7 +640,7 @@ async function createWithdrawalTransaction(transactionData) {
           kyc: false,
           duplicate_check: true
         },
-        balance_updated_directly: true // Track that we use direct balance updates
+        balance_updated_directly: true
       }
     });
 
@@ -776,7 +775,7 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    // Get withdrawal fee - now directly in network currency
+    // Get withdrawal fee
     const feeInfo = await getWithdrawalFee(currency, network);
     if (!feeInfo.success) {
       return res.status(400).json({
@@ -787,8 +786,8 @@ router.post('/crypto', async (req, res) => {
     }
 
     const { networkFee, feeUsd } = feeInfo;
-    const totalAmount = amount; // Total deducted from user's balance is the requested amount
-    const receiverAmount = amount - networkFee; // Receiver gets requested amount minus fee
+    const totalAmount = amount;
+    const receiverAmount = amount - networkFee;
 
     // Validate that receiver will get a positive amount after fee deduction
     if (receiverAmount <= 0) {
@@ -806,10 +805,10 @@ router.post('/crypto', async (req, res) => {
     }
 
     // Store for cleanup
-    reservedAmount = totalAmount; // Reserve the full requested amount
+    reservedAmount = totalAmount;
     reservedCurrency = currency;
 
-    // Validate user balance using internal function
+    // Validate user balance
     const balanceValidation = await validateUserBalanceInternal(userId, currency, totalAmount);
     
     if (!balanceValidation.success) {
@@ -838,9 +837,9 @@ router.post('/crypto', async (req, res) => {
       security_status: '2FA + PIN + Balance validated'
     });
 
-    // Initiate Obiex withdrawal with the receiver amount (after fee deduction)
+    // Initiate Obiex withdrawal
     const obiexResult = await initiateObiexWithdrawal({
-      amount: receiverAmount, // Send the actual amount receiver will get
+      amount: receiverAmount,
       address,
       currency,
       network,
@@ -864,11 +863,11 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    // Create transaction record BEFORE reserving balance
+    // Create transaction record
     const transaction = await createWithdrawalTransaction({
       userId,
       currency,
-      amount: receiverAmount, // Store the actual amount being sent (after fee deduction)
+      amount: receiverAmount,
       address,
       network,
       memo,
@@ -880,7 +879,7 @@ router.post('/crypto', async (req, res) => {
     });
     transactionCreated = true;
 
-    // Reserve user balance using internal function
+    // Reserve user balance
     const reservationResult = await reserveUserBalanceInternal(userId, currency, totalAmount);
     if (!reservationResult.success) {
       logger.error('Failed to reserve balance for withdrawal', {
@@ -920,11 +919,11 @@ router.post('/crypto', async (req, res) => {
         obiexReference: obiexResult.data.reference,
         obiexStatus: obiexResult.data.status,
         currency,
-        requestedAmount: amount, // Original amount user requested
-        receiverAmount: receiverAmount, // Amount user will actually receive (after fee)
+        requestedAmount: amount,
+        receiverAmount: receiverAmount,
         fee: networkFee,
         feeUsd,
-        totalAmount, // Amount deducted from user's balance
+        totalAmount,
         estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`,
         security_info: {
           twofa_validated: true,
@@ -948,7 +947,7 @@ router.post('/crypto', async (req, res) => {
       transactionCreated
     });
 
-    // Cleanup: Release reserved balance if reservation was made but something failed
+    // Cleanup: Release reserved balance if reservation was made
     if (reservationMade && reservedAmount > 0 && reservedCurrency) {
       try {
         await releaseReservedBalanceInternal(req.user?.id, reservedCurrency, reservedAmount);
@@ -976,7 +975,7 @@ router.post('/crypto', async (req, res) => {
 });
 
 /**
- * Get withdrawal status endpoint with security info
+ * Get withdrawal status endpoint
  */
 router.get('/status/:transactionId', async (req, res) => {
   try {
@@ -1034,6 +1033,9 @@ router.get('/status/:transactionId', async (req, res) => {
   }
 });
 
+/**
+ * Initiate withdrawal fee calculation
+ */
 router.post('/initiate', async (req, res) => {
   const { amount, currency, network } = req.body;
 
@@ -1052,7 +1054,6 @@ router.post('/initiate', async (req, res) => {
   }
 
   try {
-    // Get withdrawal fee directly in network currency
     const feeInfo = await getWithdrawalFee(currency, network);
     if (!feeInfo.success) {
       return res.status(400).json({
@@ -1062,19 +1063,18 @@ router.post('/initiate', async (req, res) => {
     }
 
     const { networkFee, feeUsd } = feeInfo;
-    const totalAmount = amount; // Total deducted from user's balance is the requested amount
-    const receiverAmount = amount - networkFee; // Receiver gets requested amount minus fee
+    const totalAmount = amount;
+    const receiverAmount = amount - networkFee;
 
-    // Calculate the response
     const response = {
       success: true,
       data: {
-        amount,                    // User's requested withdrawal amount
-        currency,                  // Currency of the transaction
-        fee: networkFee,          // Fee in network currency (e.g., 0.50 BSC)
-        feeUsd,                   // Fee in USD for display
-        receiverAmount,           // Amount receiver will get (same as requested)
-        totalAmount               // Total deducted from user's balance
+        amount,
+        currency,
+        fee: networkFee,
+        feeUsd,
+        receiverAmount,
+        totalAmount
       }
     };
 
@@ -1092,7 +1092,7 @@ router.post('/initiate', async (req, res) => {
 });
 
 /**
- * Get supported currencies for withdrawal endpoint
+ * Get supported currencies
  */
 router.get('/currencies', async (req, res) => {
   try {
