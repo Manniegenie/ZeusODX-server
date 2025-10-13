@@ -12,12 +12,67 @@ const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
 
-// Configure Obiex axios instance
+// Configure Obiex axios instance with better error handling and retries
 const obiexAxios = axios.create({
   baseURL: config.obiex.baseURL.replace(/\/+$/, ''),
   timeout: 30000, // 30 second timeout
+  headers: {
+    'Accept': 'application/json',
+    'Content-Type': 'application/json'
+  }
 });
-obiexAxios.interceptors.request.use(attachObiexAuth);
+
+// Add request interceptor for auth and signature
+obiexAxios.interceptors.request.use(async (config) => {
+  // Get base auth config
+  const authConfig = await attachObiexAuth(config);
+  
+  // Add timestamp
+  const timestamp = Date.now().toString();
+  authConfig.headers['x-api-timestamp'] = timestamp;
+  
+  // Generate signature if needed
+  if (config.method === 'post' && config.data) {
+    const dataToSign = typeof config.data === 'string' ? config.data : JSON.stringify(config.data);
+    const signature = generateObiexSignature(timestamp, dataToSign);
+    authConfig.headers['x-api-signature'] = signature;
+  }
+  
+  return authConfig;
+});
+
+// Add response interceptor for better error handling
+obiexAxios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // Extract useful error info
+    const errorInfo = {
+      message: error.message,
+      code: error.code,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      headers: error.response?.headers,
+    };
+
+    // Log detailed error
+    logger.error('Obiex API error', {
+      ...errorInfo,
+      config: {
+        url: error.config?.url,
+        method: error.config?.method,
+        headers: error.config?.headers,
+      }
+    });
+
+    // Throw enhanced error
+    throw {
+      ...error,
+      errorInfo,
+      isObiexError: true
+    };
+  }
+);
 
 // Supported tokens configuration
 const SUPPORTED_TOKENS = {
@@ -530,65 +585,227 @@ function getNetworkNativeCurrency(network) {
  * @param {Object} withdrawalData - Withdrawal parameters
  * @returns {Promise<Object>} Obiex API response
  */
+/**
+ * Validate withdrawal payload before sending to Obiex
+ */
+function validateObiexWithdrawalPayload(payload) {
+  const errors = [];
+
+  // Required fields
+  if (!payload.amount || typeof payload.amount !== 'number' || payload.amount <= 0) {
+    errors.push('Invalid amount: must be a positive number');
+  }
+
+  if (!payload.currency || typeof payload.currency !== 'string') {
+    errors.push('Invalid currency');
+  }
+
+  if (!payload.destination || typeof payload.destination !== 'object') {
+    errors.push('Invalid destination object');
+  } else {
+    if (!payload.destination.address || typeof payload.destination.address !== 'string') {
+      errors.push('Invalid destination address');
+    }
+    if (payload.destination.network && typeof payload.destination.network !== 'string') {
+      errors.push('Invalid network format');
+    }
+    if (payload.destination.memo && typeof payload.destination.memo !== 'string') {
+      errors.push('Invalid memo format');
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+}
+
+/**
+ * Parse and enhance Obiex error response
+ */
+function parseObiexError(error) {
+  // Handle network errors
+  if (!error.response) {
+    return {
+      type: 'NETWORK_ERROR',
+      message: error.message || 'Network error occurred',
+      status: 0,
+      retryable: true
+    };
+  }
+
+  const status = error.response.status;
+  const data = error.response.data;
+
+  // Handle rate limiting
+  if (status === 429) {
+    return {
+      type: 'RATE_LIMIT',
+      message: 'Rate limit exceeded. Please try again later.',
+      status,
+      retryable: true,
+      retryAfter: parseInt(error.response.headers['retry-after']) || 60
+    };
+  }
+
+  // Handle authentication errors
+  if (status === 401 || status === 403) {
+    return {
+      type: 'AUTH_ERROR',
+      message: 'Authentication failed with Obiex',
+      status,
+      retryable: false
+    };
+  }
+
+  // Handle validation errors
+  if (status === 400) {
+    return {
+      type: 'VALIDATION_ERROR',
+      message: data?.message || 'Invalid withdrawal request',
+      status,
+      retryable: false,
+      details: data?.errors || []
+    };
+  }
+
+  // Handle server errors
+  if (status >= 500) {
+    return {
+      type: 'SERVER_ERROR',
+      message: 'Obiex service is temporarily unavailable',
+      status,
+      retryable: true
+    };
+  }
+
+  // Default error
+  return {
+    type: 'UNKNOWN_ERROR',
+    message: data?.message || 'An unexpected error occurred',
+    status,
+    retryable: false
+  };
+}
+
+/**
+ * Initiates withdrawal through Obiex API with improved error handling
+ * @param {Object} withdrawalData - Withdrawal parameters
+ * @returns {Promise<Object>} Obiex API response
+ */
 async function initiateObiexWithdrawal(withdrawalData) {
   const { amount, address, currency, network, memo, narration } = withdrawalData;
   
-  // Build destination object OUTSIDE try block
+  // Build destination object
   const destination = {
-    address
+    address,
+    ...(network && { network }),
+    ...(memo?.trim() && { memo: memo.trim() })
   };
-  
-  // Add optional destination fields
-  if (network) destination.network = network;
-  if (memo?.trim()) destination.memo = memo.trim();
 
-  // Build payload OUTSIDE try block so it's accessible in catch
+  // Build payload
   const payload = {
     amount: Number(amount),
     destination,
     currency: currency.toUpperCase(),
     narration: narration || `Crypto withdrawal - ${currency}`,
   };
+
+  // Validate payload
+  const validation = validateObiexWithdrawalPayload(payload);
+  if (!validation.isValid) {
+    logger.error('Invalid Obiex withdrawal payload', {
+      errors: validation.errors,
+      payload: {
+        ...payload,
+        destination: {
+          ...payload.destination,
+          address: payload.destination.address.substring(0, 10) + '...'
+        }
+      }
+    });
+    return {
+      success: false,
+      message: 'Invalid withdrawal request: ' + validation.errors.join(', '),
+      statusCode: 400,
+      validation: validation.errors
+    };
+  }
   
   try {
     logger.info('Initiating Obiex withdrawal', { 
       currency, 
       amount, 
       address: address.substring(0, 10) + '...',
-      payload: JSON.stringify(payload)
+      network,
+      payload: {
+        ...payload,
+        destination: {
+          ...payload.destination,
+          address: payload.destination.address.substring(0, 10) + '...'
+        }
+      }
     });
 
     const response = await obiexAxios.post('/wallets/ext/debit/crypto', payload);
     
-    // Obiex returns data in response.data.data format
-    if (!response.data?.data?.id) {
+    // Validate response format
+    const responseData = response.data?.data;
+    if (!responseData?.id) {
+      logger.error('Invalid Obiex response format', {
+        response: responseData
+      });
       throw new Error('Invalid response from Obiex: missing transaction ID');
     }
+
+    // Log successful withdrawal
+    logger.info('Obiex withdrawal initiated successfully', {
+      transactionId: responseData.id,
+      reference: responseData.reference,
+      status: responseData.payout?.status || 'PENDING',
+      currency,
+      amount
+    });
 
     return {
       success: true,
       data: {
-        transactionId: response.data.data.id,
-        reference: response.data.data.reference,
-        status: response.data.data.payout?.status || 'PENDING',
-        obiexResponse: response.data.data
+        transactionId: responseData.id,
+        reference: responseData.reference,
+        status: responseData.payout?.status || 'PENDING',
+        obiexResponse: responseData
       }
     };
+
   } catch (error) {
+    // Parse error details
+    const errorDetails = parseObiexError(error);
+    
+    // Log error with enhanced details
     logger.error('Obiex withdrawal failed', {
       currency,
       amount,
-      error: error.response?.data || error.message,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      headers: error.response?.headers,
-      requestPayload: JSON.stringify(payload)
+      errorType: errorDetails.type,
+      errorMessage: errorDetails.message,
+      status: errorDetails.status,
+      retryable: errorDetails.retryable,
+      requestPayload: {
+        ...payload,
+        destination: {
+          ...payload.destination,
+          address: payload.destination.address.substring(0, 10) + '...'
+        }
+      }
     });
     
     return {
       success: false,
-      message: error.response?.data?.message || 'Withdrawal service temporarily unavailable',
-      statusCode: error.response?.status || 500
+      message: errorDetails.message,
+      statusCode: errorDetails.status,
+      errorType: errorDetails.type,
+      retryable: errorDetails.retryable,
+      ...(errorDetails.details && { details: errorDetails.details }),
+      ...(errorDetails.retryAfter && { retryAfter: errorDetails.retryAfter })
     };
   }
 }
