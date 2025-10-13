@@ -102,57 +102,120 @@ router.get('/users/recent', async (req, res) => {
   }
 });
 
-// GET /admin/users/search?q=john&field=firstName
+// GET /admin/users/search - Enhanced search with multiple filters
 router.get('/users/search', async (req, res) => {
   try {
-    const { q, field = 'email' } = req.query;
-    
-    if (!q) {
-      return res.status(400).json({ 
-        error: 'Search query parameter "q" is required',
-        usage: 'GET /admin/users/search?q=john&field=firstName'
-      });
-    }
+    const { 
+      email,
+      firstName,
+      lastName,
+      q, // Keep general search query for backward compatibility
+      field, // Keep field for backward compatibility
+      limit = 20,
+      page = 1,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
 
-    const searchFields = ['email', 'firstName', 'lastName', '_id'];
-    if (!searchFields.includes(field)) {
-      return res.status(400).json({ 
-        error: 'Invalid search field',
-        allowedFields: searchFields
-      });
-    }
-
+    // Build search query
     let searchQuery = {};
     
-    if (field === '_id') {
-      // Exact match for ID
-      searchQuery[field] = q;
-    } else {
-      // Case-insensitive partial match for text fields
-      searchQuery[field] = { $regex: q, $options: 'i' };
+    // Handle email search
+    if (email) {
+      searchQuery.email = { $regex: email, $options: 'i' };
     }
 
+    // Handle first name search
+    if (firstName) {
+      searchQuery.firstName = { $regex: firstName, $options: 'i' };
+    }
+
+    // Handle last name search
+    if (lastName) {
+      searchQuery.lastName = { $regex: lastName, $options: 'i' };
+    }
+
+    // Handle backward compatibility with q and field parameters
+    if (q) {
+      if (field === '_id') {
+        searchQuery._id = q;
+      } else if (field) {
+        searchQuery[field] = { $regex: q, $options: 'i' };
+      } else {
+        // If no field specified, search across multiple fields
+        searchQuery.$or = [
+          { email: { $regex: q, $options: 'i' } },
+          { firstName: { $regex: q, $options: 'i' } },
+          { lastName: { $regex: q, $options: 'i' } }
+        ];
+      }
+    }
+
+    // Validate sort field
+    const allowedSortFields = ['createdAt', 'email', 'firstName', 'lastName', 'kycLevel'];
+    if (!allowedSortFields.includes(sortBy)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid sort field',
+        allowedSortFields
+      });
+    }
+
+    // Calculate pagination
+    const skip = (Math.max(1, page) - 1) * Math.min(50, limit);
+    const limitNum = Math.min(50, parseInt(limit)); // Max 50 results per page
+
+    // Get total count for pagination
+    const totalCount = await User.countDocuments(searchQuery);
+
+    // Execute search with pagination and sorting
     const users = await User.find(searchQuery)
-      .limit(20) // Limit results
-      .select('_id email firstName lastName kycLevel createdAt isActive')
-      .sort({ createdAt: -1 });
+      .select('_id email firstName lastName kycLevel createdAt isActive phoneNumber emailVerified')
+      .sort({ [sortBy]: sortOrder === 'asc' ? 1 : -1 })
+      .skip(skip)
+      .limit(limitNum);
 
     const formattedUsers = users.map(user => ({
       id: user._id,
       email: user.email,
+      firstName: user.firstName || null,
+      lastName: user.lastName || null,
       fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'No name',
       kycLevel: user.kycLevel || 0,
       isActive: user.isActive !== false,
-      createdAt: user.createdAt
+      createdAt: user.createdAt,
+      phoneNumber: user.phoneNumber || null,
+      emailVerified: user.emailVerified || false
     }));
+
+    // Calculate pagination metadata
+    const totalPages = Math.ceil(totalCount / limitNum);
+    const hasNextPage = page < totalPages;
+    const hasPrevPage = page > 1;
 
     res.json({
       success: true,
       users: formattedUsers,
       meta: {
-        searchQuery: q,
-        searchField: field,
-        resultsCount: formattedUsers.length,
+        filters: {
+          email: email || null,
+          firstName: firstName || null,
+          lastName: lastName || null,
+          generalQuery: q || null,
+          searchField: field || null
+        },
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages,
+          totalResults: totalCount,
+          limit: limitNum,
+          hasNextPage,
+          hasPrevPage
+        },
+        sorting: {
+          field: sortBy,
+          order: sortOrder
+        },
         searchedAt: new Date().toISOString()
       }
     });
