@@ -12,7 +12,7 @@ const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
 
-// Configure Obiex axios instance with better error handling and retries
+// Configure Obiex axios instance with better error handling
 const obiexAxios = axios.create({
   baseURL: config.obiex.baseURL.replace(/\/+$/, ''),
   timeout: 30000, // 30 second timeout
@@ -22,24 +22,8 @@ const obiexAxios = axios.create({
   }
 });
 
-// Add request interceptor for auth and signature
-obiexAxios.interceptors.request.use(async (config) => {
-  // Get base auth config
-  const authConfig = await attachObiexAuth(config);
-  
-  // Add timestamp
-  const timestamp = Date.now().toString();
-  authConfig.headers['x-api-timestamp'] = timestamp;
-  
-  // Generate signature if needed
-  if (config.method === 'post' && config.data) {
-    const dataToSign = typeof config.data === 'string' ? config.data : JSON.stringify(config.data);
-    const signature = generateObiexSignature(timestamp, dataToSign);
-    authConfig.headers['x-api-signature'] = signature;
-  }
-  
-  return authConfig;
-});
+// Use existing auth interceptor
+obiexAxios.interceptors.request.use(attachObiexAuth);
 
 // Add response interceptor for better error handling
 obiexAxios.interceptors.response.use(
@@ -53,23 +37,48 @@ obiexAxios.interceptors.response.use(
       statusText: error.response?.statusText,
       data: error.response?.data,
       headers: error.response?.headers,
+      timestamp: new Date().toISOString()
     };
 
-    // Log detailed error
+    // Log detailed error with auth-related headers redacted
+    const redactedHeaders = { ...error.config?.headers };
+    if (redactedHeaders) {
+      redactedHeaders['x-api-key'] = '[REDACTED]';
+      redactedHeaders['x-api-signature'] = '[REDACTED]';
+    }
+
     logger.error('Obiex API error', {
       ...errorInfo,
       config: {
         url: error.config?.url,
         method: error.config?.method,
-        headers: error.config?.headers,
+        headers: redactedHeaders
       }
     });
+
+    // Check if it's a signature/auth error
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      logger.error('Obiex authentication error - check API key and signature', {
+        status: error.response.status,
+        timestamp: errorInfo.timestamp
+      });
+    }
+
+    // Check if it's a server error
+    if (error.response?.status >= 500) {
+      logger.error('Obiex server error', {
+        status: error.response.status,
+        data: error.response.data,
+        timestamp: errorInfo.timestamp
+      });
+    }
 
     // Throw enhanced error
     throw {
       ...error,
       errorInfo,
-      isObiexError: true
+      isObiexError: true,
+      timestamp: errorInfo.timestamp
     };
   }
 );
@@ -1338,4 +1347,5 @@ router.get('/currencies', async (req, res) => {
   }
 });
 
+module.exports = router;
 module.exports = router;
