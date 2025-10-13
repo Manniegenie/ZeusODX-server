@@ -8,6 +8,7 @@ const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
+const { sendSwapCompletionNotification } = require('../services/notificationService');
 
 const router = express.Router();
 
@@ -641,6 +642,39 @@ async function executeNGNZSwap(userId, quote, correlationId, systemContext) {
       outTransactionId: swapOutTransaction._id,
       inTransactionId: swapInTransaction._id
     });
+
+    // Send NGNZ swap completion notification
+    try {
+      await sendSwapCompletionNotification(
+        userId,
+        amount,
+        sourceCurrency,
+        amountReceived,
+        targetCurrency,
+        true, // is NGNZ swap
+        {
+          swapId: swapReference,
+          correlationId,
+          flow,
+          provider: 'INTERNAL_NGNZ',
+          rate: amountReceived / amount
+        }
+      );
+      logger.info('NGNZ swap completion notification sent', { 
+        userId, 
+        swapReference, 
+        flow, 
+        sourceCurrency, 
+        targetCurrency 
+      });
+    } catch (notificationError) {
+      logger.error('Failed to send NGNZ swap completion notification', {
+        userId,
+        swapReference,
+        flow,
+        error: notificationError.message
+      });
+    }
 
     // Create comprehensive audit entries
     await Promise.all([

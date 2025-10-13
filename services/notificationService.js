@@ -93,6 +93,27 @@ const NOTIFICATION_TEMPLATES = {
     sound: 'default',
     priority: 'high',
   },
+  KYC_COMPLETED: {
+    title: '✅ KYC Verification Completed',
+    getMessage: (status, type) => 
+      `Your ${type} verification has been ${status.toLowerCase()}. ${status === 'APPROVED' ? 'Your account limits have been updated.' : ''}`,
+    sound: 'default',
+    priority: 'high',
+  },
+  SWAP_COMPLETED: {
+    title: '💱 Swap Completed',
+    getMessage: (fromAmount, fromCurrency, toAmount, toCurrency) => 
+      `Successfully swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
+    sound: 'default',
+    priority: 'default',
+  },
+  NGNZ_SWAP_COMPLETED: {
+    title: '💱 NGNZ Swap Completed',
+    getMessage: (fromAmount, fromCurrency, toAmount, toCurrency) => 
+      `Successfully swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
+    sound: 'default',
+    priority: 'default',
+  },
 };
 
 /**
@@ -594,6 +615,83 @@ async function sendBulkNotifications(userIds, notificationData) {
   }
 }
 
+/**
+ * Send KYC completion notification
+ * @param {string} userId - User ID
+ * @param {string} status - Verification status (APPROVED, REJECTED, PROVISIONAL)
+ * @param {string} type - Verification type (BVN, Document KYC)
+ * @param {Object} additionalData - Additional data to include
+ * @returns {Promise<Object>} Notification result
+ */
+async function sendKycCompletionNotification(userId, status, type, additionalData = {}) {
+  try {
+    const template = NOTIFICATION_TEMPLATES.KYC_COMPLETED;
+    
+    const notificationData = {
+      title: template.title,
+      body: template.getMessage(status, type),
+      sound: template.sound,
+      priority: template.priority,
+      data: {
+        type: 'KYC_VERIFICATION',
+        status: status.toUpperCase(),
+        verificationType: type,
+        ...additionalData
+      }
+    };
+
+    return await sendPushNotification(userId, notificationData);
+  } catch (error) {
+    logger.error('Error sending KYC completion notification', { userId, status, type, error: error.message });
+    return { success: false, message: 'Failed to send KYC completion notification' };
+  }
+}
+
+/**
+ * Send swap completion notification
+ * @param {string} userId - User ID
+ * @param {number} fromAmount - From amount
+ * @param {string} fromCurrency - From currency
+ * @param {number} toAmount - To amount
+ * @param {string} toCurrency - To currency
+ * @param {boolean} isNGNZ - Whether this is an NGNZ swap
+ * @param {Object} additionalData - Additional data to include
+ * @returns {Promise<Object>} Notification result
+ */
+async function sendSwapCompletionNotification(userId, fromAmount, fromCurrency, toAmount, toCurrency, isNGNZ = false, additionalData = {}) {
+  try {
+    const template = isNGNZ ? NOTIFICATION_TEMPLATES.NGNZ_SWAP_COMPLETED : NOTIFICATION_TEMPLATES.SWAP_COMPLETED;
+    
+    const notificationData = {
+      title: template.title,
+      body: template.getMessage(fromAmount, fromCurrency, toAmount, toCurrency),
+      sound: template.sound,
+      priority: template.priority,
+      data: {
+        type: isNGNZ ? 'NGNZ_SWAP' : 'SWAP',
+        fromAmount,
+        fromCurrency,
+        toAmount,
+        toCurrency,
+        ...additionalData
+      }
+    };
+
+    return await sendPushNotification(userId, notificationData);
+  } catch (error) {
+    logger.error('Error sending swap completion notification', { 
+      userId, 
+      fromAmount, 
+      fromCurrency, 
+      toAmount, 
+      toCurrency, 
+      isNGNZ, 
+      error: error.message 
+    });
+    return { success: false, message: 'Failed to send swap completion notification' };
+  }
+}
+
 module.exports = {
   sendPushNotification,
   sendDepositNotification,
@@ -606,5 +704,7 @@ module.exports = {
   sendCustomNotification,
   sendBulkNotifications,
   getUserPushToken,
+  sendKycCompletionNotification,
+  sendSwapCompletionNotification,
   NOTIFICATION_TEMPLATES
 };

@@ -8,6 +8,7 @@ const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const GlobalMarkdown = require('../models/pricemarkdown');
+const { sendSwapCompletionNotification } = require('../services/notificationService');
 
 const router = express.Router();
 
@@ -531,6 +532,37 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       markdownPercentage: metadata.markdownPercentage,
       reductionAmount: metadata.reductionAmount
     });
+
+    // Send swap completion notification
+    try {
+      await sendSwapCompletionNotification(
+        userId,
+        amount,
+        sourceCurrency,
+        finalAmountReceived,
+        targetCurrency,
+        false, // not NGNZ swap
+        {
+          swapId: swapReference,
+          correlationId,
+          markdownApplied: metadata.markdownApplied,
+          markdownPercentage: metadata.markdownPercentage,
+          provider: 'OBIEX'
+        }
+      );
+      logger.info('Swap completion notification sent', { 
+        userId, 
+        swapReference, 
+        sourceCurrency, 
+        targetCurrency 
+      });
+    } catch (notificationError) {
+      logger.error('Failed to send swap completion notification', {
+        userId,
+        swapReference,
+        error: notificationError.message
+      });
+    }
     
     await createAuditEntry({
       userId,

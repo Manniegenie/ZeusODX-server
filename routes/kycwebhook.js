@@ -9,6 +9,7 @@ const User = require('../models/user');
 const KYC = require('../models/kyc');
 const config = require('./config');
 const logger = require('../utils/logger');
+const { sendKycCompletionNotification } = require('../services/notificationService');
 
 // Initialize Smile Identity WebAPI
 const WebApi = smileIdentityCore.WebApi;
@@ -596,6 +597,35 @@ router.post('/callback', async (req, res) => {
       kycStatus: !isBvnVerification ? (await User.findById(userId)).kycStatus : undefined,
       inProgress: !isBvnVerification ? (await User.findById(userId)).kyc?.inProgress : undefined
     });
+
+    // Send KYC completion notification if status is final (not provisional)
+    if (status !== 'PROVISIONAL') {
+      try {
+        await sendKycCompletionNotification(
+          userId,
+          status,
+          isBvnVerification ? 'BVN' : 'Document KYC',
+          {
+            kycId: kycDoc._id.toString(),
+            verificationType: isBvnVerification ? 'bvn' : 'document',
+            documentType: frontendIdType,
+            resultText: norm.resultText,
+            confidenceValue: norm.confidenceValue
+          }
+        );
+        logger.info('KYC completion notification sent', { 
+          userId, 
+          status, 
+          type: isBvnVerification ? 'BVN' : 'Document KYC' 
+        });
+      } catch (notificationError) {
+        logger.error('Failed to send KYC completion notification', {
+          userId,
+          status,
+          error: notificationError.message
+        });
+      }
+    }
 
     return res.status(200).json({ 
       success: true, 
