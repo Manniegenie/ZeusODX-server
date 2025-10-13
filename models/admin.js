@@ -44,6 +44,19 @@ const adminUserSchema = new mongoose.Schema({
     type: Number, 
     default: 0 
   },
+  // 2FA Fields
+  twoFASecret: {
+    type: String,
+    default: null
+  },
+  is2FAEnabled: {
+    type: Boolean,
+    default: false
+  },
+  is2FAVerified: {
+    type: Boolean,
+    default: false
+  },
   lockUntil: { 
     type: Date, 
     default: null 

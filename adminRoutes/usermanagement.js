@@ -28,7 +28,8 @@ router.get('/users', async (req, res) => {
       emailDomain,
       emailStartsWith,
       sortBy = 'createdAt',
-      sortOrder = 'desc'
+      sortOrder = 'desc',
+      q // General search query parameter
     } = req.query;
 
     // parse ints with sensible defaults/limits
@@ -47,6 +48,18 @@ router.get('/users', async (req, res) => {
     }
     if (chatbotTransactionVerified !== undefined) {
       filter.chatbotTransactionVerified = String(chatbotTransactionVerified).toLowerCase() === 'true';
+    }
+
+    // Handle general search query first
+    if (q) {
+      const searchRegex = new RegExp(escapeRegex(q), 'i');
+      filter.$or = [
+        { email: { $regex: searchRegex } },
+        { username: { $regex: searchRegex } },
+        { firstname: { $regex: searchRegex } },
+        { lastname: { $regex: searchRegex } },
+        { phoneNumber: { $regex: searchRegex } }
+      ];
     }
 
     // Build email conditions so multiple email filters don't override each other
@@ -126,7 +139,9 @@ router.get('/users', async (req, res) => {
     const sort = {};
     sort[sortBy] = String(sortOrder).toLowerCase() === 'desc' ? -1 : 1;
 
+    // Select fields to return
     const users = await User.find(filter)
+      .select('_id email username firstname lastname kycLevel kycStatus emailVerified phoneNumber createdAt lastBalanceUpdate')
       .sort(sort)
       .limit(limit)
       .skip(skip)

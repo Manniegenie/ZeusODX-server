@@ -254,6 +254,7 @@ const adminRegisterRoutes = require("./adminRoutes/registeradmin");
 const usermanagementRoutes = require("./adminRoutes/usermanagement");
 const analyticsRoutes = require("./adminRoutes/analytics");
 const resendOtpRoutes = require("./routes/resendOtp");
+const Admin2FARoutes = require("./adminRoutes/Admin2FA");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -265,6 +266,7 @@ app.use("/usernamecheck", usernamecheckRoutes);
 app.use("/naira", nairaAccountsRoutes);
 app.use("/accountname", AccountnameRoutes);
 app.use("/adminsignin", adminsigninRoutes);
+app.use("/admin-2fa", Admin2FARoutes); // Admin 2FA setup routes (public)
 
 // Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);

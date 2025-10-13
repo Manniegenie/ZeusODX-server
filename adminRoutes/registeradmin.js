@@ -69,7 +69,11 @@ router.post(
         adminName,
         email,
         passwordPin, // Will be hashed by pre-save hook
-        role
+        role,
+        // Initialize 2FA fields
+        twoFASecret: null,
+        is2FAEnabled: false,
+        is2FAVerified: false
       });
 
       // Save admin (password will be hashed automatically)
