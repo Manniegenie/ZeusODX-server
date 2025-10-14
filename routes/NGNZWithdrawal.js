@@ -16,13 +16,8 @@ const router = express.Router();
 const userCache = new Map();
 const CACHE_TTL = 30000; // 30 seconds
 
-// NGNZ withdrawal fees
-// NOTE: OPERATIONAL FEE (30 NGN) vs RECORDED FEE (100 NGN)
-// - The actual fee deducted operationally is 30 NGN (used in calculations)
-// - The fee recorded in database for record purposes is 100 NGN
-// - This creates a 70 NGN discrepancy in accounting records
-const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = 30; // Used for actual calculations
-const NGNZ_WITHDRAWAL_FEE_RECORDED = 100;    // Used for database records
+// NGNZ withdrawal fee configuration
+const NGNZ_WITHDRAWAL_FEE = 100; // Total fee shown to users
 
 /**
  * Create audit entry with error handling
@@ -141,19 +136,19 @@ function validateWithdrawalRequest(data) {
     if (!data.destination.bankCode) errors.push('Bank code is required');
   }
   
-  // Validate amount limits including withdrawal fee (use operational fee for validation)
-  const minimumWithdrawal = NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1; // Must be higher than operational fee
+    // Validate amount limits including withdrawal fee
+  const minimumWithdrawal = NGNZ_WITHDRAWAL_FEE + 1; // Must be higher than fee
   if (data.amount && data.amount < minimumWithdrawal) {
-    errors.push(`Minimum withdrawal amount is ₦${minimumWithdrawal} (includes ₦${NGNZ_WITHDRAWAL_FEE_RECORDED} fee)`);
+    errors.push(`Minimum withdrawal amount is ₦${minimumWithdrawal} (includes ₦${NGNZ_WITHDRAWAL_FEE} fee)`);
   }
   
   if (data.amount && data.amount > 1000000) {
     errors.push('Maximum withdrawal amount is ₦1,000,000');
   }
 
-  // Check if amount can cover the withdrawal fee (use operational fee)
-  if (data.amount && data.amount <= NGNZ_WITHDRAWAL_FEE_OPERATIONAL) {
-    errors.push(`Amount too small to cover ₦${NGNZ_WITHDRAWAL_FEE_RECORDED} withdrawal fee. Minimum: ₦${NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1}`);
+  // Check if amount can cover the withdrawal fee
+  if (data.amount && data.amount <= NGNZ_WITHDRAWAL_FEE) {
+    errors.push(`Amount too small to cover ₦${NGNZ_WITHDRAWAL_FEE} withdrawal fee. Minimum: ₦${NGNZ_WITHDRAWAL_FEE + 1}`);
   }
 
   // 2FA validation
@@ -211,10 +206,10 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     const { amount, destination, narration } = withdrawalData;
     const withdrawalReference = generateWithdrawalReference();
     
-    // Calculate amounts using OPERATIONAL fee (30 NGN)
+    // Calculate amounts (fee is always 100 NGN total)
     const totalDeducted = amount; // Full amount deducted from user
-    const amountToObiex = amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL; // Amount sent to Obiex (minus operational fee)
-    const feeAmountRecorded = NGNZ_WITHDRAWAL_FEE_RECORDED; // Fee recorded in database (100 NGN)
+    const amountToBank = amount - NGNZ_WITHDRAWAL_FEE; // Amount user receives in bank
+    const feeAmount = NGNZ_WITHDRAWAL_FEE; // Total fee (100 NGN)
     
     // Get current balance for audit trail
     const userBefore = await User.findById(userId).select('ngnzBalance').lean();
@@ -541,8 +536,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
       tags: ['obiex', 'ngnz-withdrawal', 'bank-transfer', 'initiated', 'fee-applied']
     });
 
-    // Call Obiex service with NGNX
-    // IMPORTANT: Send reduced amount (original - OPERATIONAL fee = 30 NGN) to Obiex
+      // Call Obiex service with NGNX
     const obiexPayload = {
       destination: {
         accountNumber: destination.accountNumber,
@@ -552,18 +546,17 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
         ...(destination.pagaBankCode && { pagaBankCode: destination.pagaBankCode }),
         ...(destination.merchantCode && { merchantCode: destination.merchantCode })
       },
-      amount: amountToObiex, // Send reduced amount (original - 30 NGN operational fee)
+      amount: amountToBank, // Send amount after total fee deduction
       currency: 'NGNX',
-      narration: narration || `NGNZ withdrawal - ${withdrawalReference} (₦${feeAmountRecorded} fee deducted)`
+      narration: narration || `NGNZ withdrawal - ${withdrawalReference}`
     };
 
-    logger.info('Initiating Obiex NGNX withdrawal with fee deduction', {
+    logger.info('Initiating Obiex NGNX withdrawal', {
       withdrawalReference,
       correlationId,
       originalAmount,
-      amountToObiex,
-      feeAmountRecorded, // Log recorded fee
-      feeAmountOperational: NGNZ_WITHDRAWAL_FEE_OPERATIONAL, // Log operational fee
+      amountToBank,
+      feeAmount,
       currency: 'NGNX',
       bankName: destination.bankName,
       accountNumber: maskAccountNumber(destination.accountNumber)
