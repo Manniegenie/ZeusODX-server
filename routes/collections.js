@@ -122,11 +122,11 @@ router.post('/initialize', async (req, res) => {
       // Create transaction record
       const transaction = new Transaction({
         userId,
-        type: 'COLLECTION',
+        type: 'DEPOSIT', // Using DEPOSIT as it's a valid enum value
         currency: currency.toUpperCase(),
         amount: amount,
         status: 'PENDING',
-        source: 'GLYDE_COLLECTION',
+        source: 'BANK', // Using BANK as it's a valid enum value
         reference: reference,
         narration: `Payment collection from ${customer_name}`,
         metadata: {
