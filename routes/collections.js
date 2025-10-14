@@ -91,8 +91,8 @@ router.post('/initialize', async (req, res) => {
 
     // We only support bank transfer, so ignore any channels passed in the request
 
-    // Use userId as reference for webhook tracking
-    const reference = userId.toString();
+    // Generate unique reference that includes userId for tracking
+    const reference = `GLYDE_${userId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`.toUpperCase();
 
     logger.info('Glyde collection request:', {
       userId,
@@ -197,8 +197,9 @@ router.get('/status/:reference', async (req, res) => {
     const userId = req.user.id;
     const { reference } = req.params;
 
-    // Reference should be the userId
-    if (reference !== userId.toString()) {
+    // Extract userId from reference (format: GLYDE_userId_timestamp_random)
+    const referenceUserId = reference.split('_')[1];
+    if (referenceUserId !== userId.toString()) {
       return res.status(403).json({
         success: false,
         message: 'Unauthorized access to this collection'
