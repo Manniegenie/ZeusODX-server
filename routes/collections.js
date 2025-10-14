@@ -109,8 +109,8 @@ router.post('/initialize', async (req, res) => {
       amount: amount,
       customer_name,
       customer_email,
-      channels: ["bank_transfer"], // Only allow bank transfer
-      default_channel: "bank_transfer", // Set default to bank transfer
+      channels: ["transfer"], // Only allow transfer
+      default_channel: "transfer", // Set default to transfer
       ...(customer_phone && { customer_phone }),
       ...(meta && { meta })
     };
