@@ -1,6 +1,5 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
-const speakeasy = require("speakeasy");
 const { body, validationResult } = require("express-validator");
 const router = express.Router();
 
@@ -42,14 +41,6 @@ router.post(
         if (!/^\d{6}$/.test(value)) throw new Error("Password PIN must be exactly 6 digits.");
         return true;
       }),
-    body("twoFactorCode")
-      .trim()
-      .notEmpty()
-      .withMessage("2FA code is required.")
-      .isLength({ min: 6, max: 6 })
-      .withMessage("2FA code must be exactly 6 digits.")
-      .matches(/^\d{6}$/)
-      .withMessage("2FA code must contain only digits."),
   ],
   async (req, res) => {
     const startTime = Date.now();
@@ -69,10 +60,10 @@ router.post(
       });
     }
 
-    const { email, passwordPin, twoFactorCode } = req.body;
+    const { email, passwordPin } = req.body;
 
     try {
-      // Find admin user and validate 2FA
+      // Find admin user
       const admin = await AdminUser.findOne({ email }).lean(false);
       if (!admin) {
         logger.warn("Admin sign-in attempt with non-existent email", { email });
@@ -108,19 +99,6 @@ router.post(
           message: `Admin account is locked due to multiple failed attempts. Try again after ${unlockTime.toLocaleString()}.`,
           lockedUntil: unlockTime.toISOString(),
           minutesRemaining: timeRemaining
-        });
-      }
-
-      // Check if 2FA is enabled
-      if (!admin.is2FAEnabled || !admin.twoFASecret) {
-        logger.warn("Admin sign-in attempt without 2FA setup", { 
-          adminId: admin._id, 
-          email: admin.email 
-        });
-        return res.status(403).json({ 
-          success: false, 
-          message: "2FA is not set up. Please set up 2FA first.",
-          require2FASetup: true
         });
       }
 
@@ -163,25 +141,6 @@ router.post(
         return res.status(401).json({ 
           success: false, 
           message: `Invalid PIN. ${attemptsRemaining} attempt(s) remaining.` 
-        });
-      }
-
-      // Validate 2FA token
-      const verified = speakeasy.totp.verify({
-        secret: admin.twoFASecret,
-        encoding: 'base32',
-        token: twoFactorCode,
-        window: 2 // Allow for clock drift
-      });
-
-      if (!verified) {
-        logger.warn("Invalid 2FA code during admin sign-in", { 
-          adminId: admin._id, 
-          email: admin.email 
-        });
-        return res.status(401).json({ 
-          success: false, 
-          message: "Invalid 2FA code" 
         });
       }
 
