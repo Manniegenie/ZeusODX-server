@@ -75,10 +75,10 @@ router.post('/initialize', async (req, res) => {
     }
     
     // Basic validation
-    if (!currency || !amount || !customer_name || !customer_email || !channels) {
+    if (!currency || !amount || !customer_name || !customer_email) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: currency, amount, customer_name, customer_email, channels'
+        message: 'Missing required fields: currency, amount, customer_name, customer_email'
       });
     }
 
@@ -89,12 +89,7 @@ router.post('/initialize', async (req, res) => {
       });
     }
 
-    if (!Array.isArray(channels) || channels.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'At least one payment channel is required'
-      });
-    }
+    // We only support bank transfer, so ignore any channels passed in the request
 
     // Use userId as reference for webhook tracking
     const reference = userId.toString();
@@ -107,16 +102,16 @@ router.post('/initialize', async (req, res) => {
       customer: customer_name
     });
 
-    // Prepare Glyde API payload
+    // Prepare Glyde API payload with bank transfer channel
     const glydePayload = {
       currency: currency.toUpperCase(),
       reference: reference, // Use userId as reference
       amount: amount,
       customer_name,
       customer_email,
-      channels,
+      channels: ["bank_transfer"], // Only allow bank transfer
+      default_channel: "bank_transfer", // Set default to bank transfer
       ...(customer_phone && { customer_phone }),
-      ...(default_channel && { default_channel }),
       ...(meta && { meta })
     };
 
