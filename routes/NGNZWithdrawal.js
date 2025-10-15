@@ -318,8 +318,8 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         is_ngnz_withdrawal: true,
         // Fee information (use RECORDED fee)
         totalAmountDeducted: totalDeducted,
-        amountSentToObiex: amountToObiex,
-        withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
+        amountSentToBank: amountToBank,
+        withdrawalFee: feeAmount, // Total fee (100 NGN)
         feeApplied: true
       }
     });
@@ -337,9 +337,8 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       withdrawalReference,
       correlationId,
       totalDeducted,
-      amountToObiex,
-      feeAmountRecorded, // Log recorded fee
-      feeAmountOperational: NGNZ_WITHDRAWAL_FEE_OPERATIONAL, // Log operational fee
+      amountToBank,
+      feeAmount,
       destinationBank: destination.bankName,
       destinationAccount: maskAccountNumber(destination.accountNumber),
       balanceBefore: userBefore.ngnzBalance,
@@ -356,7 +355,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         status: 'SUCCESS',
         source: 'NGNZ_WITHDRAWAL',
         action: 'Deduct NGNZ for Withdrawal',
-        description: `Deducted ₦${totalDeducted.toLocaleString()} NGNZ for bank withdrawal (₦${amountToObiex.toLocaleString()} to bank + ₦${feeAmountRecorded} fee)`,
+        description: `Deducted ₦${totalDeducted.toLocaleString()} NGNZ for bank withdrawal (₦${amountToBank.toLocaleString()} to bank + ₦${feeAmount} fee)`,
         beforeState: {
           ngnzBalance: userBefore.ngnzBalance
         },
@@ -374,8 +373,8 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
           sourceCurrency: 'NGNZ',
           targetCurrency: 'NGN',
           sourceAmount: totalDeducted,
-          transferAmount: amountToObiex,
-          withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
+          transferAmount: amountToBank,
+          withdrawalFee: feeAmount, // Total fee (100 NGN)
           provider: 'OBIEX_WITHDRAWAL',
           swapType: 'NGNZ_TO_BANK'
         },
@@ -400,7 +399,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         status: 'SUCCESS',
         source: 'NGNZ_WITHDRAWAL',
         action: 'Create NGNZ Withdrawal Transaction',
-        description: `Created withdrawal transaction for ₦${totalDeducted.toLocaleString()} NGNZ (₦${amountToObiex.toLocaleString()} to bank + ₦${feeAmountRecorded} fee)`,
+        description: `Created withdrawal transaction for ₦${totalDeducted.toLocaleString()} NGNZ (₦${amountToBank.toLocaleString()} to bank + ₦${feeAmount} fee)`,
         financialImpact: {
           currency: 'NGNZ',
           amount: -totalDeducted,
@@ -628,8 +627,8 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
           sourceCurrency: 'NGNZ',
           targetCurrency: 'NGN',
           sourceAmount: originalAmount,
-          transferAmount: amountToObiex,
-          withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
+          transferAmount: amountToBank,
+          withdrawalFee: feeAmount, // Total fee (100 NGN)
           provider: 'OBIEX',
           swapType: 'NGNZ_TO_BANK'
         },
@@ -714,8 +713,8 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
           sourceCurrency: 'NGNZ',
           targetCurrency: 'NGN',
           sourceAmount: originalAmount,
-          transferAmount: amountToObiex,
-          withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
+          transferAmount: amountToBank,
+          withdrawalFee: feeAmount, // Total fee (100 NGN)
           provider: 'OBIEX',
           swapType: 'NGNZ_TO_BANK'
         },
