@@ -17,8 +17,9 @@ const userCache = new Map();
 const CACHE_TTL = 30000; // 30 seconds
 
 // NGNZ withdrawal fee configuration
-const NGNZ_WITHDRAWAL_FEE = 100; // Total fee shown to users
+const NGNZ_WITHDRAWAL_FEE = 100; // Total fee (70 to provider + 30 internal)
 const NGNZ_WITHDRAWAL_FEE_RECORDED = NGNZ_WITHDRAWAL_FEE; // For backward compatibility
+const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = NGNZ_WITHDRAWAL_FEE; // For backward compatibility
 
 /**
  * Create audit entry with error handling
@@ -209,8 +210,8 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     
     // Calculate amounts (fee is always 100 NGN total)
     const totalDeducted = amount; // Full amount deducted from user
-    const amountToBank = amount - NGNZ_WITHDRAWAL_FEE; // Amount user receives in bank
-    const feeAmount = NGNZ_WITHDRAWAL_FEE; // Total fee (100 NGN)
+    const amountToBank = amount - NGNZ_WITHDRAWAL_FEE; // Amount user receives in bank (after 100 NGN fee)
+    const feeAmount = NGNZ_WITHDRAWAL_FEE; // Total fee (100 NGN = 70 to provider + 30 internal)
     
     // Get current balance for audit trail
     const userBefore = await User.findById(userId).select('ngnzBalance').lean();
@@ -251,18 +252,18 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       source: 'NGNZ_WITHDRAWAL',
       reference: withdrawalReference,
       obiexTransactionId: withdrawalReference,
-      narration: narration || `NGNZ withdrawal to ${destination.bankName} (includes ₦${feeAmountRecorded} fee)`,
+      narration: narration || `NGNZ withdrawal to ${destination.bankName} (includes ₦${feeAmount} fee)`,
 
       // NEW: first-class NGNZ fields (use RECORDED fee)
       isNGNZWithdrawal: true,
-      bankAmount: amountToObiex,        // POSITIVE amount that will hit bank
-      withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
+      bankAmount: amountToBank,        // POSITIVE amount that will hit bank
+      withdrawalFee: feeAmount, // Total fee (100 NGN)
       payoutCurrency: 'NGN',
       ngnzWithdrawal: {
         withdrawalReference,
         requestedAmount: totalDeducted,
-        withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
-        amountSentToBank: amountToObiex,
+        withdrawalFee: feeAmount, // Total fee (100 NGN)
+        amountSentToBank: amountToBank,
         payoutCurrency: 'NGN',
         destination: {
           bankName: destination.bankName,
@@ -835,9 +836,8 @@ router.post('/withdraw', async (req, res) => {
       amount,
       destinationBank: destination?.bankName,
       destinationAccount: destination?.accountNumber ? maskAccountNumber(destination.accountNumber) : null,
-      withdrawalFeeRecorded: NGNZ_WITHDRAWAL_FEE_RECORDED,
-      withdrawalFeeOperational: NGNZ_WITHDRAWAL_FEE_OPERATIONAL,
-      amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL : null,
+      withdrawalFee: NGNZ_WITHDRAWAL_FEE,
+      amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE : null,
       twoFactorCode: '[REDACTED]',
       passwordpin: '[REDACTED]'
     });
@@ -852,7 +852,7 @@ router.post('/withdraw', async (req, res) => {
       description: `NGNZ withdrawal request: ₦${amount?.toLocaleString() || 'N/A'} to ${destination?.bankName || 'unknown bank'} (₦${NGNZ_WITHDRAWAL_FEE_RECORDED} fee will be deducted)`,
       requestData: {
         amount,
-        amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL : null,
+        amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE : null,
         withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED, // RECORDED fee
         destination: destination ? {
           ...destination,
@@ -1127,7 +1127,7 @@ router.post('/withdraw', async (req, res) => {
     const obiexResult = await processObiexWithdrawal(
       userId,
       { amount, destination, narration },
-      withdrawalResult.amountToObiex, // This is amount - 30 NGN (operational fee)
+      withdrawalResult.amountToBank, // This is amount - 100 NGN fee
       withdrawalResult.withdrawalReference,
       withdrawalResult.transaction._id,
       correlationId,
