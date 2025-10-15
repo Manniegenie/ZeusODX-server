@@ -11,7 +11,7 @@ const userSchema = new mongoose.Schema({
   // Authentication
   username: { type: String },
   isUsernameCustom: { type: Boolean, default: false },
-  email: { type: String, required: true, unique: true },
+  email: { type: String, required: true },
   emailVerified: { type: Boolean, default: false },
   password: { type: String },
   passwordpin: { type: String },
@@ -174,6 +174,7 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Indexes
+userSchema.index({ email: 1 }, { unique: true }); // Add explicit email index
 userSchema.index({ username: 1 }, { unique: true, sparse: true });
 userSchema.index({ phonenumber: 1 }, { unique: true, sparse: true });
 userSchema.index({ bvn: 1 }, { unique: true, sparse: true });
