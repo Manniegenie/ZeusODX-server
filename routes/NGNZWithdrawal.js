@@ -18,6 +18,7 @@ const CACHE_TTL = 30000; // 30 seconds
 
 // NGNZ withdrawal fee configuration
 const NGNZ_WITHDRAWAL_FEE = 100; // Total fee shown to users
+const NGNZ_WITHDRAWAL_FEE_RECORDED = NGNZ_WITHDRAWAL_FEE; // For backward compatibility
 
 /**
  * Create audit entry with error handling
