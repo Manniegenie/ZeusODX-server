@@ -845,7 +845,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
         targetCurrency: 'NGN',
         sourceAmount: withdrawalData.amount,
         transferAmount: amountToBank,
-        withdrawalFee: NGNZ_WITHDRAWAL_FEE,
+        withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED,
         provider: 'OBIEX',
         swapType: 'NGNZ_TO_BANK'
       },
@@ -883,8 +883,8 @@ router.post('/withdraw', async (req, res) => {
       amount,
       destinationBank: destination?.bankName,
       destinationAccount: destination?.accountNumber ? maskAccountNumber(destination.accountNumber) : null,
-      withdrawalFee: NGNZ_WITHDRAWAL_FEE,
-      amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE : null,
+      withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED,
+      amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL : null,
       twoFactorCode: '[REDACTED]',
       passwordpin: '[REDACTED]'
     });
@@ -953,7 +953,7 @@ router.post('/withdraw', async (req, res) => {
         message: 'Validation failed',
         errors: validationErrors,
         withdrawalFee: {
-          amount: NGNZ_WITHDRAWAL_FEE,
+          amount: NGNZ_WITHDRAWAL_FEE_RECORDED,
           currency: 'NGN',
           description: 'Withdrawal processing fee'
         }
@@ -1149,7 +1149,7 @@ router.post('/withdraw', async (req, res) => {
         shortfall: balanceValidation.shortfall || 0,
         currency: 'NGNZ',
         withdrawalFee: {
-          amount: NGNZ_WITHDRAWAL_FEE,
+          amount: NGNZ_WITHDRAWAL_FEE_RECORDED,
           currency: 'NGN',
           description: 'Withdrawal processing fee'
         }
