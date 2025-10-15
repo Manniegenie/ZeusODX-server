@@ -934,7 +934,17 @@ router.post('/withdraw', async (req, res) => {
       withdrawalFeeOperational: NGNZ_WITHDRAWAL_FEE_OPERATIONAL,
       amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL : null,
       twoFactorCode: '[REDACTED]',
-      passwordpin: '[REDACTED]'
+      passwordpin: '[REDACTED]',
+      correlationId,
+      requestBody: {
+        hasAmount: !!amount,
+        hasDestination: !!destination,
+        hasNarration: !!narration,
+        hasTwoFactorCode: !!twoFactorCode,
+        hasPasswordPin: !!passwordpin,
+        twoFactorCodeLength: twoFactorCode?.length,
+        passwordPinLength: passwordpin?.length
+      }
     });
     
     // Create audit for withdrawal request
@@ -1027,7 +1037,21 @@ router.post('/withdraw', async (req, res) => {
     }
 
     // Validate 2FA setup and code
+    logger.info('Checking 2FA setup for user', { 
+      userId, 
+      hasTwoFASecret: !!user.twoFASecret, 
+      is2FAEnabled: !!user.is2FAEnabled,
+      twoFactorCodeProvided: !!twoFactorCode,
+      twoFactorCodeLength: twoFactorCode?.length
+    });
+
     if (!user.twoFASecret || !user.is2FAEnabled) {
+      logger.warn('2FA not setup for user', { 
+        userId, 
+        hasTwoFASecret: !!user.twoFASecret, 
+        is2FAEnabled: !!user.is2FAEnabled 
+      });
+
       await createAuditEntry({
         userId,
         eventType: 'USER_ACTION',
@@ -1052,9 +1076,21 @@ router.post('/withdraw', async (req, res) => {
       });
     }
 
+    logger.info('2FA setup verified, validating 2FA code', { 
+      userId, 
+      twoFactorCodeProvided: !!twoFactorCode,
+      twoFactorCodeLength: twoFactorCode?.length 
+    });
+
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
       logger.warn('2FA validation failed for NGNZ withdrawal', { 
-        userId, errorType: 'INVALID_2FA'
+        userId, 
+        errorType: 'INVALID_2FA',
+        hasTwoFASecret: !!user.twoFASecret,
+        is2FAEnabled: !!user.is2FAEnabled,
+        twoFactorCodeProvided: !!twoFactorCode,
+        twoFactorCodeLength: twoFactorCode?.length,
+        twoFactorCodeFormat: twoFactorCode ? /^\d{6}$/.test(twoFactorCode) : false
       });
 
       await createAuditEntry({
@@ -1088,7 +1124,16 @@ router.post('/withdraw', async (req, res) => {
     logger.info('2FA validation successful for NGNZ withdrawal', { userId });
 
     // Validate password PIN setup and code
+    logger.info('Checking password PIN setup for user', { 
+      userId, 
+      hasPasswordPin: !!user.passwordpin,
+      passwordPinProvided: !!passwordpin,
+      passwordPinLength: passwordpin?.length
+    });
+
     if (!user.passwordpin) {
+      logger.warn('Password PIN not setup for user', { userId });
+
       await createAuditEntry({
         userId,
         eventType: 'USER_ACTION',
@@ -1113,10 +1158,22 @@ router.post('/withdraw', async (req, res) => {
       });
     }
 
+    logger.info('Password PIN setup verified, validating PIN', { 
+      userId, 
+      passwordPinProvided: !!passwordpin,
+      passwordPinLength: passwordpin?.length,
+      passwordPinFormat: passwordpin ? /^\d{6}$/.test(passwordpin) : false
+    });
+
     const isPasswordPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
     if (!isPasswordPinValid) {
       logger.warn('Password PIN validation failed for NGNZ withdrawal', { 
-        userId, errorType: 'INVALID_PASSWORDPIN'
+        userId, 
+        errorType: 'INVALID_PASSWORDPIN',
+        hasPasswordPin: !!user.passwordpin,
+        passwordPinProvided: !!passwordpin,
+        passwordPinLength: passwordpin?.length,
+        passwordPinFormat: passwordpin ? /^\d{6}$/.test(passwordpin) : false
       });
 
       await createAuditEntry({
