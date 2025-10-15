@@ -471,7 +471,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       transaction: withdrawalTransaction,
       withdrawalReference,
       totalDeducted,
-      amountToObiex,
+      amountToObiex: amountToBank, // Return amount sent to bank
       feeAmount: feeAmountRecorded // Return recorded fee
     };
 
