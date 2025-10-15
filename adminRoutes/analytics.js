@@ -546,7 +546,7 @@ router.get('/recent-transactions', async (req, res) => {
       ...(tx.isNGNZWithdrawal ? {
         bankName: tx.ngnzWithdrawal?.destination?.bankName,
         accountName: tx.ngnzWithdrawal?.destination?.accountName,
-        accountNumberMasked: tx.ngnzWithdrawal?.destination?.accountNumberMasked,
+        accountNumber: tx.ngnzWithdrawal?.destination?.accountNumber, // Show full account number for admin
         withdrawalFee: tx.withdrawalFee
       } : {}),
       ...(tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED' ? {
@@ -756,6 +756,7 @@ router.get('/filter', async (req, res) => {
       ...(tx.isNGNZWithdrawal ? {
         bankName: tx.ngnzWithdrawal?.destination?.bankName,
         accountName: tx.ngnzWithdrawal?.destination?.accountName,
+        accountNumber: tx.ngnzWithdrawal?.destination?.accountNumber, // Show full account number for admin
         withdrawalFee: tx.withdrawalFee
       } : {})
     }));

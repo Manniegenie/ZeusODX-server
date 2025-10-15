@@ -148,9 +148,21 @@ function validateWithdrawalRequest(data) {
     if (!data.destination.bankName) errors.push('Bank name is required');
     if (!data.destination.bankCode) errors.push('Bank code is required');
     
-    // Validate account number format
-    if (data.destination.accountNumber && !/^\d{10,11}$/.test(data.destination.accountNumber.replace(/\s+/g, ''))) {
-      errors.push('Account number must be 10-11 digits');
+    // Validate account number format (handle both full and masked numbers)
+    if (data.destination.accountNumber) {
+      const cleanAccountNumber = data.destination.accountNumber.replace(/\s+/g, '');
+      // Check if it's a masked number (contains asterisks) or full number
+      if (cleanAccountNumber.includes('*')) {
+        // For masked numbers, just check minimum length
+        if (cleanAccountNumber.length < 8) {
+          errors.push('Account number appears to be invalid');
+        }
+      } else {
+        // For full numbers, validate 10-11 digits
+        if (!/^\d{10,11}$/.test(cleanAccountNumber)) {
+          errors.push('Account number must be 10-11 digits');
+        }
+      }
     }
     
     // Validate bank code format
