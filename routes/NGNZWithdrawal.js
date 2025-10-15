@@ -292,14 +292,14 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         accountNumber: destination.accountNumber,
         currency: 'NGNZ',
         amount: formatCurrency(totalDeducted, 'NGNZ'),
-        fee: formatCurrency(feeAmountRecorded), // RECORDED fee (100 NGN)
+        fee: formatCurrency(feeAmount), // Total fee (100 NGN)
         narration: narration || `NGNZ withdrawal to ${destination.bankName}`,
         date: formatDate(new Date()),
         category: 'withdrawal',
         additionalFields: {
-          amountSentToBank: formatCurrency(amountToObiex),
+          amountSentToBank: formatCurrency(amountToBank),
           totalAmountDeducted: formatCurrency(totalDeducted, 'NGNZ'),
-          withdrawalFee: formatCurrency(feeAmountRecorded), // RECORDED fee (100 NGN)
+          withdrawalFee: formatCurrency(feeAmount), // Total fee (100 NGN)
           payoutCurrency: 'NGN'
         }
       },
@@ -849,11 +849,11 @@ router.post('/withdraw', async (req, res) => {
       status: 'PENDING',
       source: 'API_ENDPOINT',
       action: 'Request NGNZ Withdrawal',
-      description: `NGNZ withdrawal request: ₦${amount?.toLocaleString() || 'N/A'} to ${destination?.bankName || 'unknown bank'} (₦${NGNZ_WITHDRAWAL_FEE_RECORDED} fee will be deducted)`,
+      description: `NGNZ withdrawal request: ₦${amount?.toLocaleString() || 'N/A'} to ${destination?.bankName || 'unknown bank'} (₦${NGNZ_WITHDRAWAL_FEE} fee will be deducted)`,
       requestData: {
         amount,
         amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE : null,
-        withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED, // RECORDED fee
+        withdrawalFee: NGNZ_WITHDRAWAL_FEE, // Total fee
         destination: destination ? {
           ...destination,
           accountNumber: maskAccountNumber(destination.accountNumber)
@@ -906,7 +906,7 @@ router.post('/withdraw', async (req, res) => {
         message: 'Validation failed',
         errors: validationErrors,
         withdrawalFee: {
-          amount: NGNZ_WITHDRAWAL_FEE_RECORDED, // Show recorded fee to user
+          amount: NGNZ_WITHDRAWAL_FEE, // Total fee
           currency: 'NGN',
           description: 'Withdrawal processing fee'
         }
@@ -1102,7 +1102,7 @@ router.post('/withdraw', async (req, res) => {
         shortfall: balanceValidation.shortfall || 0,
         currency: 'NGNZ',
         withdrawalFee: {
-          amount: NGNZ_WITHDRAWAL_FEE_RECORDED, // Show recorded fee to user
+          amount: NGNZ_WITHDRAWAL_FEE, // Total fee
           currency: 'NGN',
           description: 'Withdrawal processing fee'
         }
@@ -1561,7 +1561,7 @@ router.get('/fees', (req, res) => {
       message: 'NGNZ withdrawal fee information',
       data: {
         withdrawalFee: {
-          amount: NGNZ_WITHDRAWAL_FEE_RECORDED, // Show recorded fee to users
+          amount: NGNZ_WITHDRAWAL_FEE, // Total fees
           currency: 'NGN',
           description: 'Fee charged for processing NGNZ bank withdrawals',
           appliesTo: 'All NGNZ withdrawals to bank accounts'
