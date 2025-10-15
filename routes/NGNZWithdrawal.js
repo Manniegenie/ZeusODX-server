@@ -151,11 +151,6 @@ function validateWithdrawalRequest(data) {
     errors.push('Maximum withdrawal amount is ₦1,000,000');
   }
 
-  // Check if amount can cover the withdrawal fee (use operational fee)
-  if (data.amount && data.amount <= NGNZ_WITHDRAWAL_FEE_OPERATIONAL) {
-    errors.push(`Amount too small to cover ₦${NGNZ_WITHDRAWAL_FEE_RECORDED} withdrawal fee. Minimum: ₦${NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1}`);
-  }
-
   // 2FA validation
   if (!data.twoFactorCode?.trim()) {
     errors.push('Two-factor authentication code is required');
@@ -215,7 +210,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     // Calculate amounts using OPERATIONAL fee (30 NGN)
     const totalDeducted = amount; // Full amount deducted from user
     const amountToBank = amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL; // Amount sent to bank (minus operational fee)
-    const feeAmountRecordedRecorded = NGNZ_WITHDRAWAL_FEE_RECORDED; // Fee recorded in database (100 NGN)
+    const feeAmountRecorded = NGNZ_WITHDRAWAL_FEE_RECORDED; // Fee recorded in database (100 NGN)
     
     // Get current balance for audit trail
     const userBefore = await User.findById(userId).select('ngnzBalance').lean();
@@ -260,7 +255,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       // NEW: first-class NGNZ fields (use RECORDED fee)
       isNGNZWithdrawal: true,
       bankAmount: amountToBank,        // POSITIVE amount that will hit bank
-      withdrawalFee: feeAmountRecordedRecorded, // RECORDED fee (100 NGN)
+      withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
       payoutCurrency: 'NGN',
       ngnzWithdrawal: {
         withdrawalReference,
@@ -549,6 +544,9 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     const { destination, narration } = withdrawalData;
     const originalAmount = withdrawalData.amount;
     const feeAmountRecorded = NGNZ_WITHDRAWAL_FEE_RECORDED; // Use recorded fee (100 NGN)
+    
+    // Use the parameter name consistently throughout the function
+    const amountToBank = amountToObiex; // Alias for clarity
     
     // Create audit for Obiex operation initiation
     await createAuditEntry({
