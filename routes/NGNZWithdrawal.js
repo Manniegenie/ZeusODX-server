@@ -42,14 +42,18 @@ async function createAuditEntry(auditData) {
  * Generate correlation ID for tracking related operations
  */
 function generateCorrelationId() {
-  return `NGNZ_WD_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substr(2, 9);
+  return `NGNZ_WD_${timestamp}_${random}`;
 }
 
 /**
  * Generate unique withdrawal reference
  */
 function generateWithdrawalReference() {
-  return `NGNZ_WD_${Date.now()}_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+  const timestamp = Date.now();
+  const random = crypto.randomBytes(4).toString('hex').toUpperCase();
+  return `NGNZ_WD_${timestamp}_${random}`;
 }
 
 /**
@@ -72,7 +76,11 @@ function getSystemContext(req) {
 function maskAccountNumber(accountNumber) {
   if (!accountNumber) return '';
   const str = String(accountNumber).replace(/\s+/g, '');
-  return str.length <= 4 ? str : `${str.slice(0, 2)}****${str.slice(-2)}`;
+  if (str.length <= 4) {
+    // For very short numbers, show only last 2 digits
+    return str.length <= 2 ? '**' : `**${str.slice(-2)}`;
+  }
+  return `${str.slice(0, 2)}****${str.slice(-2)}`;
 }
 
 /**
@@ -139,6 +147,16 @@ function validateWithdrawalRequest(data) {
     if (!data.destination.accountName) errors.push('Account name is required');
     if (!data.destination.bankName) errors.push('Bank name is required');
     if (!data.destination.bankCode) errors.push('Bank code is required');
+    
+    // Validate account number format
+    if (data.destination.accountNumber && !/^\d{10,11}$/.test(data.destination.accountNumber.replace(/\s+/g, ''))) {
+      errors.push('Account number must be 10-11 digits');
+    }
+    
+    // Validate bank code format
+    if (data.destination.bankCode && !/^\d{3}$/.test(data.destination.bankCode)) {
+      errors.push('Bank code must be 3 digits');
+    }
   }
   
   // Validate amount limits including withdrawal fee (use operational fee for validation)
@@ -164,6 +182,12 @@ function validateWithdrawalRequest(data) {
     if (!/^\d{6}$/.test(passwordpin)) {
       errors.push('Password PIN must be exactly 6 numbers');
     }
+    
+    // Additional security: Check for common weak PINs
+    const weakPins = ['000000', '111111', '123456', '654321', '123123'];
+    if (weakPins.includes(passwordpin)) {
+      errors.push('Password PIN is too weak. Please choose a stronger PIN');
+    }
   }
   
   return errors;
@@ -186,7 +210,7 @@ async function getCachedUserAuth(userId) {
   
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
-    setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
+    // Removed setTimeout to prevent memory leaks - cleanup handled by periodic cleanup
   }
   
   return user;
@@ -233,11 +257,18 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     );
 
     if (!updatedUser) {
+      logger.error('Balance update failed - insufficient NGNZ balance or user not found', {
+        userId,
+        requestedAmount: totalDeducted,
+        correlationId,
+        availableBalance: userBefore?.ngnzBalance || 0
+      });
       throw new Error('Balance update failed - insufficient NGNZ balance or user not found');
     }
 
-    // Clear user cache
+    // Clear user cache to ensure fresh data on next request
     userCache.delete(`user_auth_${userId}`);
+    userCache.delete(`user_balance_${userId}`); // Also clear balance cache if it exists
 
     // 2. Create withdrawal transaction record
     const last4 = String(destination.accountNumber || '').slice(-4);
@@ -341,7 +372,12 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       destinationAccount: maskAccountNumber(destination.accountNumber),
       balanceBefore: userBefore.ngnzBalance,
       balanceAfter: updatedUser.ngnzBalance,
-      transactionId: withdrawalTransaction._id
+      transactionId: withdrawalTransaction._id,
+      feeStructure: {
+        operationalFee: NGNZ_WITHDRAWAL_FEE_OPERATIONAL,
+        recordedFee: NGNZ_WITHDRAWAL_FEE_RECORDED,
+        netRetention: NGNZ_WITHDRAWAL_FEE_RECORDED - NGNZ_WITHDRAWAL_FEE_OPERATIONAL
+      }
     });
 
     // Create comprehensive audit entries (outside transaction)
@@ -595,7 +631,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
       },
       amount: amountToBank, // Send amount after total fee deduction
       currency: 'NGNX',
-      narration: narration || `NGNZ withdrawal - ${withdrawalReference}`
+      narration: narration || `NGNZ withdrawal - ${withdrawalReference} (₦${feeAmountRecorded} fee deducted)`
     };
 
     logger.info('Initiating Obiex NGNX withdrawal', {
@@ -611,7 +647,8 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
 
     const obiexResult = await debitNaira(obiexPayload, {
       userId: userId.toString(),
-      idempotencyKey: `ngnz-wd-${withdrawalReference}`
+      idempotencyKey: `ngnz-wd-${withdrawalReference}`,
+      timeout: 30000 // 30 second timeout for Obiex calls
     });
 
     const endTime = new Date();
@@ -1377,6 +1414,14 @@ router.get('/status/:withdrawalId', async (req, res) => {
   const systemContext = getSystemContext(req);
   
   try {
+    // Check if user is authenticated
+    if (!req.user?.id) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
     const userId = req.user.id;
     const { withdrawalId } = req.params;
 
@@ -1424,6 +1469,7 @@ router.get('/status/:withdrawalId', async (req, res) => {
       transaction.bankAmount ??
       transaction.ngnzWithdrawal?.amountSentToBank ??
       transaction.metadata?.amountSentToObiex ??
+      transaction.metadata?.actualAmountSent ??
       Math.max(totalAmount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL, 0); // Use operational fee for calculation
 
     const dest = transaction.ngnzWithdrawal?.destination || {};
@@ -1499,6 +1545,14 @@ router.get('/receipt/:transactionId', async (req, res) => {
   const systemContext = getSystemContext(req);
   
   try {
+    // Check if user is authenticated
+    if (!req.user?.id) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
     const userId = req.user.id;
     const { transactionId } = req.params;
 
@@ -1587,6 +1641,13 @@ router.get('/fees', (req, res) => {
   const systemContext = getSystemContext(req);
   
   try {
+    // Check if user is authenticated
+    if (!req.user?.id) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
     // Simple audit for fee inquiry
     setImmediate(async () => {
       await createAuditEntry({
