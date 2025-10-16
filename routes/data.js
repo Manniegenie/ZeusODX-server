@@ -6,7 +6,6 @@ const BillTransaction = require('../models/billstransaction');
 const { vtuAuth } = require('../auth/billauth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
-const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService'); // <-- imported
 
@@ -332,11 +331,8 @@ router.post('/purchase', async (req, res) => {
     const { phone, service_id, variation_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
     const currency = 'NGNZ';
     
-    // Step 2: Get user data (with caching) and run validations in parallel
-    const [user, kycValidation] = await Promise.all([
-      getCachedUser(userId),
-      validateTransactionLimit(userId, amount, 'NGNZ', 'DATA')
-    ]);
+    // Step 2: Get user data
+    const user = await getCachedUser(userId);
     
     if (!user) {
       return res.status(404).json({
@@ -345,20 +341,13 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 2.1: EARLY BALANCE CHECK - Check balance immediately after getting user
+    // Step 2.1: Balance check
     const availableBalance = user.ngnzBalance || 0;
     if (availableBalance < amount) {
-      logger.info(`Insufficient NGNZ balance for user ${userId}: Available=${availableBalance}, Required=${amount}`);
       return res.status(400).json({
         success: false,
         error: 'INSUFFICIENT_NGNZ_BALANCE',
-        message: `Insufficient NGNZ balance. Available: ₦${availableBalance.toLocaleString()}, Required: ₦${amount.toLocaleString()}`,
-        details: {
-          availableBalance,
-          requiredAmount: amount,
-          currency: currency,
-          shortfall: amount - availableBalance
-        }
+        message: 'NGNZ balance insufficient'
       });
     }
 
@@ -404,20 +393,6 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ Password PIN validation successful for data purchase', { userId });
 
-    // Step 4: KYC validation
-    if (!kycValidation.allowed) {
-      return res.status(403).json({
-        success: false,
-        error: 'KYC_LIMIT_EXCEEDED',
-        message: kycValidation.message,
-        kycDetails: {
-          kycLevel: kycValidation.data?.kycLevel,
-          limitType: kycValidation.data?.limitType,
-          requestedAmount: kycValidation.data?.requestedAmount,
-          availableAmount: kycValidation.data?.availableAmount
-        }
-      });
-    }
     
     // Step 5: Generate unique IDs
     const timestamp = Date.now();
@@ -437,17 +412,10 @@ router.post('/purchase', async (req, res) => {
 
     const currentBalance = latestUser.ngnzBalance || 0;
     if (currentBalance < amount) {
-      logger.info(`Final balance check failed for user ${userId}: Available=${currentBalance}, Required=${amount}`);
       return res.status(400).json({
         success: false,
         error: 'INSUFFICIENT_NGNZ_BALANCE',
-        message: `Insufficient NGNZ balance. Available: ₦${currentBalance.toLocaleString()}, Required: ₦${amount.toLocaleString()}`,
-        details: {
-          availableBalance: currentBalance,
-          requiredAmount: amount,
-          currency: currency,
-          shortfall: amount - currentBalance
-        }
+        message: 'NGNZ balance insufficient'
       });
     }
 
@@ -473,7 +441,6 @@ router.post('/purchase', async (req, res) => {
         exchange_rate: 1,
         twofa_validated: true,
         passwordpin_validated: true,
-        kyc_validated: true,
         is_ngnz_transaction: true
       },
       network: service_id.toUpperCase(),
@@ -487,13 +454,12 @@ router.post('/purchase', async (req, res) => {
       timestamp: new Date(),
       twoFactorValidated: true,
       passwordPinValidated: true,
-      kycValidated: true
     };
     
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | data | ${amount} NGNZ | ✅ 2FA | ✅ PIN | ✅ KYC`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | data | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
     
     // Step 8: Call eBills API
     try {
@@ -561,13 +527,7 @@ router.post('/purchase', async (req, res) => {
         return res.status(400).json({
           success: false,
           error: 'INSUFFICIENT_NGNZ_BALANCE',
-          message: 'Insufficient NGNZ balance to complete the transaction. Your balance may have changed during processing.',
-          details: {
-            ebills_order_id: ebillsResponse.data?.order_id,
-            ebills_status: ebillsResponse.data?.status,
-            amount: amount,
-            currency: 'NGNZ'
-          }
+          message: 'NGNZ balance insufficient'
         });
       }
       
@@ -736,11 +696,7 @@ router.post('/purchase', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'INSUFFICIENT_NGNZ_BALANCE',
-        message: 'Insufficient NGNZ balance to complete the data purchase',
-        details: {
-          currency: 'NGNZ',
-          requestedAmount: validation?.sanitized?.amount
-        }
+        message: 'NGNZ balance insufficient'
       });
     }
 
