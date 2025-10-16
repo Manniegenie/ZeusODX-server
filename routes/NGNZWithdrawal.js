@@ -42,18 +42,14 @@ async function createAuditEntry(auditData) {
  * Generate correlation ID for tracking related operations
  */
 function generateCorrelationId() {
-  const timestamp = Date.now();
-  const random = Math.random().toString(36).substr(2, 9);
-  return `NGNZ_WD_${timestamp}_${random}`;
+  return `NGNZ_WD_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
 /**
  * Generate unique withdrawal reference
  */
 function generateWithdrawalReference() {
-  const timestamp = Date.now();
-  const random = crypto.randomBytes(4).toString('hex').toUpperCase();
-  return `NGNZ_WD_${timestamp}_${random}`;
+  return `NGNZ_WD_${Date.now()}_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 }
 
 /**
@@ -132,12 +128,10 @@ async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
 function validateWithdrawalRequest(data) {
   const errors = [];
   
-  // Amount validation
   if (!data.amount || typeof data.amount !== 'number' || data.amount <= 0) {
     errors.push('Amount must be a positive number');
   }
   
-  // Destination validation
   if (!data.destination) {
     errors.push('Destination bank details are required');
   } else {
@@ -145,58 +139,39 @@ function validateWithdrawalRequest(data) {
     if (!data.destination.accountName) errors.push('Account name is required');
     if (!data.destination.bankName) errors.push('Bank name is required');
     if (!data.destination.bankCode) errors.push('Bank code is required');
-    
-    // Validate account number format (handle both full and masked numbers)
-    if (data.destination.accountNumber) {
-      const cleanAccountNumber = data.destination.accountNumber.replace(/\s+/g, '');
-      
-      // Check if it's a masked number (contains asterisks) or full number
-      if (cleanAccountNumber.includes('*')) {
-        // For masked numbers, just check minimum length
-        if (cleanAccountNumber.length < 8) {
-          errors.push('Account number appears to be invalid');
-        }
-      } else {
-        // For full numbers, validate 10-11 digits
-        if (!/^\d{10,11}$/.test(cleanAccountNumber)) {
-          errors.push('Account number must be 10-11 digits');
-        }
-      }
-    }
-    
-    // Validate bank code format
-    if (data.destination.bankCode && !/^\d{3}$/.test(data.destination.bankCode)) {
-      errors.push('Bank code must be 3 digits');
-    }
   }
   
+  // Validate amount limits including withdrawal fee (use operational fee for validation)
+  const minimumWithdrawal = NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1; // Must be higher than operational fee
+  if (data.amount && data.amount < minimumWithdrawal) {
+    errors.push(`Minimum withdrawal amount is ₦${minimumWithdrawal} (includes ₦${NGNZ_WITHDRAWAL_FEE_RECORDED} fee)`);
+  }
+  
+  if (data.amount && data.amount > 1000000) {
+    errors.push('Maximum withdrawal amount is ₦1,000,000');
+  }
+
   // Check if amount can cover the withdrawal fee (use operational fee)
   if (data.amount && data.amount <= NGNZ_WITHDRAWAL_FEE_OPERATIONAL) {
     errors.push(`Amount too small to cover ₦${NGNZ_WITHDRAWAL_FEE_RECORDED} withdrawal fee. Minimum: ₦${NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1}`);
   }
 
+  // 2FA validation
   if (!data.twoFactorCode?.trim()) {
     errors.push('Two-factor authentication code is required');
   }
-  
+
+  // Password PIN validation
   if (!data.passwordpin?.trim()) {
     errors.push('Password PIN is required');
+  } else {
+    const passwordpin = String(data.passwordpin).trim();
+    if (!/^\d{6}$/.test(passwordpin)) {
+      errors.push('Password PIN must be exactly 6 numbers');
+    }
   }
   
   return errors;
-}
-
-/**
- * Compare password pin
- */
-async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
-  if (!candidatePasswordPin || !hashedPasswordPin) return false;
-  try {
-    return await bcrypt.compare(candidatePasswordPin, hashedPasswordPin);
-  } catch (error) {
-    logger.error('Password pin comparison failed:', error);
-    return false;
-  }
 }
 
 /**
@@ -262,20 +237,14 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     );
 
     if (!updatedUser) {
-      logger.error('Balance update failed - insufficient NGNZ balance or user not found', {
-        userId,
-        requestedAmount: totalDeducted,
-        correlationId,
-        availableBalance: userBefore?.ngnzBalance || 0
-      });
       throw new Error('Balance update failed - insufficient NGNZ balance or user not found');
     }
 
-    // Clear user cache to ensure fresh data on next request
+    // Clear user cache
     userCache.delete(`user_auth_${userId}`);
-    userCache.delete(`user_balance_${userId}`); // Also clear balance cache if it exists
 
     // 2. Create withdrawal transaction record
+    // NOTE: Record 100 NGN fee for database records (not the 30 NGN operational fee)
     const last4 = String(destination.accountNumber || '').slice(-4);
     const withdrawalTransaction = new Transaction({
       userId,
@@ -296,7 +265,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       ngnzWithdrawal: {
         withdrawalReference,
         requestedAmount: totalDeducted,
-        withdrawalFee: feeAmountRecorded,
+        withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
         amountSentToBank: amountToObiex,
         payoutCurrency: 'NGN',
         destination: {
@@ -315,7 +284,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         preparedAt: new Date(),
       },
 
-      // NEW: Frontend receipt details
+      // NEW: Frontend receipt details (use RECORDED fee)
       receiptDetails: {
         transactionId: withdrawalReference,
         reference: withdrawalReference,
@@ -326,19 +295,19 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         accountNumber: destination.accountNumber,
         currency: 'NGNZ',
         amount: formatCurrency(totalDeducted, 'NGNZ'),
-        fee: formatCurrency(feeAmountRecorded),
+        fee: formatCurrency(feeAmountRecorded), // RECORDED fee (100 NGN)
         narration: narration || `NGNZ withdrawal to ${destination.bankName}`,
         date: formatDate(new Date()),
         category: 'withdrawal',
         additionalFields: {
           amountSentToBank: formatCurrency(amountToObiex),
           totalAmountDeducted: formatCurrency(totalDeducted, 'NGNZ'),
-          withdrawalFee: formatCurrency(feeAmountRecorded),
+          withdrawalFee: formatCurrency(feeAmountRecorded), // RECORDED fee (100 NGN)
           payoutCurrency: 'NGN'
         }
       },
 
-      // Keep metadata for backwards compatibility
+      // Keep metadata for backwards compatibility (use RECORDED fee)
       metadata: {
         withdrawalType: 'NGNZ_TO_BANK',
         destinationBank: destination.bankName,
@@ -350,9 +319,10 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         twofa_validated: true,
         passwordpin_validated: true,
         is_ngnz_withdrawal: true,
+        // Fee information (use RECORDED fee)
         totalAmountDeducted: totalDeducted,
-        amountSentToBank: amountToObiex,
-        withdrawalFee: feeAmountRecorded,
+        amountSentToObiex: amountToObiex,
+        withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
         feeApplied: true
       }
     });
@@ -361,7 +331,6 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
 
     // 3. Commit balance update and transaction creation
     await session.commitTransaction();
-    transactionCommitted = true; // Mark as committed
     session.endSession();
     
     const endTime = new Date();
@@ -372,139 +341,102 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       correlationId,
       totalDeducted,
       amountToObiex,
-      feeAmountRecorded,
+      feeAmountRecorded, // Log recorded fee
+      feeAmountOperational: NGNZ_WITHDRAWAL_FEE_OPERATIONAL, // Log operational fee
       destinationBank: destination.bankName,
       destinationAccount: maskAccountNumber(destination.accountNumber),
       balanceBefore: userBefore.ngnzBalance,
       balanceAfter: updatedUser.ngnzBalance,
-      transactionId: withdrawalTransaction._id,
-      feeStructure: {
-        operationalFee: NGNZ_WITHDRAWAL_FEE_OPERATIONAL,
-        recordedFee: NGNZ_WITHDRAWAL_FEE_RECORDED,
-        netRetention: NGNZ_WITHDRAWAL_FEE_RECORDED - NGNZ_WITHDRAWAL_FEE_OPERATIONAL
-      }
+      transactionId: withdrawalTransaction._id
     });
 
-    // Create comprehensive audit entries (outside transaction)
-    // Use setImmediate to prevent blocking and avoid transaction state issues
-    setImmediate(async () => {
-      try {
-        await Promise.all([
-          // Balance update audit
-          createAuditEntry({
-            userId,
-            eventType: 'BALANCE_UPDATED',
-            status: 'SUCCESS',
-            source: 'NGNZ_WITHDRAWAL',
-            action: 'Deduct NGNZ for Withdrawal',
-            description: `Deducted ₦${totalDeducted.toLocaleString()} NGNZ for bank withdrawal (₦${amountToObiex.toLocaleString()} to bank + ₦${feeAmountRecorded} fee)`,
-            beforeState: {
-              ngnzBalance: userBefore.ngnzBalance
-            },
-            afterState: {
-              ngnzBalance: updatedUser.ngnzBalance
-            },
-            financialImpact: {
-              currency: 'NGNZ',
-              amount: -totalDeducted,
-              balanceBefore: userBefore.ngnzBalance,
-              balanceAfter: updatedUser.ngnzBalance
-            },
-            swapDetails: {
-              swapId: withdrawalReference,
-              sourceCurrency: 'NGNZ',
-              targetCurrency: 'NGN',
-              sourceAmount: totalDeducted,
-              transferAmount: amountToObiex,
-              withdrawalFee: feeAmountRecorded,
-              provider: 'OBIEX_WITHDRAWAL',
-              swapType: 'NGNZ_TO_BANK'
-            },
-            relatedEntities: {
-              correlationId,
-              relatedTransactionIds: [withdrawalTransaction._id]
-            },
-            systemContext,
-            timing: {
-              startTime,
-              endTime,
-              duration: endTime - startTime
-            },
-            tags: ['balance-update', 'ngnz-withdrawal', 'bank-transfer', 'fee-applied']
-          }),
-          
-          // Transaction creation audit
-          createAuditEntry({
-            userId,
-            transactionId: withdrawalTransaction._id,
-            eventType: 'TRANSACTION_CREATED',
-            status: 'SUCCESS',
-            source: 'NGNZ_WITHDRAWAL',
-            action: 'Create NGNZ Withdrawal Transaction',
-            description: `Created withdrawal transaction for ₦${totalDeducted.toLocaleString()} NGNZ (₦${amountToObiex.toLocaleString()} to bank + ₦${feeAmountRecorded} fee)`,
-            financialImpact: {
-              currency: 'NGNZ',
-              amount: -totalDeducted,
-              balanceBefore: userBefore.ngnzBalance,
-              balanceAfter: updatedUser.ngnzBalance
-            },
-            swapDetails: {
-              swapId: withdrawalReference,
-              provider: 'OBIEX_WITHDRAWAL',
-              swapType: 'NGNZ_TO_BANK',
-              withdrawalFee: feeAmountRecorded,
-              transferAmount: amountToObiex
-            },
-            relatedEntities: {
-              correlationId
-            },
-            systemContext,
-            tags: ['transaction', 'ngnz-withdrawal', 'bank-transfer', 'fee-applied']
-          })
-        ]);
-      } catch (auditError) {
-        logger.error('Failed to create audit entries after successful withdrawal', {
-          error: auditError.message,
-          userId,
-          withdrawalReference
-        });
-      }
-    });
+    // Create comprehensive audit entries (use RECORDED fee)
+    await Promise.all([
+      // Balance update audit
+      createAuditEntry({
+        userId,
+        eventType: 'BALANCE_UPDATED',
+        status: 'SUCCESS',
+        source: 'NGNZ_WITHDRAWAL',
+        action: 'Deduct NGNZ for Withdrawal',
+        description: `Deducted ₦${totalDeducted.toLocaleString()} NGNZ for bank withdrawal (₦${amountToObiex.toLocaleString()} to bank + ₦${feeAmountRecorded} fee)`,
+        beforeState: {
+          ngnzBalance: userBefore.ngnzBalance
+        },
+        afterState: {
+          ngnzBalance: updatedUser.ngnzBalance
+        },
+        financialImpact: {
+          currency: 'NGNZ',
+          amount: -totalDeducted,
+          balanceBefore: userBefore.ngnzBalance,
+          balanceAfter: updatedUser.ngnzBalance
+        },
+        swapDetails: {
+          swapId: withdrawalReference,
+          sourceCurrency: 'NGNZ',
+          targetCurrency: 'NGN',
+          sourceAmount: totalDeducted,
+          transferAmount: amountToObiex,
+          withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
+          provider: 'OBIEX_WITHDRAWAL',
+          swapType: 'NGNZ_TO_BANK'
+        },
+        relatedEntities: {
+          correlationId,
+          relatedTransactionIds: [withdrawalTransaction._id]
+        },
+        systemContext,
+        timing: {
+          startTime,
+          endTime,
+          duration: endTime - startTime
+        },
+        tags: ['balance-update', 'ngnz-withdrawal', 'bank-transfer', 'fee-applied']
+      }),
+      
+      // Transaction creation audit
+      createAuditEntry({
+        userId,
+        transactionId: withdrawalTransaction._id,
+        eventType: 'TRANSACTION_CREATED',
+        status: 'SUCCESS',
+        source: 'NGNZ_WITHDRAWAL',
+        action: 'Create NGNZ Withdrawal Transaction',
+        description: `Created withdrawal transaction for ₦${totalDeducted.toLocaleString()} NGNZ (₦${amountToObiex.toLocaleString()} to bank + ₦${feeAmountRecorded} fee)`,
+        financialImpact: {
+          currency: 'NGNZ',
+          amount: -totalDeducted,
+          balanceBefore: userBefore.ngnzBalance,
+          balanceAfter: updatedUser.ngnzBalance
+        },
+        swapDetails: {
+          swapId: withdrawalReference,
+          provider: 'OBIEX_WITHDRAWAL',
+          swapType: 'NGNZ_TO_BANK',
+          withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
+          transferAmount: amountToObiex
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['transaction', 'ngnz-withdrawal', 'bank-transfer', 'fee-applied']
+      })
+    ]);
 
     return {
       user: updatedUser,
       transaction: withdrawalTransaction,
       withdrawalReference,
       totalDeducted,
-      amountToObiex: amountToObiex, // Return amount sent to bank
+      amountToObiex,
       feeAmount: feeAmountRecorded // Return recorded fee
     };
 
   } catch (err) {
-    // Only abort if transaction hasn't been committed yet
-    if (!transactionCommitted) {
-      try {
-        await session.abortTransaction();
-      } catch (abortError) {
-        logger.error('Failed to abort transaction', {
-          error: abortError.message,
-          originalError: err.message,
-          userId,
-          correlationId
-        });
-      }
-    }
-    
-    // Ensure session is ended
-    try {
-      session.endSession();
-    } catch (endError) {
-      logger.error('Failed to end session', {
-        error: endError.message,
-        userId,
-        correlationId
-      });
-    }
+    await session.abortTransaction();
+    session.endSession();
     
     const endTime = new Date();
     
@@ -513,7 +445,6 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       stack: err.stack,
       userId,
       correlationId,
-      transactionCommitted,
       withdrawalData: {
         ...withdrawalData,
         destination: {
@@ -523,50 +454,39 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       }
     });
     
-    // Create failure audit entry (async, non-blocking)
-    setImmediate(async () => {
-      try {
-        await createAuditEntry({
-          userId,
-          eventType: 'SWAP_FAILED',
-          status: 'FAILED',
-          source: 'NGNZ_WITHDRAWAL',
-          action: 'Failed NGNZ Withdrawal Preparation',
-          description: `NGNZ withdrawal preparation failed: ${err.message}`,
-          errorDetails: {
-            message: err.message,
-            code: 'NGNZ_WITHDRAWAL_PREP_ERROR',
-            stack: err.stack,
-            transactionCommitted
-          },
-          swapDetails: {
-            sourceCurrency: 'NGNZ',
-            targetCurrency: 'NGN',
-            sourceAmount: withdrawalData.amount,
-            provider: 'OBIEX_WITHDRAWAL',
-            swapType: 'NGNZ_TO_BANK'
-          },
-          relatedEntities: {
-            correlationId
-          },
-          systemContext,
-          timing: {
-            startTime,
-            endTime,
-            duration: endTime - startTime
-          },
-          riskLevel: 'HIGH',
-          flagged: true,
-          flagReason: 'NGNZ withdrawal preparation failed',
-          tags: ['withdrawal', 'ngnz', 'failed', 'critical-error']
-        });
-      } catch (auditError) {
-        logger.error('Failed to create failure audit entry', {
-          error: auditError.message,
-          userId,
-          correlationId
-        });
-      }
+    // Create failure audit entry
+    await createAuditEntry({
+      userId,
+      eventType: 'SWAP_FAILED',
+      status: 'FAILED',
+      source: 'NGNZ_WITHDRAWAL',
+      action: 'Failed NGNZ Withdrawal Preparation',
+      description: `NGNZ withdrawal preparation failed: ${err.message}`,
+      errorDetails: {
+        message: err.message,
+        code: 'NGNZ_WITHDRAWAL_PREP_ERROR',
+        stack: err.stack
+      },
+      swapDetails: {
+        sourceCurrency: 'NGNZ',
+        targetCurrency: 'NGN',
+        sourceAmount: withdrawalData.amount,
+        provider: 'OBIEX_WITHDRAWAL',
+        swapType: 'NGNZ_TO_BANK'
+      },
+      relatedEntities: {
+        correlationId
+      },
+      systemContext,
+      timing: {
+        startTime,
+        endTime,
+        duration: endTime - startTime
+      },
+      riskLevel: 'HIGH',
+      flagged: true,
+      flagReason: 'NGNZ withdrawal preparation failed',
+      tags: ['withdrawal', 'ngnz', 'failed', 'critical-error']
     });
     
     throw err;
@@ -586,9 +506,6 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     const originalAmount = withdrawalData.amount;
     const feeAmountRecorded = NGNZ_WITHDRAWAL_FEE_RECORDED; // Use recorded fee (100 NGN)
     
-    // Use the parameter name consistently throughout the function
-    const amountToObiex = amountToBank; // Alias for clarity
-    
     // Create audit for Obiex operation initiation
     await createAuditEntry({
       userId,
@@ -603,7 +520,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
         targetCurrency: 'NGN',
         sourceAmount: originalAmount,
         transferAmount: amountToObiex,
-        withdrawalFee: feeAmountRecorded,
+        withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
         provider: 'OBIEX',
         swapType: 'NGNZ_TO_BANK'
       },
@@ -625,6 +542,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     });
 
     // Call Obiex service with NGNX
+    // IMPORTANT: Send reduced amount (original - OPERATIONAL fee = 30 NGN) to Obiex
     const obiexPayload = {
       destination: {
         accountNumber: destination.accountNumber,
@@ -634,17 +552,18 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
         ...(destination.pagaBankCode && { pagaBankCode: destination.pagaBankCode }),
         ...(destination.merchantCode && { merchantCode: destination.merchantCode })
       },
-      amount: amountToObiex, // Send amount after total fee deduction
+      amount: amountToObiex, // Send reduced amount (original - 30 NGN operational fee)
       currency: 'NGNX',
       narration: narration || `NGNZ withdrawal - ${withdrawalReference} (₦${feeAmountRecorded} fee deducted)`
     };
 
-    logger.info('Initiating Obiex NGNX withdrawal', {
+    logger.info('Initiating Obiex NGNX withdrawal with fee deduction', {
       withdrawalReference,
       correlationId,
       originalAmount,
       amountToObiex,
-      feeAmountRecorded,
+      feeAmountRecorded, // Log recorded fee
+      feeAmountOperational: NGNZ_WITHDRAWAL_FEE_OPERATIONAL, // Log operational fee
       currency: 'NGNX',
       bankName: destination.bankName,
       accountNumber: maskAccountNumber(destination.accountNumber)
@@ -652,8 +571,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
 
     const obiexResult = await debitNaira(obiexPayload, {
       userId: userId.toString(),
-      idempotencyKey: `ngnz-wd-${withdrawalReference}`,
-      timeout: 30000 // 30 second timeout for Obiex calls
+      idempotencyKey: `ngnz-wd-${withdrawalReference}`
     });
 
     const endTime = new Date();
@@ -695,13 +613,13 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
         correlationId,
         originalAmount,
         amountToObiex,
-        feeAmountRecorded,
+        feeAmountRecorded, // Log recorded fee
         obiexId: obiexResult.data?.id,
         obiexReference: obiexResult.data?.reference,
         obiexStatus: obiexResult.data?.status
       });
 
-      // Create success audit entry
+      // Create success audit entry (use RECORDED fee)
       await createAuditEntry({
         userId,
         transactionId,
@@ -716,7 +634,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
           targetCurrency: 'NGN',
           sourceAmount: originalAmount,
           transferAmount: amountToObiex,
-          withdrawalFee: feeAmountRecorded,
+          withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
           provider: 'OBIEX',
           swapType: 'NGNZ_TO_BANK'
         },
@@ -802,7 +720,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
           targetCurrency: 'NGN',
           sourceAmount: originalAmount,
           transferAmount: amountToObiex,
-          withdrawalFee: feeAmountRecorded,
+          withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
           provider: 'OBIEX',
           swapType: 'NGNZ_TO_BANK'
         },
@@ -885,7 +803,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
         targetCurrency: 'NGN',
         sourceAmount: withdrawalData.amount,
         transferAmount: amountToObiex,
-        withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED,
+        withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED, // RECORDED fee (100 NGN)
         provider: 'OBIEX',
         swapType: 'NGNZ_TO_BANK'
       },
@@ -927,20 +845,10 @@ router.post('/withdraw', async (req, res) => {
       withdrawalFeeOperational: NGNZ_WITHDRAWAL_FEE_OPERATIONAL,
       amountToBank: amount ? amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL : null,
       twoFactorCode: '[REDACTED]',
-      passwordpin: '[REDACTED]',
-      correlationId,
-      requestBody: {
-        hasAmount: !!amount,
-        hasDestination: !!destination,
-        hasNarration: !!narration,
-        hasTwoFactorCode: !!twoFactorCode,
-        hasPasswordPin: !!passwordpin,
-        twoFactorCodeLength: twoFactorCode?.length,
-        passwordPinLength: passwordpin?.length
-      }
+      passwordpin: '[REDACTED]'
     });
     
-    // Create audit for withdrawal request
+    // Create audit for withdrawal request (use RECORDED fee)
     await createAuditEntry({
       userId,
       eventType: 'USER_ACTION',
@@ -971,25 +879,7 @@ router.post('/withdraw', async (req, res) => {
     });
 
     // Validate request data (including authentication fields and fee considerations)
-    logger.info('Starting validation for withdrawal request', { 
-      userId, 
-      amount, 
-      hasDestination: !!destination,
-      destinationKeys: destination ? Object.keys(destination) : [],
-      hasTwoFactorCode: !!twoFactorCode,
-      twoFactorCodeLength: twoFactorCode?.length,
-      hasPasswordPin: !!passwordpin,
-      passwordPinLength: passwordpin?.length
-    });
-
     const validationErrors = validateWithdrawalRequest({ amount, destination, twoFactorCode, passwordpin });
-    
-    logger.info('Validation completed', { 
-      userId, 
-      validationErrorsCount: validationErrors.length,
-      validationErrors: validationErrors
-    });
-
     if (validationErrors.length > 0) {
       await createAuditEntry({
         userId,
@@ -1022,7 +912,7 @@ router.post('/withdraw', async (req, res) => {
         message: 'Validation failed',
         errors: validationErrors,
         withdrawalFee: {
-          amount: NGNZ_WITHDRAWAL_FEE_RECORDED,
+          amount: NGNZ_WITHDRAWAL_FEE_RECORDED, // Show recorded fee to user
           currency: 'NGN',
           description: 'Withdrawal processing fee'
         }
@@ -1048,21 +938,7 @@ router.post('/withdraw', async (req, res) => {
     }
 
     // Validate 2FA setup and code
-    logger.info('Checking 2FA setup for user', { 
-      userId, 
-      hasTwoFASecret: !!user.twoFASecret, 
-      is2FAEnabled: !!user.is2FAEnabled,
-      twoFactorCodeProvided: !!twoFactorCode,
-      twoFactorCodeLength: twoFactorCode?.length
-    });
-
     if (!user.twoFASecret || !user.is2FAEnabled) {
-      logger.warn('2FA not setup for user', { 
-        userId, 
-        hasTwoFASecret: !!user.twoFASecret, 
-        is2FAEnabled: !!user.is2FAEnabled 
-      });
-
       await createAuditEntry({
         userId,
         eventType: 'USER_ACTION',
@@ -1087,21 +963,9 @@ router.post('/withdraw', async (req, res) => {
       });
     }
 
-    logger.info('2FA setup verified, validating 2FA code', { 
-      userId, 
-      twoFactorCodeProvided: !!twoFactorCode,
-      twoFactorCodeLength: twoFactorCode?.length 
-    });
-
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
       logger.warn('2FA validation failed for NGNZ withdrawal', { 
-        userId, 
-        errorType: 'INVALID_2FA',
-        hasTwoFASecret: !!user.twoFASecret,
-        is2FAEnabled: !!user.is2FAEnabled,
-        twoFactorCodeProvided: !!twoFactorCode,
-        twoFactorCodeLength: twoFactorCode?.length,
-        twoFactorCodeFormat: twoFactorCode ? /^\d{6}$/.test(twoFactorCode) : false
+        userId, errorType: 'INVALID_2FA'
       });
 
       await createAuditEntry({
@@ -1135,16 +999,7 @@ router.post('/withdraw', async (req, res) => {
     logger.info('2FA validation successful for NGNZ withdrawal', { userId });
 
     // Validate password PIN setup and code
-    logger.info('Checking password PIN setup for user', { 
-      userId, 
-      hasPasswordPin: !!user.passwordpin,
-      passwordPinProvided: !!passwordpin,
-      passwordPinLength: passwordpin?.length
-    });
-
     if (!user.passwordpin) {
-      logger.warn('Password PIN not setup for user', { userId });
-
       await createAuditEntry({
         userId,
         eventType: 'USER_ACTION',
@@ -1169,22 +1024,10 @@ router.post('/withdraw', async (req, res) => {
       });
     }
 
-    logger.info('Password PIN setup verified, validating PIN', { 
-      userId, 
-      passwordPinProvided: !!passwordpin,
-      passwordPinLength: passwordpin?.length,
-      passwordPinFormat: passwordpin ? /^\d{6}$/.test(passwordpin) : false
-    });
-
     const isPasswordPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
     if (!isPasswordPinValid) {
       logger.warn('Password PIN validation failed for NGNZ withdrawal', { 
-        userId, 
-        errorType: 'INVALID_PASSWORDPIN',
-        hasPasswordPin: !!user.passwordpin,
-        passwordPinProvided: !!passwordpin,
-        passwordPinLength: passwordpin?.length,
-        passwordPinFormat: passwordpin ? /^\d{6}$/.test(passwordpin) : false
+        userId, errorType: 'INVALID_PASSWORDPIN'
       });
 
       await createAuditEntry({
@@ -1245,7 +1088,7 @@ router.post('/withdraw', async (req, res) => {
           targetCurrency: 'NGN',
           sourceAmount: amount,
           transferAmount: amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL,
-          withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED,
+          withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED, // RECORDED fee
           provider: 'OBIEX_WITHDRAWAL',
           swapType: 'NGNZ_TO_BANK'
         },
@@ -1265,7 +1108,7 @@ router.post('/withdraw', async (req, res) => {
         shortfall: balanceValidation.shortfall || 0,
         currency: 'NGNZ',
         withdrawalFee: {
-          amount: NGNZ_WITHDRAWAL_FEE_RECORDED,
+          amount: NGNZ_WITHDRAWAL_FEE_RECORDED, // Show recorded fee to user
           currency: 'NGN',
           description: 'Withdrawal processing fee'
         }
@@ -1303,7 +1146,7 @@ router.post('/withdraw', async (req, res) => {
       // Get the updated transaction with receipt details
       const updatedTransaction = await Transaction.findById(withdrawalResult.transaction._id);
       
-      // Create successful withdrawal audit
+      // Create successful withdrawal audit (use RECORDED fee)
       await createAuditEntry({
         userId,
         transactionId: withdrawalResult.transaction._id,
@@ -1318,7 +1161,7 @@ router.post('/withdraw', async (req, res) => {
           targetCurrency: 'NGN',
           sourceAmount: amount,
           transferAmount: withdrawalResult.amountToObiex,
-          withdrawalFee: withdrawalResult.feeAmount,
+          withdrawalFee: withdrawalResult.feeAmount, // This is recorded fee (100 NGN)
           provider: 'OBIEX_WITHDRAWAL',
           swapType: 'NGNZ_TO_BANK'
         },
@@ -1352,7 +1195,7 @@ router.post('/withdraw', async (req, res) => {
           totalAmount: amount,
           amountSentToBank: withdrawalResult.amountToObiex,
           withdrawalFee: {
-            amount: withdrawalResult.feeAmount,
+            amount: withdrawalResult.feeAmount, // This is recorded fee (100 NGN)
             currency: 'NGN',
             description: 'Withdrawal processing fee'
           },
@@ -1375,7 +1218,7 @@ router.post('/withdraw', async (req, res) => {
             passwordPinValidated: true
           },
           
-          // Include formatted receipt data for frontend modal
+          // NEW: Include formatted receipt data for frontend modal
           receiptData: updatedTransaction ? updatedTransaction.getReceiptData() : null
         }
       });
@@ -1495,14 +1338,6 @@ router.get('/status/:withdrawalId', async (req, res) => {
   const systemContext = getSystemContext(req);
   
   try {
-    // Check if user is authenticated
-    if (!req.user?.id) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required'
-      });
-    }
-    
     const userId = req.user.id;
     const { withdrawalId } = req.params;
 
@@ -1550,7 +1385,6 @@ router.get('/status/:withdrawalId', async (req, res) => {
       transaction.bankAmount ??
       transaction.ngnzWithdrawal?.amountSentToBank ??
       transaction.metadata?.amountSentToObiex ??
-      transaction.metadata?.actualAmountSent ??
       Math.max(totalAmount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL, 0); // Use operational fee for calculation
 
     const dest = transaction.ngnzWithdrawal?.destination || {};
@@ -1577,10 +1411,10 @@ router.get('/status/:withdrawalId', async (req, res) => {
         withdrawalId,
         transactionId: transaction._id,
         status: transaction.status,
-        totalAmount,
+        totalAmount, // positive
         amountSentToBank,
         withdrawalFee: {
-          amount: fee,
+          amount: fee, // This will be recorded fee (100 NGN)
           currency: transaction.payoutCurrency || transaction.ngnzWithdrawal?.payoutCurrency || 'NGN',
           description: 'Withdrawal processing fee',
           applied: true
@@ -1589,7 +1423,7 @@ router.get('/status/:withdrawalId', async (req, res) => {
         destination: {
           bankName: dest.bankName ?? transaction.metadata?.destinationBank,
           accountName: dest.accountName ?? transaction.metadata?.destinationAccountName,
-          accountNumber: dest.accountNumberMasked ?? transaction.metadata?.destinationAccount
+          accountNumber: dest.accountNumberMasked ?? transaction.metadata?.destinationAccount // Show masked in status for security
         },
         obiex: (obiex.id || transaction.metadata?.obiexId) ? {
           transactionId: obiex.id ?? transaction.metadata?.obiexId,
@@ -1626,14 +1460,6 @@ router.get('/receipt/:transactionId', async (req, res) => {
   const systemContext = getSystemContext(req);
   
   try {
-    // Check if user is authenticated
-    if (!req.user?.id) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required'
-      });
-    }
-    
     const userId = req.user.id;
     const { transactionId } = req.params;
 
@@ -1722,13 +1548,6 @@ router.get('/fees', (req, res) => {
   const systemContext = getSystemContext(req);
   
   try {
-    // Check if user is authenticated
-    if (!req.user?.id) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required'
-      });
-    }
     // Simple audit for fee inquiry
     setImmediate(async () => {
       await createAuditEntry({
