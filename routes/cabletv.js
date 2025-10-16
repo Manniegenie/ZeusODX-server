@@ -7,7 +7,6 @@ const { vtuAuth } = require('../auth/billauth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
-const { sendUtilityTransactionEmail } = require('../services/EmailService'); // <-- added import
 
 const router = express.Router();
 
@@ -578,42 +577,6 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
-    // -------------------------------
-    // SEND UTILITY EMAIL (non-blocking)
-    // -------------------------------
-    (async () => {
-      try {
-        if (user && user.email) {
-          const emailOptions = {
-            utilityType: 'Cable TV',
-            amount,
-            currency,
-            reference: finalRequestId,
-            status: ebillsStatus,
-            date: new Date().toLocaleString(),
-            recipientPhone: customer_id,
-            provider: service_id,
-            transactionId: ebillsResponse.data.order_id ? String(ebillsResponse.data.order_id) : '',
-            account: customer_id,
-            additionalNote: ebillsStatus === 'completed-api' ? 'Cable TV service activated / renewed' : 'Cable TV purchase is being processed',
-            webUrl: `${process.env.APP_WEB_BASE_URL || ''}/transactions/${finalRequestId}`,
-            appDeepLink: `${process.env.APP_DEEP_LINK || 'zeusodx://'}//transactions/${finalRequestId}`
-          };
-
-          await sendUtilityTransactionEmail(user.email, user.firstName || user.username || 'User', emailOptions);
-          logger.info(`Utility email (Cable TV) sent to ${user.email} for request ${finalRequestId}`);
-        } else {
-          logger.warn(`No email on file for user ${userId} — skipping utility email`);
-        }
-      } catch (emailErr) {
-        logger.error('Failed to send utility email for cable TV transaction', {
-          userId,
-          error: emailErr.message,
-          stack: emailErr.stack
-        });
-        // don't fail the request — email errors are non-blocking
-      }
-    })();
 
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
     if (ebillsStatus === 'completed-api') {

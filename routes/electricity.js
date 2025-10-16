@@ -8,7 +8,6 @@ const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
-const { sendUtilityTransactionEmail } = require('../services/EmailService'); // <-- imported
 
 const router = express.Router();
 
@@ -545,42 +544,6 @@ router.post('/purchase', async (req, res) => {
     await BillTransaction.findByIdAndUpdate(pendingTransaction._id, updateData, { new: true });
     logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
 
-    // -------------------------------
-    // SEND UTILITY EMAIL (non-blocking)
-    // -------------------------------
-    (async () => {
-      try {
-        if (user && user.email) {
-          const emailOptions = {
-            utilityType: 'Electricity',
-            amount,
-            currency,
-            reference: finalRequestId,
-            status: ebillsStatus,
-            date: new Date().toLocaleString(),
-            recipientPhone: customer_id,
-            provider: service_id,
-            transactionId: ebillsResponse.data.order_id ? String(ebillsResponse.data.order_id) : '',
-            account: customer_id,
-            additionalNote: ebillsStatus === 'completed-api' ? 'Token delivered / purchase completed' : 'Purchase is being processed',
-            webUrl: `${process.env.APP_WEB_BASE_URL || ''}/transactions/${finalRequestId}`,
-            appDeepLink: `${process.env.APP_DEEP_LINK || 'zeusodx://'}//transactions/${finalRequestId}`
-          };
-
-          await sendUtilityTransactionEmail(user.email, user.firstName || user.username || 'User', emailOptions);
-          logger.info(`Utility email (Electricity) sent to ${user.email} for request ${finalRequestId}`);
-        } else {
-          logger.warn(`No email on file for user ${userId} — skipping utility email`);
-        }
-      } catch (emailErr) {
-        logger.error('Failed to send utility email for electricity transaction', {
-          userId,
-          error: emailErr.message,
-          stack: emailErr.stack
-        });
-        // don't fail the request — email errors are non-blocking
-      }
-    })();
 
     // Step 11: Return response - maintaining the exact eBills format for compatibility
     return res.status(200).json(ebillsResponse);

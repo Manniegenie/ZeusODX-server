@@ -8,7 +8,6 @@ const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
 
-const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 
 const router = express.Router();
@@ -560,34 +559,6 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
-    // Send email (non-blocking)
-    try {
-      if (user && user.email) {
-        const emailOptions = {
-          utilityType: 'Airtime',
-          amount,
-          currency,
-          reference: finalRequestId,
-          status: ebillsStatus,
-          date: new Date().toLocaleString(),
-          recipientPhone: phone,
-          provider: service_id.toUpperCase(),
-          transactionId: ebillsResponse.data.order_id ? String(ebillsResponse.data.order_id) : '',
-          account: phone,
-          additionalNote: ebillsStatus === 'completed-api' ? 'Airtime delivered successfully' : 'Airtime purchase is being processed',
-          webUrl: `${process.env.APP_WEB_BASE_URL || ''}/transactions/${finalRequestId}`,
-          appDeepLink: `${process.env.APP_DEEP_LINK || 'zeusodx://'}//transactions/${finalRequestId}`
-        };
-
-        await sendUtilityTransactionEmail(user.email, user.firstName || user.username || 'User', emailOptions);
-        logger.info(`Utility email (Airtime) sent to ${user.email} for request ${finalRequestId}`);
-      }
-    } catch (emailErr) {
-      logger.error('Failed to send utility email for airtime transaction', {
-        userId,
-        error: emailErr.message
-      });
-    }
 
     // Step 11: Return response - ONLY NOTIFICATION ON SUCCESS
     if (ebillsStatus === 'completed-api') {
