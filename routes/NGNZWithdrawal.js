@@ -223,20 +223,22 @@ function validateWithdrawalRequest(data) {
   
   if (!data.passwordpin?.trim()) {
     errors.push('Password PIN is required');
-  } else {
-    const passwordpin = String(data.passwordpin).trim();
-    if (!/^\d{6}$/.test(passwordpin)) {
-      errors.push('Password PIN must be exactly 6 numbers');
-    }
-    
-    // Additional security: Check for common weak PINs
-    const weakPins = ['000000', '111111', '123456', '654321', '123123'];
-    if (weakPins.includes(passwordpin)) {
-      errors.push('Password PIN is too weak. Please choose a stronger PIN');
-    }
   }
   
   return errors;
+}
+
+/**
+ * Compare password pin
+ */
+async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
+  if (!candidatePasswordPin || !hashedPasswordPin) return false;
+  try {
+    return await bcrypt.compare(candidatePasswordPin, hashedPasswordPin);
+  } catch (error) {
+    logger.error('Password pin comparison failed:', error);
+    return false;
+  }
 }
 
 /**
