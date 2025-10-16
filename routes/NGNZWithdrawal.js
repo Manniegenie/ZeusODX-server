@@ -149,14 +149,6 @@ function validateWithdrawalRequest(data) {
     // Validate account number format (handle both full and masked numbers)
     if (data.destination.accountNumber) {
       const cleanAccountNumber = data.destination.accountNumber.replace(/\s+/g, '');
-      console.log('Account number validation:', {
-        original: data.destination.accountNumber,
-        cleaned: cleanAccountNumber,
-        length: cleanAccountNumber.length,
-        containsAsterisk: cleanAccountNumber.includes('*'),
-        isMasked: cleanAccountNumber.includes('*'),
-        isValidFormat: cleanAccountNumber.includes('*') ? cleanAccountNumber.length >= 8 : /^\d{10,11}$/.test(cleanAccountNumber)
-      });
       
       // Check if it's a masked number (contains asterisks) or full number
       if (cleanAccountNumber.includes('*')) {
@@ -178,48 +170,14 @@ function validateWithdrawalRequest(data) {
     }
   }
   
-  // Validate amount limits including withdrawal fee (use operational fee for validation)
-  const minimumWithdrawal = NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1; // Must be higher than operational fee
-  console.log('Amount validation:', {
-    amount: data.amount,
-    minimumWithdrawal,
-    isAmountValid: data.amount >= minimumWithdrawal,
-    maximumAmount: 1000000,
-    isAmountBelowMax: data.amount <= 1000000
-  });
-  
-  if (data.amount && data.amount < minimumWithdrawal) {
-    errors.push(`Minimum withdrawal amount is ₦${minimumWithdrawal} (includes ₦${NGNZ_WITHDRAWAL_FEE_RECORDED} fee)`);
-  }
-  
-  if (data.amount && data.amount > 1000000) {
-    errors.push('Maximum withdrawal amount is ₦1,000,000');
-  }
-
   // Check if amount can cover the withdrawal fee (use operational fee)
   if (data.amount && data.amount <= NGNZ_WITHDRAWAL_FEE_OPERATIONAL) {
     errors.push(`Amount too small to cover ₦${NGNZ_WITHDRAWAL_FEE_RECORDED} withdrawal fee. Minimum: ₦${NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1}`);
   }
 
-  // 2FA validation
-  console.log('2FA validation:', {
-    hasTwoFactorCode: !!data.twoFactorCode,
-    twoFactorCodeLength: data.twoFactorCode?.length,
-    twoFactorCodeTrimmed: data.twoFactorCode?.trim(),
-    isValid2FA: !!data.twoFactorCode?.trim()
-  });
-  
   if (!data.twoFactorCode?.trim()) {
     errors.push('Two-factor authentication code is required');
   }
-
-  // Password PIN validation
-  console.log('Password PIN validation:', {
-    hasPasswordPin: !!data.passwordpin,
-    passwordPinLength: data.passwordpin?.length,
-    passwordPinTrimmed: data.passwordpin?.trim(),
-    isValidFormat: data.passwordpin ? /^\d{6}$/.test(String(data.passwordpin).trim()) : false
-  });
   
   if (!data.passwordpin?.trim()) {
     errors.push('Password PIN is required');
@@ -629,7 +587,7 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     const feeAmountRecorded = NGNZ_WITHDRAWAL_FEE_RECORDED; // Use recorded fee (100 NGN)
     
     // Use the parameter name consistently throughout the function
-    const amountToObiex = amountToObiex; // Alias for clarity
+    const amountToObiex = amountToBank; // Alias for clarity
     
     // Create audit for Obiex operation initiation
     await createAuditEntry({
