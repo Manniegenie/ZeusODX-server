@@ -213,7 +213,8 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
     
     // Calculate amounts using OPERATIONAL fee (30 NGN)
     const totalDeducted = amount; // Full amount deducted from user
-    const amountToObiex = amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL; // Amount sent to Obiex (minus operational fee)
+    const amountToObiex = amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL; // Amount sent to Obiex (minus operational fee only)
+    const amountToBankRecorded = amount - NGNZ_WITHDRAWAL_FEE_OPERATIONAL - 70; // Amount displayed in transaction (minus 70 for display only)
     const feeAmountRecorded = NGNZ_WITHDRAWAL_FEE_RECORDED; // Fee recorded in database (100 NGN)
     
     // Get current balance for audit trail
@@ -259,14 +260,14 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
 
       // NEW: first-class NGNZ fields (use RECORDED fee)
       isNGNZWithdrawal: true,
-      bankAmount: amountToObiex,        // POSITIVE amount that will hit bank
+      bankAmount: amountToBankRecorded,        // POSITIVE amount that will hit bank (original amount)
       withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
       payoutCurrency: 'NGN',
       ngnzWithdrawal: {
         withdrawalReference,
         requestedAmount: totalDeducted,
         withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
-        amountSentToBank: amountToObiex,
+        amountSentToBank: amountToBankRecorded,
         payoutCurrency: 'NGN',
         destination: {
           bankName: destination.bankName,
@@ -300,7 +301,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         date: formatDate(new Date()),
         category: 'withdrawal',
         additionalFields: {
-          amountSentToBank: formatCurrency(amountToObiex),
+          amountSentToBank: formatCurrency(amountToBankRecorded),
           totalAmountDeducted: formatCurrency(totalDeducted, 'NGNZ'),
           withdrawalFee: formatCurrency(feeAmountRecorded), // RECORDED fee (100 NGN)
           payoutCurrency: 'NGN'
@@ -321,7 +322,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         is_ngnz_withdrawal: true,
         // Fee information (use RECORDED fee)
         totalAmountDeducted: totalDeducted,
-        amountSentToObiex: amountToObiex,
+         amountSentToObiex: amountToBankRecorded,
         withdrawalFee: feeAmountRecorded, // RECORDED fee (100 NGN)
         feeApplied: true
       }
@@ -431,6 +432,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
       withdrawalReference,
       totalDeducted,
       amountToObiex,
+      amountToBankRecorded,
       feeAmount: feeAmountRecorded // Return recorded fee
     };
 
