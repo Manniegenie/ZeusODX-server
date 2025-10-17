@@ -544,10 +544,10 @@ async function initiateObiexWithdrawal(withdrawalData) {
 
   // Build payload OUTSIDE try block so it's accessible in catch
   const payload = {
-    amount: Number(amount),
     destination,
+    amount: Number(amount),
     currency: currency.toUpperCase(),
-    narration: narration || `Crypto withdrawal - ${currency}`,
+    narration: narration || `Crypto withdrawal - ${currency}`
   };
   
   try {
