@@ -742,6 +742,36 @@ router.post('/complete-history', async (req, res) => {
       const formattedBills = billTxs.map(tx => {
         const amount = tx.amountNGNB || tx.amountNaira;
         const createdAtISO = new Date(tx.createdAt).toISOString();
+        
+        // Build details object
+        const details = {
+          orderId: tx.orderId,
+          category: 'utility',
+          billType: tx.billType,
+          productName: tx.productName,
+          network: tx.network,
+          customerInfo: tx.customerInfo?.phone || tx.customerPhone
+        };
+
+        // Add electricity-specific details (token, units, band)
+        if (tx.billType === 'electricity' && tx.metaData) {
+          if (tx.metaData.token) {
+            details.token = tx.metaData.token;
+          }
+          if (tx.metaData.units) {
+            details.units = tx.metaData.units;
+          }
+          if (tx.metaData.band) {
+            details.band = tx.metaData.band;
+          }
+          if (tx.metaData.customer_name) {
+            details.customerName = tx.metaData.customer_name;
+          }
+          if (tx.metaData.customer_address) {
+            details.customerAddress = tx.metaData.customer_address;
+          }
+        }
+
         return {
           id: tx._id,
           type: formatBillType(tx.billType),
@@ -749,14 +779,7 @@ router.post('/complete-history', async (req, res) => {
           amount: `₦${amount.toLocaleString()}`,
           date: formatDate(tx.createdAt),
           createdAt: createdAtISO,
-          details: {
-            orderId: tx.orderId,
-            category: 'utility',
-            billType: tx.billType,
-            productName: tx.productName,
-            network: tx.network,
-            customerInfo: tx.customerInfo?.phone || tx.customerPhone
-          }
+          details
         };
       });
       allTransactions = [...allTransactions, ...formattedBills];
