@@ -539,7 +539,10 @@ async function initiateObiexWithdrawal(withdrawalData) {
   };
   
   // Add optional destination fields
-  if (network) destination.network = network;
+  if (network) {
+    // Map TRC20 to TRX for Obiex API
+    destination.network = network.toUpperCase() === 'TRC20' ? 'TRX' : network;
+  }
   if (memo?.trim()) destination.memo = memo.trim();
 
   // Build payload OUTSIDE try block so it's accessible in catch
