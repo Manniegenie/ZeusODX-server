@@ -280,4 +280,292 @@ router.post('/reset', async (req, res) => {
   }
 });
 
+// GET: Get all KYC entries with filtering and pagination
+router.get('/list', async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      idType,
+      searchTerm,
+      dateFrom,
+      dateTo,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Build filter object
+    const filter = {};
+    
+    if (status) {
+      filter.status = status.toUpperCase();
+    }
+    
+    if (idType) {
+      filter.frontendIdType = idType;
+    }
+    
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) {
+        filter.createdAt.$gte = new Date(dateFrom);
+      }
+      if (dateTo) {
+        filter.createdAt.$lte = new Date(dateTo);
+      }
+    }
+
+    // Build aggregation pipeline for search and user population
+    const pipeline = [
+      { $match: filter },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      { $unwind: '$user' }
+    ];
+
+    // Add search functionality
+    if (searchTerm) {
+      pipeline.push({
+        $match: {
+          $or: [
+            { idNumber: { $regex: searchTerm, $options: 'i' } },
+            { fullName: { $regex: searchTerm, $options: 'i' } },
+            { 'user.firstname': { $regex: searchTerm, $options: 'i' } },
+            { 'user.lastname': { $regex: searchTerm, $options: 'i' } },
+            { 'user.email': { $regex: searchTerm, $options: 'i' } },
+            { 'user.phonenumber': { $regex: searchTerm, $options: 'i' } }
+          ]
+        }
+      });
+    }
+
+    // Add sorting
+    const sortObj = {};
+    sortObj[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    pipeline.push({ $sort: sortObj });
+
+    // Get total count for pagination
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const totalResult = await KYC.aggregate(countPipeline);
+    const total = totalResult.length > 0 ? totalResult[0].total : 0;
+
+    // Add pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    pipeline.push(
+      { $skip: skip },
+      { $limit: parseInt(limit) }
+    );
+
+    // Project only necessary fields
+    pipeline.push({
+      $project: {
+        _id: 1,
+        userId: 1,
+        status: 1,
+        idType: 1,
+        frontendIdType: 1,
+        idNumber: 1,
+        fullName: 1,
+        firstName: 1,
+        lastName: 1,
+        dateOfBirth: 1,
+        gender: 1,
+        country: 1,
+        resultCode: 1,
+        resultText: 1,
+        confidenceValue: 1,
+        verificationDate: 1,
+        createdAt: 1,
+        lastUpdated: 1,
+        imageLinks: 1,
+        'user._id': 1,
+        'user.firstname': 1,
+        'user.lastname': 1,
+        'user.email': 1,
+        'user.phonenumber': 1,
+        'user.kycLevel': 1,
+        'user.kycStatus': 1
+      }
+    });
+
+    const kycEntries = await KYC.aggregate(pipeline);
+
+    // Calculate pagination info
+    const totalPages = Math.ceil(total / parseInt(limit));
+    const hasNextPage = parseInt(page) < totalPages;
+    const hasPrevPage = parseInt(page) > 1;
+
+    logger.info('KYC entries retrieved successfully', {
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      status,
+      idType,
+      searchTerm: searchTerm ? '***' : null
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        kycEntries,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages,
+          total,
+          hasNextPage,
+          hasPrevPage,
+          limit: parseInt(limit)
+        },
+        filters: {
+          status,
+          idType,
+          searchTerm: searchTerm ? '***' : null,
+          dateFrom,
+          dateTo
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error retrieving KYC entries', {
+      error: error.message,
+      stack: error.stack,
+      query: req.query
+    });
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error.' 
+    });
+  }
+});
+
+// GET: Get KYC entry details by ID
+router.get('/details/:kycId', async (req, res) => {
+  try {
+    const { kycId } = req.params;
+
+    if (!kycId || !validator.isMongoId(kycId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Valid KYC ID is required.' 
+      });
+    }
+
+    const kycEntry = await KYC.findById(kycId).populate('userId', 
+      'firstname lastname email phonenumber kycLevel kycStatus createdAt'
+    );
+
+    if (!kycEntry) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'KYC entry not found.' 
+      });
+    }
+
+    logger.info('KYC entry details retrieved', { kycId });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        kyc: kycEntry,
+        user: kycEntry.userId
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error retrieving KYC entry details', {
+      error: error.message,
+      stack: error.stack,
+      kycId: req.params.kycId
+    });
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error.' 
+    });
+  }
+});
+
+// POST: Manually upgrade user KYC level
+router.post('/upgrade', async (req, res) => {
+  const { phoneNumber, kycLevel, reason } = req.body;
+
+  if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
+    logger.warn('Invalid or missing phone number in KYC upgrade request', { phoneNumber });
+    return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
+  }
+
+  if (!kycLevel || !['level1', 'level2', 'level3'].includes(kycLevel)) {
+    logger.warn('Invalid KYC level in upgrade request', { phoneNumber, kycLevel });
+    return res.status(400).json({ success: false, error: 'Valid KYC level (level1, level2, level3) is required.' });
+  }
+
+  try {
+    const user = await User.findOne({ phonenumber: phoneNumber });
+    if (!user) {
+      logger.warn(`User not found for KYC upgrade: ${phoneNumber}`);
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    const now = new Date();
+    const upgradeReason = reason || 'Manually upgraded by admin';
+
+    // Update user KYC level and status
+    const updateData = {
+      kycLevel,
+      'kyc.status': 'approved',
+      'kyc.updatedAt': now,
+      'kyc.manualUpgrade': true,
+      'kyc.upgradeReason': upgradeReason,
+      'kyc.upgradedAt': now,
+      'kycStatus': 'approved'
+    };
+
+    // Set level-specific data
+    if (kycLevel === 'level2') {
+      updateData['kyc.level2.status'] = 'approved';
+      updateData['kyc.level2.approvedAt'] = now;
+    } else if (kycLevel === 'level3') {
+      updateData['kyc.level2.status'] = 'approved';
+      updateData['kyc.level2.approvedAt'] = now;
+      updateData['kyc.level3.status'] = 'approved';
+      updateData['kyc.level3.approvedAt'] = now;
+    }
+
+    await User.findByIdAndUpdate(user._id, { $set: updateData });
+
+    logger.info(`KYC manually upgraded for user: ${phoneNumber}`, {
+      userId: user._id,
+      kycLevel,
+      reason: upgradeReason
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'KYC upgraded successfully.',
+      data: {
+        userId: user._id,
+        phoneNumber,
+        kycLevel,
+        reason: upgradeReason
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error upgrading KYC', {
+      error: error.message,
+      stack: error.stack,
+      phoneNumber,
+      kycLevel
+    });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
 module.exports = router;
