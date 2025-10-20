@@ -8,7 +8,7 @@ const logger = require('../utils/logger');
  */
 class PayBetaAuth {
   constructor() {
-    this.baseURL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng/v2';
+    this.baseURL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
     this.apiKey = process.env.PAYBETA_API_KEY?.trim();
     
     if (!this.apiKey) {
@@ -121,7 +121,7 @@ class PayBetaAuth {
       }
 
       // Test with a simple request (you might need to adjust this based on available endpoints)
-      const response = await this.makeRequest('POST', '/airtime/purchase', {
+      const response = await this.makeRequest('POST', '/v2/airtime/purchase', {
         service: 'mtn_vtu',
         phoneNumber: '08123456789',
         amount: 100,

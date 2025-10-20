@@ -312,10 +312,10 @@ async function callPayBetaAPI({ phone, amount, service_id, request_id, userId })
     };
 
     logger.info('Making PayBeta airtime purchase request:', {
-      phone, amount, service_id, payBetaService, request_id, endpoint: '/airtime/purchase'
+      phone, amount, service_id, payBetaService, request_id, endpoint: '/v2/airtime/purchase'
     });
 
-    const response = await payBetaAuth.makeRequest('POST', '/airtime/purchase', payload, {
+    const response = await payBetaAuth.makeRequest('POST', '/v2/airtime/purchase', payload, {
       timeout: 25000
     });
 
