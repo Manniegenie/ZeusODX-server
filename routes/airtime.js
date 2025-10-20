@@ -8,6 +8,7 @@ const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
+const { registerCache, clearUserCaches } = require('../utils/cacheManager');
 
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 
@@ -36,6 +37,9 @@ router.get('/test-paybeta', async (req, res) => {
 // Cache for user data to avoid repeated DB queries
 const userCache = new Map();
 const CACHE_TTL = 30000; // 30 seconds
+
+// Register cache with global manager
+registerCache('airtime_userCache', userCache);
 
 // Supported tokens
 const SUPPORTED_TOKENS = {
@@ -119,7 +123,8 @@ async function updateUserBalance(userId, currency, amount) {
       throw new Error(`User not found: ${userId}`);
     }
     
-    userCache.delete(`user_${userId}`);
+    // Clear all user-related caches globally
+    clearUserCaches(userId);
     
     logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
     

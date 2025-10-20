@@ -5,10 +5,11 @@ const PriceChange = require('../models/pricechange');
 const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 const { getCurrentRate } = require('../services/offramppriceservice');
 const logger = require('../utils/logger');
+const { registerCache, clearUserCaches } = require('../utils/cacheManager');
 
-// Simple cache with reasonable TTL
+// Reduced cache with very short TTL for balance-sensitive data
 const cache = new Map();
-const CACHE_TTL = 60000; // 1 minute
+const CACHE_TTL = 5000; // 5 seconds - much shorter for balance data
 
 function getFromCache(key) {
   const cached = cache.get(key);
@@ -21,6 +22,20 @@ function getFromCache(key) {
 
 function setCache(key, data) {
   cache.set(key, { data, timestamp: Date.now() });
+}
+
+// Register cache with global manager
+registerCache('dashboard_cache', cache);
+
+// Clear cache for specific user when balance changes
+function clearUserCache(userId) {
+  const keysToDelete = [];
+  for (const [key] of cache.entries()) {
+    if (key.includes(`user_${userId}`) || key.includes('price_changes') || key.includes('market_prices')) {
+      keysToDelete.push(key);
+    }
+  }
+  keysToDelete.forEach(key => cache.delete(key));
 }
 
 // Calculate USD balances for portfolio
@@ -87,6 +102,9 @@ router.get('/dashboard', async (req, res) => {
   
   try {
     const userId = req.user.id;
+
+    // Clear any cached data for this user to ensure fresh balance data
+    clearUserCaches(userId);
 
     // Get user data
     const user = await User.findById(userId).select(

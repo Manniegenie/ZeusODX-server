@@ -154,6 +154,7 @@ router.post('/balance', async (req, res) => {
     projection.lastBalanceUpdate = 1;
     projection.portfolioLastUpdated = 1;
 
+    // Always fetch fresh user data - no caching for balance data
     const user = await User.findById(userId, projection);
 
     if (!user) {
