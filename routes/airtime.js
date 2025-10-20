@@ -304,11 +304,15 @@ async function callPayBetaAPI({ phone, amount, service_id, request_id, userId })
       throw new Error(`Unsupported service for PayBeta: ${service_id}`);
     }
 
+    // Ensure reference is under 40 characters for PayBeta
+    const payBetaReference = request_id.length > 40 ? 
+      request_id.substring(0, 40) : request_id;
+
     const payload = {
       service: payBetaService,
       phoneNumber: phone,
       amount: Math.round(amount), // PayBeta expects integer
-      reference: request_id
+      reference: payBetaReference
     };
 
     logger.info('Making PayBeta airtime purchase request:', {
@@ -469,8 +473,9 @@ router.post('/purchase', async (req, res) => {
     
     // Step 5: Generate unique IDs
     const timestamp = Date.now();
-    const randomSuffix = Math.random().toString(36).substring(2, 8);
-    const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
+    const randomSuffix = Math.random().toString(36).substring(2, 6);
+    // PayBeta reference limit: 40 characters max
+    const finalRequestId = `${userId.slice(-6)}_${timestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
     
     // Step 6: Final balance check

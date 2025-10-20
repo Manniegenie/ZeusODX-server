@@ -125,7 +125,7 @@ class PayBetaAuth {
         service: 'mtn_vtu',
         phoneNumber: '08123456789',
         amount: 100,
-        reference: 'test_' + Date.now()
+        reference: 'test_' + Date.now().toString().slice(-8) // Keep under 40 chars
       });
 
       return {
