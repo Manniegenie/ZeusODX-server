@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/user');
 const BillTransaction = require('../models/billstransaction');
 const { vtuAuth } = require('../auth/billauth');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
@@ -11,6 +12,26 @@ const logger = require('../utils/logger');
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 
 const router = express.Router();
+
+// Test PayBeta connection endpoint
+router.get('/test-paybeta', async (req, res) => {
+  try {
+    const testResult = await payBetaAuth.testConnection();
+    res.json({
+      success: testResult.success,
+      message: testResult.message || 'PayBeta connection test completed',
+      authenticated: testResult.authenticated,
+      error: testResult.error,
+      suggestion: testResult.suggestion
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'PayBeta test failed',
+      error: error.message
+    });
+  }
+});
 
 // Cache for user data to avoid repeated DB queries
 const userCache = new Map();
@@ -266,6 +287,90 @@ async function callEBillsAPI({ phone, amount, service_id, request_id, userId }) 
 }
 
 /**
+ * Call PayBeta API
+ */
+async function callPayBetaAPI({ phone, amount, service_id, request_id, userId }) {
+  try {
+    // Map service_id to PayBeta format
+    const serviceMapping = {
+      'mtn': 'mtn_vtu',
+      'airtel': 'airtel_vtu', 
+      'glo': 'glo_vtu',
+      '9mobile': '9mobile_vtu'
+    };
+
+    const payBetaService = serviceMapping[service_id];
+    if (!payBetaService) {
+      throw new Error(`Unsupported service for PayBeta: ${service_id}`);
+    }
+
+    const payload = {
+      service: payBetaService,
+      phoneNumber: phone,
+      amount: Math.round(amount), // PayBeta expects integer
+      reference: request_id
+    };
+
+    logger.info('Making PayBeta airtime purchase request:', {
+      phone, amount, service_id, payBetaService, request_id, endpoint: '/airtime/purchase'
+    });
+
+    const response = await payBetaAuth.makeRequest('POST', '/airtime/purchase', payload, {
+      timeout: 25000
+    });
+
+    logger.info(`PayBeta API response for ${request_id}:`, {
+      status: response.status,
+      message: response.message,
+      reference: response.data?.reference,
+      transactionId: response.data?.transactionId
+    });
+
+    if (response.status !== 'successful') {
+      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+    }
+
+    // Transform PayBeta response to match eBills format for consistency
+    return {
+      code: 'success',
+      message: response.message,
+      data: {
+        status: 'successful',
+        order_id: response.data.transactionId,
+        reference: response.data.reference,
+        amount: response.data.amount,
+        chargedAmount: response.data.chargedAmount,
+        commission: response.data.commission,
+        biller: response.data.biller,
+        customerId: response.data.customerId,
+        previousBalance: response.data.previousBalance,
+        currentBalance: response.data.currentBalance,
+        transactionDate: response.data.transactionDate
+      }
+    };
+
+  } catch (error) {
+    logger.error('❌ PayBeta airtime purchase failed:', {
+      request_id, userId, error: error.message,
+      status: error.response?.status,
+      payBetaError: error.response?.data
+    });
+
+    if (error.message.includes('API key not configured')) {
+      throw new Error('PayBeta API key not configured. Please contact support.');
+    }
+    if (error.message.includes('authentication failed')) {
+      throw new Error('PayBeta authentication failed. Please contact support.');
+    }
+    if (error.message.includes('validation error')) {
+      throw new Error(`PayBeta validation error: ${error.message}`);
+    }
+
+    throw new Error(`PayBeta API error: ${error.message}`);
+  }
+}
+
+/**
  * AIRTIME PURCHASE ENDPOINT - ONLY SUCCESS/FAILURE NOTIFICATIONS
  */
 router.post('/purchase', async (req, res) => {
@@ -420,11 +525,11 @@ router.post('/purchase', async (req, res) => {
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
     
-    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
+    logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | PayBeta`);
     
-    // Step 8: Call eBills API
+    // Step 8: Call PayBeta API
     try {
-      ebillsResponse = await callEBillsAPI({
+      ebillsResponse = await callPayBetaAPI({
         phone, amount, service_id,
         request_id: finalRequestId,
         userId
