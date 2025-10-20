@@ -851,7 +851,7 @@ router.post('/crypto', async (req, res) => {
     });
 
     if (!obiexResult.success) {
-      logger.error('Obiex API withdrawal failed', {
+      logger.error('API withdrawal failed', {
         userId,
         currency,
         amount,

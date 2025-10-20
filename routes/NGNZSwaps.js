@@ -209,7 +209,7 @@ async function executeObiexCryptoNGNXSwap(userId, swapId, cryptoCurrency, amount
     });
     
     if (!quoteResult.success) {
-      throw new Error(`Obiex crypto-NGNX quote creation failed: ${JSON.stringify(quoteResult.error)}`);
+      throw new Error(`Crypto-NGNX quote creation failed: ${JSON.stringify(quoteResult.error)}`);
     }
     
     const acceptResult = await acceptQuote(quoteResult.quoteId);
@@ -283,7 +283,7 @@ async function executeObiexCryptoNGNXSwap(userId, swapId, cryptoCurrency, amount
       }, flow, correlationId);
       
     } else {
-      throw new Error(`Obiex crypto-NGNX quote acceptance failed: ${JSON.stringify(acceptResult.error)}`);
+      throw new Error(`Crypto-NGNX quote acceptance failed: ${JSON.stringify(acceptResult.error)}`);
     }
     
   } catch (error) {
@@ -1524,7 +1524,7 @@ router.get('/supported-currencies', (req, res) => {
       { code: 'USDC', name: 'USD Coin', type: 'stablecoin' },
       { code: 'TRX', name: 'Tron', type: 'cryptocurrency' },
       { code: 'BNB', name: 'BNB', type: 'cryptocurrency' },
-      { code: 'MATIC', name: 'Polygon', type: 'cryptocurrency' },
+      { code: 'Polygon', name: 'Polygon', type: 'cryptocurrency' },
       { code: 'NGNZ', name: 'Nigerian Naira Digital', type: 'fiat' }
     ];
 

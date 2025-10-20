@@ -21,7 +21,7 @@ app.use(
   cors({
     origin: process.env.CLIENT_URL || "http://localhost:5173",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-obiex-signature"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 

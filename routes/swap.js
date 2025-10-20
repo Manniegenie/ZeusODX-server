@@ -19,7 +19,7 @@ const CACHE_TTL = 30000; // 30 seconds
 const QUOTE_TTL = 30000; // 30 seconds for quotes
 
 // Supported tokens
-const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX']);
+const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'Polygon', 'TRX']);
 const TOKEN_MAP = {
   BTC: { name: 'Bitcoin', currency: 'btc' },
   ETH: { name: 'Ethereum', currency: 'eth' },
@@ -27,12 +27,12 @@ const TOKEN_MAP = {
   USDT: { name: 'Tether', currency: 'usdt' },
   USDC: { name: 'USD Coin', currency: 'usdc' },
   BNB: { name: 'BNB', currency: 'bnb' },
-  MATIC: { name: 'Polygon', currency: 'matic' },
+  Polygon: { name: 'Polygon', currency: 'matic' },
   TRX: { name: 'Tron', currency: 'trx' }
 };
 
 const STABLECOINS = new Set(['USDT', 'USDC']);
-const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'TRX']);
+const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'Polygon', 'TRX']);
 const DEFAULT_STABLECOIN = 'USDT';
 
 /**
@@ -244,7 +244,7 @@ async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
   });
   
   if (!quoteResult.success) {
-    throw new Error(`Obiex quote creation failed: ${JSON.stringify(quoteResult.error)}`);
+    throw new Error(`Quote creation failed: ${JSON.stringify(quoteResult.error)}`);
   }
   
   // Extract the amount user will receive from Obiex
@@ -318,13 +318,13 @@ async function createObiexCryptoToCryptoQuote(fromCurrency, toCurrency, amount) 
   // Step 1: Crypto → Stablecoin (e.g., BTC → USDT)
   const step1Result = await createObiexDirectQuote(from, intermediate, amount, 'SELL');
   if (!step1Result.success) {
-    throw new Error(`Obiex step 1 quote failed`);
+    throw new Error(`Step 1 quote failed`);
   }
   
   // Step 2: Stablecoin → Crypto (e.g., USDT → ETH)
   const step2Result = await createObiexDirectQuote(intermediate, to, step1Result.adjustedAmount, 'BUY');
   if (!step2Result.success) {
-    throw new Error(`Obiex step 2 quote failed`);
+    throw new Error(`Step 2 quote failed`);
   }
   
   return {
@@ -386,13 +386,13 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       // Accept step 1
       const step1Accept = await acceptQuote(step1QuoteId);
       if (!step1Accept.success) {
-        throw new Error(`Obiex step 1 failed: ${JSON.stringify(step1Accept.error)}`);
+        throw new Error(`Step 1 failed: ${JSON.stringify(step1Accept.error)}`);
       }
       
       // Accept step 2
       const step2Accept = await acceptQuote(step2QuoteId);
       if (!step2Accept.success) {
-        throw new Error(`Obiex step 2 failed: ${JSON.stringify(step2Accept.error)}`);
+        throw new Error(`Step 2 failed: ${JSON.stringify(step2Accept.error)}`);
       }
       
       // Get final amount from Obiex (what Obiex will provide) and apply markdown reduction
@@ -412,7 +412,7 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       
       const acceptResult = await acceptQuote(obiexQuoteId);
       if (!acceptResult.success) {
-        throw new Error(`Obiex swap failed: ${JSON.stringify(acceptResult.error)}`);
+        throw new Error(`Swap failed: ${JSON.stringify(acceptResult.error)}`);
       }
       
       // Get amount and apply markdown reduction
