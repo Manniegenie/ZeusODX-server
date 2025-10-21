@@ -19,7 +19,7 @@ const CACHE_TTL = 30000; // 30 seconds
 const QUOTE_TTL = 30000; // 30 seconds for quotes
 
 // Supported tokens
-const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'Polygon', 'TRX']);
+const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'Polygon', 'TRX']);
 const TOKEN_MAP = {
   BTC: { name: 'Bitcoin', currency: 'btc' },
   ETH: { name: 'Ethereum', currency: 'eth' },
@@ -27,13 +27,26 @@ const TOKEN_MAP = {
   USDT: { name: 'Tether', currency: 'usdt' },
   USDC: { name: 'USD Coin', currency: 'usdc' },
   BNB: { name: 'BNB', currency: 'bnb' },
+  MATIC: { name: 'Polygon', currency: 'matic' },
   Polygon: { name: 'Polygon', currency: 'matic' },
   TRX: { name: 'Tron', currency: 'trx' }
 };
 
 const STABLECOINS = new Set(['USDT', 'USDC']);
-const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'Polygon', 'TRX']);
+const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'Polygon', 'TRX']);
 const DEFAULT_STABLECOIN = 'USDT';
+
+/**
+ * Map frontend currency to Obiex currency
+ * MATIC from frontend should be mapped to POL for Obiex
+ */
+function mapToObiexCurrency(currency) {
+  const upperCurrency = currency.toUpperCase();
+  if (upperCurrency === 'MATIC') {
+    return 'POL';
+  }
+  return upperCurrency;
+}
 
 /**
  * Validate swap pair
@@ -223,15 +236,15 @@ async function createObiexDirectQuote(fromCurrency, toCurrency, amount, side) {
   
   if (isCryptoToStablecoin) {
     // Crypto → Stablecoin (e.g., BTC → USDT): SELL crypto
-    sourceId = await getCurrencyIdByCode(from);
-    targetId = await getCurrencyIdByCode(to);
+    sourceId = await getCurrencyIdByCode(mapToObiexCurrency(from));
+    targetId = await getCurrencyIdByCode(mapToObiexCurrency(to));
     quoteSide = 'SELL';
     quoteAmount = amount;
   } else {
     // Stablecoin → Crypto (e.g., USDT → BTC): BUY crypto
     // For Obiex, source is always the crypto, target is stablecoin
-    sourceId = await getCurrencyIdByCode(to); // crypto
-    targetId = await getCurrencyIdByCode(from); // stablecoin
+    sourceId = await getCurrencyIdByCode(mapToObiexCurrency(to)); // crypto
+    targetId = await getCurrencyIdByCode(mapToObiexCurrency(from)); // stablecoin
     quoteSide = 'BUY';
     quoteAmount = amount; // stablecoin amount to spend
   }

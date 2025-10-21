@@ -20,6 +20,18 @@ const CACHE_TTL = 30000; // 30 seconds
 const PRICE_CACHE_TTL = 5000; // 5 seconds for prices
 
 /**
+ * Map frontend currency to Obiex currency
+ * MATIC from frontend should be mapped to POL for Obiex
+ */
+function mapToObiexCurrency(currency) {
+  const upperCurrency = currency.toUpperCase();
+  if (upperCurrency === 'MATIC') {
+    return 'POL';
+  }
+  return upperCurrency;
+}
+
+/**
  * Create audit entry with error handling
  */
 async function createAuditEntry(auditData) {
@@ -185,7 +197,7 @@ async function executeObiexNGNZSwapBackground(userId, quote, swapId, correlation
 async function executeObiexCryptoNGNXSwap(userId, swapId, cryptoCurrency, amount, side, correlationId, systemContext, startTime, flow) {
   try {
     // Always get crypto as sourceId and NGNX as targetId
-    const cryptoId = await getCurrencyIdByCode(cryptoCurrency);
+    const cryptoId = await getCurrencyIdByCode(mapToObiexCurrency(cryptoCurrency));
     const ngnxId = await getCurrencyIdByCode('NGNX');
     
     logger.info('Executing standardized Obiex crypto-NGNX swap', {
@@ -1524,6 +1536,7 @@ router.get('/supported-currencies', (req, res) => {
       { code: 'USDC', name: 'USD Coin', type: 'stablecoin' },
       { code: 'TRX', name: 'Tron', type: 'cryptocurrency' },
       { code: 'BNB', name: 'BNB', type: 'cryptocurrency' },
+      { code: 'MATIC', name: 'Polygon', type: 'cryptocurrency' },
       { code: 'Polygon', name: 'Polygon', type: 'cryptocurrency' },
       { code: 'NGNZ', name: 'Nigerian Naira Digital', type: 'fiat' }
     ];
