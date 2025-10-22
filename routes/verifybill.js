@@ -1,5 +1,6 @@
 const express = require('express');
 const { vtuAuth } = require('../auth/billauth');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -155,6 +156,103 @@ async function callEBillsVerificationAPI({ customer_id, service_id, variation_id
 }
 
 /**
+ * Call PayBeta API for cable TV customer verification
+ */
+async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, userId }) {
+  try {
+    // Map service_id to PayBeta format
+    const serviceMapping = {
+      'dstv': 'dstv',
+      'gotv': 'gotv', 
+      'startimes': 'startimes',
+      'showmax': 'showmax'
+    };
+
+    const payBetaService = serviceMapping[service_id];
+    if (!payBetaService) {
+      throw new Error(`Unsupported service for PayBeta: ${service_id}`);
+    }
+
+    const verificationPayload = {
+      service: payBetaService,
+      smartCardNumber: customer_id.trim()
+    };
+
+    logger.info(`🔍 [${requestId}] Making PayBeta cable TV verification request:`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***', // Mask for privacy
+      service_id,
+      payBetaService,
+      endpoint: '/v2/cable/validate'
+    });
+
+    const response = await payBetaAuth.makeRequest('POST', '/v2/cable/validate', verificationPayload, {
+      timeout: 25000
+    });
+
+    logger.info(`📡 [${requestId}] PayBeta verification API response:`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***',
+      service_id,
+      status: response.status,
+      message: response.message,
+      hasData: !!response.data
+    });
+
+    if (response.status !== 'successful') {
+      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+    }
+
+    // Transform PayBeta response to match eBills format for consistency
+    return {
+      code: 'success',
+      message: response.message,
+      data: {
+        customer_id: response.data.smartCardNumber,
+        customer_name: response.data.customerName,
+        service_id: response.data.service,
+        status: 'verified',
+        service_name: service_id.toUpperCase(),
+        customer_phone_number: null,
+        customer_email_address: null,
+        customer_username: null,
+        minimum_amount: 100,
+        maximum_amount: 100000,
+        current_bouquet: 'N/A',
+        renewal_amount: 0,
+        due_date: null,
+        balance: 0
+      }
+    };
+
+  } catch (error) {
+    logger.error(`❌ [${requestId}] PayBeta customer verification failed:`, {
+      requestId,
+      userId,
+      customer_id: customer_id?.substring(0, 4) + '***',
+      service_id,
+      error: error.message,
+      status: error.response?.status,
+      payBetaError: error.response?.data
+    });
+
+    if (error.message.includes('API key not configured')) {
+      throw new Error('PayBeta API key not configured. Please contact support.');
+    }
+    if (error.message.includes('authentication failed')) {
+      throw new Error('PayBeta authentication failed. Please contact support.');
+    }
+    if (error.message.includes('validation error')) {
+      throw new Error(`PayBeta validation error: ${error.message}`);
+    }
+
+    throw new Error(`PayBeta API error: ${error.message}`);
+  }
+}
+
+/**
  * Main customer verification endpoint - Updated to match other utilities' patterns
  */
 router.post('/customer', async (req, res) => {
@@ -215,18 +313,29 @@ router.post('/customer', async (req, res) => {
       variation_id: variation_id || 'not_provided'
     });
     
-    // Step 4: Call eBills API using the consistent pattern
-    let ebillsResponse;
+    // Step 4: Call appropriate API based on service category
+    let apiResponse;
     try {
-      ebillsResponse = await callEBillsVerificationAPI({
-        customer_id,
-        service_id,
-        variation_id,
-        requestId,
-        userId
-      });
+      if (serviceCategory === 'cable_tv') {
+        // Use PayBeta for cable TV services
+        apiResponse = await callPayBetaVerificationAPI({
+          customer_id,
+          service_id,
+          requestId,
+          userId
+        });
+      } else {
+        // Use eBills for other services (airtime, electricity, betting)
+        apiResponse = await callEBillsVerificationAPI({
+          customer_id,
+          service_id,
+          variation_id,
+          requestId,
+          userId
+        });
+      }
     } catch (apiError) {
-      logger.error(`eBills verification API call failed:`, {
+      logger.error(`${serviceCategory === 'cable_tv' ? 'PayBeta' : 'eBills'} verification API call failed:`, {
         requestId,
         userId,
         customer_id: customer_id?.substring(0, 4) + '***',
@@ -269,7 +378,7 @@ router.post('/customer', async (req, res) => {
     }
     
     // Step 5: Process successful verification response
-    const customerData = ebillsResponse.data;
+    const customerData = apiResponse.data;
     
     // Enhance response with service category and additional info
     const enhancedResponse = {
