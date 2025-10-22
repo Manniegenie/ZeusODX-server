@@ -21,7 +21,9 @@ async function verifyCableTVCustomer(service, smartCardNumber) {
     logger.info('🔍 Making PayBeta cable TV verification request:', {
       service: service,
       smartCardNumber: smartCardNumber.substring(0, 4) + '***',
-      endpoint: '/v2/cable/validate'
+      endpoint: '/v2/cable/validate',
+      fullSmartCard: smartCardNumber,
+      payload: payload
     });
 
     const response = await payBetaAuth.makeRequest('POST', '/v2/cable/validate', payload, {
@@ -90,6 +92,15 @@ router.post('/verify', async (req, res) => {
   try {
     const { service_id, customer_id } = req.body;
     
+    // Debug: Log the raw request body
+    logger.info('🔍 Raw request body received:', {
+      requestId,
+      service_id,
+      customer_id,
+      customer_id_length: customer_id?.length,
+      customer_id_type: typeof customer_id
+    });
+    
     // Validate required fields
     if (!service_id) {
       return res.status(400).json({
@@ -140,7 +151,9 @@ router.post('/verify', async (req, res) => {
       requestId,
       service_id,
       customer_id: customer_id.substring(0, 4) + '***',
-      smartCardLength: smartCardNumber.length
+      smartCardLength: smartCardNumber.length,
+      originalCustomerId: customer_id,
+      cleanedSmartCard: smartCardNumber
     });
 
     // Call PayBeta verification
