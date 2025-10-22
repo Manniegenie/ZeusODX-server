@@ -62,7 +62,7 @@ const SUPPORTED_TOKENS = {
   USDT: { binanceSymbol: null,       isStablecoin: true  }, // treat as 1.0
   USDC: { binanceSymbol: 'USDCUSDT', isStablecoin: true  },
   BNB: { binanceSymbol: 'BNBUSDT',   isStablecoin: false },
-  MATIC:{ binanceSymbol: 'MATICUSDT',isStablecoin: false },
+  MATIC:{ binanceSymbol: 'POLUSDT',isStablecoin: false },
   TRX: { binanceSymbol: 'TRXUSDT', isStablecoin: false },
 };
 
