@@ -1,15 +1,16 @@
 const express = require('express');
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 
-// eBills API configuration
-const EBILLS_BASE_URL = process.env.EBILLS_BASE_URL || 'https://ebills.africa/wp-json';
+// PayBeta API configuration
+const PAYBETA_BASE_URL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
 
 // Creating a router instance
 const router = express.Router();
 
 /**
- * Get cable TV package variations from eBills API
+ * Get cable TV package variations from PayBeta API
  * POST /tv/packages - Get cable TV packages with optional service_id filter
  */
 router.post('/packages', async (req, res) => {
@@ -29,49 +30,41 @@ router.post('/packages', async (req, res) => {
       }
     }
     
-    logger.info('Fetching cable TV package variations', { service_id: service_id || 'all' });
+    logger.info('Fetching cable TV package variations from PayBeta', { service_id: service_id || 'all' });
     
-    // Prepare query parameters
-    const queryParams = service_id ? { service_id: service_id.toLowerCase() } : {};
-    
-    // Make request to eBills API (this is a public endpoint, no auth required)
-    const response = await axios.get(`${EBILLS_BASE_URL}/api/v2/variations/tv`, {
-      params: queryParams,
-      timeout: 15000,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
+    // Make request to PayBeta API
+    const response = await payBetaAuth.makeRequest('POST', '/v2/cable/bouquet', {
+      service: service_id || 'dstv' // Default to dstv if no service specified
     });
     
-    logger.info('Cable TV packages fetched successfully', { 
-      service_id: service_id || 'all',
-      count: response.data?.data?.length || 0 
-    });
-    
-    // Handle eBills API response
-    if (response.data.code === 'success') {
-      // Filter out unavailable packages by default (can be made configurable)
-      const allPackages = response.data.data || [];
-      const availablePackages = allPackages.filter(pkg => pkg.availability === 'Available');
+    if (response.status === 'successful') {
+      const packages = response.data.packages || [];
       
-      // Group packages by service provider for better organization
-      const packagesByProvider = availablePackages.reduce((acc, pkg) => {
+      // Transform PayBeta packages to match our format
+      const transformedPackages = packages.map(pkg => ({
+        variation_id: pkg.code,
+        service_name: service_id ? service_id.toUpperCase() : 'Cable TV',
+        service_id: service_id || 'dstv',
+        package_bouquet: pkg.description,
+        price: parseInt(pkg.price),
+        price_formatted: `₦${parseInt(pkg.price).toLocaleString()}`,
+        availability: 'Available'
+      }));
+      
+      // Group packages by service provider
+      const packagesByProvider = transformedPackages.reduce((acc, pkg) => {
         const provider = pkg.service_id;
         if (!acc[provider]) {
           acc[provider] = [];
         }
-        acc[provider].push({
-          variation_id: pkg.variation_id,
-          service_name: pkg.service_name,
-          service_id: pkg.service_id,
-          package_bouquet: pkg.package_bouquet,
-          price: parseInt(pkg.price), // Convert price to number
-          price_formatted: `₦${parseInt(pkg.price).toLocaleString()}`,
-          availability: pkg.availability
-        });
+        acc[provider].push(pkg);
         return acc;
       }, {});
+      
+      logger.info('Cable TV packages fetched successfully from PayBeta', { 
+        service_id: service_id || 'all',
+        count: transformedPackages.length 
+      });
       
       return res.status(200).json({
         success: true,
@@ -80,24 +73,22 @@ router.post('/packages', async (req, res) => {
           'All cable TV packages retrieved successfully',
         data: {
           packages_by_provider: packagesByProvider,
-          total_available_packages: availablePackages.length,
-          total_all_packages: allPackages.length,
+          total_available_packages: transformedPackages.length,
+          total_all_packages: transformedPackages.length,
           filter_applied: service_id || null,
           providers_available: Object.keys(packagesByProvider)
         },
         // Also include raw data for backward compatibility
-        raw_data: response.data
+        raw_data: response
       });
       
     } else {
-      // Handle eBills API error responses
-      logger.warn('eBills API returned error:', response.data);
+      logger.warn('PayBeta API returned error:', response);
       
       return res.status(400).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: response.data.message || 'Failed to fetch cable TV packages',
-        ebills_code: response.data.code
+        error: 'PAYBETA_API_ERROR',
+        message: response.message || 'Failed to fetch cable TV packages'
       });
     }
     
@@ -114,35 +105,27 @@ router.post('/packages', async (req, res) => {
       const status = error.response.status;
       const errorData = error.response.data;
       
-      if (status === 400 && errorData?.code === 'invalid_service_id') {
+      if (status === 400 && errorData?.message?.includes('service')) {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID provided to eBills API'
-        });
-      }
-      
-      if (status === 404 && errorData?.code === 'no_product') {
-        return res.status(404).json({
-          success: false,
-          error: 'NO_PRODUCT',
-          message: 'Cable TV packages product not found'
+          message: 'Invalid service ID provided to PayBeta API'
         });
       }
       
       return res.status(status).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: errorData?.message || 'eBills API request failed'
+        error: 'PAYBETA_API_ERROR',
+        message: errorData?.message || 'PayBeta API request failed'
       });
     }
     
     // Network or timeout errors
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+    if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
       return res.status(504).json({
         success: false,
         error: 'TIMEOUT',
-        message: 'Request to eBills API timed out. Please try again.'
+        message: 'Request to PayBeta API timed out. Please try again.'
       });
     }
     
@@ -175,30 +158,31 @@ router.get('/packages', async (req, res) => {
       }
     }
     
-    logger.info('Fetching cable TV package variations (GET)', { service_id: service_id || 'all' });
+    logger.info('Fetching cable TV package variations from PayBeta (GET)', { service_id: service_id || 'all' });
     
-    // Prepare query parameters
-    const queryParams = service_id ? { service_id: service_id.toLowerCase() } : {};
-    
-    // Make request to eBills API (this is a public endpoint, no auth required)
-    const response = await axios.get(`${EBILLS_BASE_URL}/api/v2/variations/tv`, {
-      params: queryParams,
-      timeout: 15000,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
+    // Make request to PayBeta API
+    const response = await payBetaAuth.makeRequest('POST', '/v2/cable/bouquet', {
+      service: service_id || 'dstv' // Default to dstv if no service specified
     });
     
-    logger.info('Cable TV packages fetched successfully (GET)', { 
-      service_id: service_id || 'all',
-      count: response.data?.data?.length || 0 
-    });
-    
-    // Handle eBills API response (same logic as POST endpoint)
-    if (response.data.code === 'success') {
-      const allPackages = response.data.data || [];
-      const availablePackages = allPackages.filter(pkg => pkg.availability === 'Available');
+    if (response.status === 'successful') {
+      const packages = response.data.packages || [];
+      
+      // Transform PayBeta packages to match our format
+      const transformedPackages = packages.map(pkg => ({
+        variation_id: pkg.code,
+        service_name: service_id ? service_id.toUpperCase() : 'Cable TV',
+        service_id: service_id || 'dstv',
+        package_bouquet: pkg.description,
+        price: parseInt(pkg.price),
+        price_formatted: `₦${parseInt(pkg.price).toLocaleString()}`,
+        availability: 'Available'
+      }));
+      
+      logger.info('Cable TV packages fetched successfully from PayBeta (GET)', { 
+        service_id: service_id || 'all',
+        count: transformedPackages.length 
+      });
       
       return res.status(200).json({
         success: true,
@@ -206,17 +190,9 @@ router.get('/packages', async (req, res) => {
           `${service_id.toUpperCase()} cable TV packages retrieved successfully` : 
           'All cable TV packages retrieved successfully',
         data: {
-          packages: availablePackages.map(pkg => ({
-            variation_id: pkg.variation_id,
-            service_name: pkg.service_name,
-            service_id: pkg.service_id,
-            package_bouquet: pkg.package_bouquet,
-            price: parseInt(pkg.price),
-            price_formatted: `₦${parseInt(pkg.price).toLocaleString()}`,
-            availability: pkg.availability
-          })),
-          total_available_packages: availablePackages.length,
-          total_all_packages: allPackages.length,
+          packages: transformedPackages,
+          total_available_packages: transformedPackages.length,
+          total_all_packages: transformedPackages.length,
           filter_applied: service_id || null
         }
       });
@@ -224,9 +200,8 @@ router.get('/packages', async (req, res) => {
     } else {
       return res.status(400).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: response.data.message || 'Failed to fetch cable TV packages',
-        ebills_code: response.data.code
+        error: 'PAYBETA_API_ERROR',
+        message: response.message || 'Failed to fetch cable TV packages'
       });
     }
     
@@ -243,34 +218,26 @@ router.get('/packages', async (req, res) => {
       const status = error.response.status;
       const errorData = error.response.data;
       
-      if (status === 400 && errorData?.code === 'invalid_service_id') {
+      if (status === 400 && errorData?.message?.includes('service')) {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID provided to eBills API'
-        });
-      }
-      
-      if (status === 404 && errorData?.code === 'no_product') {
-        return res.status(404).json({
-          success: false,
-          error: 'NO_PRODUCT',
-          message: 'Cable TV packages product not found'
+          message: 'Invalid service ID provided to PayBeta API'
         });
       }
       
       return res.status(status).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: errorData?.message || 'eBills API request failed'
+        error: 'PAYBETA_API_ERROR',
+        message: errorData?.message || 'PayBeta API request failed'
       });
     }
     
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+    if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
       return res.status(504).json({
         success: false,
         error: 'TIMEOUT',
-        message: 'Request to eBills API timed out. Please try again.'
+        message: 'Request to PayBeta API timed out. Please try again.'
       });
     }
     
@@ -283,41 +250,58 @@ router.get('/packages', async (req, res) => {
 });
 
 /**
- * Get available cable TV providers
+ * Get available cable TV providers from PayBeta
  * GET /tv/providers - Get list of available cable TV providers
  */
-router.get('/providers', (req, res) => {
-  const providers = [
-    {
-      service_id: 'dstv',
-      service_name: 'DStv',
-      description: 'DStv Nigeria cable TV packages'
-    },
-    {
-      service_id: 'gotv',
-      service_name: 'GOtv',
-      description: 'GOtv Nigeria cable TV packages'
-    },
-    {
-      service_id: 'startimes',
-      service_name: 'Startimes',
-      description: 'Startimes Nigeria cable TV packages'
-    },
-    {
-      service_id: 'showmax',
-      service_name: 'Showmax',
-      description: 'Showmax Nigeria streaming packages'
+router.get('/providers', async (req, res) => {
+  try {
+    logger.info('Fetching cable TV providers from PayBeta');
+    
+    const response = await payBetaAuth.makeRequest('GET', '/v2/cable/providers');
+    
+    if (response.status === 'successful') {
+      const providers = response.data.map(provider => ({
+        service_id: provider.slug,
+        service_name: provider.name,
+        category: provider.category,
+        status: provider.status,
+        logo: provider.logo,
+        description: `${provider.name} cable TV packages`
+      }));
+      
+      logger.info('Cable TV providers fetched successfully from PayBeta', { 
+        count: providers.length 
+      });
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Available cable TV providers retrieved successfully',
+        data: {
+          providers,
+          total_providers: providers.length
+        }
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'PAYBETA_API_ERROR',
+        message: response.message || 'Failed to fetch cable TV providers'
+      });
     }
-  ];
-  
-  return res.status(200).json({
-    success: true,
-    message: 'Available cable TV providers retrieved successfully',
-    data: {
-      providers,
-      total_providers: providers.length
-    }
-  });
+    
+  } catch (error) {
+    logger.error('Fetch cable TV providers error:', {
+      error: error.message,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+    
+    return res.status(500).json({
+      success: false,
+      error: 'INTERNAL_SERVER_ERROR',
+      message: 'An unexpected error occurred while fetching cable TV providers'
+    });
+  }
 });
 
 /**
@@ -328,8 +312,8 @@ router.get('/health', (req, res) => {
     status: 'healthy',
     service: 'Cable TV API',
     timestamp: new Date().toISOString(),
-    ebillsBaseUrl: EBILLS_BASE_URL,
-    version: '1.0.0'
+    payBetaBaseUrl: PAYBETA_BASE_URL,
+    version: '2.0.0'
   });
 });
 
