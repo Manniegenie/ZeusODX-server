@@ -244,6 +244,22 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
       });
     }
     
+    // Log the exact payload being sent to PayBeta for debugging
+    logger.info(`🔍 [${requestId}] PayBeta verification payload:`, {
+      requestId,
+      userId,
+      service_id,
+      payBetaService,
+      payload: {
+        service: payBetaService,
+        smartCardNumber: smartCardNumber.substring(0, 4) + '***' + smartCardNumber.substring(smartCardNumber.length - 2)
+      },
+      fullPayload: {
+        service: payBetaService,
+        smartCardNumber: smartCardNumber
+      }
+    });
+    
     // Log the actual length for debugging (without exposing the full number)
     logger.info(`🔍 [${requestId}] Smart card number validation:`, {
       requestId,
@@ -273,6 +289,17 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
       endpoint: '/v2/cable/validate'
     });
 
+    // Log the exact request being made
+    logger.info(`🔍 [${requestId}] Making PayBeta request with axios:`, {
+      requestId,
+      userId,
+      service_id,
+      method: 'POST',
+      endpoint: '/v2/cable/validate',
+      payload: verificationPayload,
+      timeout: 25000
+    });
+
     const response = await payBetaAuth.makeRequest('POST', '/v2/cable/validate', verificationPayload, {
       timeout: 25000
     });
@@ -284,7 +311,12 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
       service_id,
       status: response.status,
       message: response.message,
-      hasData: !!response.data
+      hasData: !!response.data,
+      responseData: response.data ? {
+        customerName: response.data.customerName,
+        smartCardNumber: response.data.smartCardNumber?.substring(0, 4) + '***',
+        service: response.data.service
+      } : null
     });
 
     if (response.status !== 'successful') {
@@ -343,6 +375,93 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
     throw new Error(`PayBeta API error: ${error.message}`);
   }
 }
+
+/**
+ * Test PayBeta cable TV verification with known working smart card
+ */
+router.post('/test-paybeta', async (req, res) => {
+  try {
+    const testSmartCard = '8072916698'; // Known working smart card
+    const testService = 'gotv';
+    
+    logger.info('🧪 Testing PayBeta cable TV verification with known working smart card:', {
+      smartCard: testSmartCard.substring(0, 4) + '***',
+      service: testService
+    });
+    
+    const testResponse = await callPayBetaVerificationAPI({
+      customer_id: testSmartCard,
+      service_id: testService,
+      requestId: 'test_' + Date.now(),
+      userId: 'test_user'
+    });
+    
+    logger.info('✅ PayBeta test successful:', testResponse);
+    
+    return res.status(200).json({
+      success: true,
+      message: 'PayBeta test successful',
+      data: testResponse.data
+    });
+    
+  } catch (error) {
+    logger.error('❌ PayBeta test failed:', error.message);
+    
+    return res.status(500).json({
+      success: false,
+      error: 'PAYBETA_TEST_FAILED',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * Test PayBeta with direct axios call (matching your working example)
+ */
+router.post('/test-paybeta-direct', async (req, res) => {
+  try {
+    const axios = require('axios');
+    
+    const testPayload = {
+      service: 'gotv',
+      smartCardNumber: '8072916698'
+    };
+    
+    logger.info('🧪 Testing PayBeta with direct axios call:', testPayload);
+    
+    const response = await axios.post('https://api.paybeta.ng/v2/cable/validate', testPayload, {
+      headers: {
+        'P-API-KEY': process.env.PAYBETA_API_KEY,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      timeout: 25000
+    });
+    
+    logger.info('✅ Direct PayBeta test successful:', response.data);
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Direct PayBeta test successful',
+      data: response.data
+    });
+    
+  } catch (error) {
+    logger.error('❌ Direct PayBeta test failed:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+    
+    return res.status(500).json({
+      success: false,
+      error: 'DIRECT_PAYBETA_TEST_FAILED',
+      message: error.message,
+      status: error.response?.status,
+      responseData: error.response?.data
+    });
+  }
+});
 
 /**
  * Main customer verification endpoint - Updated to match other utilities' patterns
@@ -405,28 +524,52 @@ router.post('/customer', async (req, res) => {
       variation_id: variation_id || 'not_provided'
     });
     
-    // Step 4: Call appropriate API based on service category
-    let apiResponse;
-    try {
-      if (serviceCategory === 'cable_tv') {
-        // Use PayBeta for cable TV services
-        apiResponse = await callPayBetaVerificationAPI({
-          customer_id,
-          service_id,
-          requestId,
-          userId
-        });
-      } else {
-        // Use eBills for other services (airtime, electricity, betting)
-        apiResponse = await callEBillsVerificationAPI({
-          customer_id,
-          service_id,
-          variation_id,
-          requestId,
-          userId
-        });
-      }
-    } catch (apiError) {
+        // Step 4: Call appropriate API based on service category
+        let apiResponse;
+        try {
+          if (serviceCategory === 'cable_tv') {
+            // Try PayBeta first for cable TV services
+            try {
+              apiResponse = await callPayBetaVerificationAPI({
+                customer_id,
+                service_id,
+                requestId,
+                userId
+              });
+            } catch (payBetaError) {
+              // If PayBeta fails with "Invalid Smart Card Number", fallback to eBills
+              if (payBetaError.message.includes('Invalid Smart Card Number') || 
+                  payBetaError.message.includes('Invalid smart card')) {
+                logger.warn(`🔄 [${requestId}] PayBeta failed, falling back to eBills for cable TV verification:`, {
+                  requestId,
+                  userId,
+                  service_id,
+                  payBetaError: payBetaError.message
+                });
+                
+                apiResponse = await callEBillsVerificationAPI({
+                  customer_id,
+                  service_id,
+                  variation_id: null, // Cable TV doesn't need variation_id for eBills
+                  requestId,
+                  userId
+                });
+              } else {
+                // Re-throw other PayBeta errors
+                throw payBetaError;
+              }
+            }
+          } else {
+            // Use eBills for other services (airtime, electricity, betting)
+            apiResponse = await callEBillsVerificationAPI({
+              customer_id,
+              service_id,
+              variation_id,
+              requestId,
+              userId
+            });
+          }
+        } catch (apiError) {
       logger.error(`${serviceCategory === 'cable_tv' ? 'PayBeta' : 'eBills'} verification API call failed:`, {
         requestId,
         userId,
