@@ -386,7 +386,7 @@ router.post('/purchase', async (req, res) => {
   let balanceDeducted = false;
   let transactionCreated = false;
   let pendingTransaction = null;
-  let ebillsResponse = null;
+  let payBetaResponse = null;
   let validation;
 
   try {
@@ -544,7 +544,7 @@ router.post('/purchase', async (req, res) => {
     
     // Step 8: Call PayBeta API
     try {
-      ebillsResponse = await callPayBetaAPI({
+      payBetaResponse = await callPayBetaAPI({
         customer_id, service_id, variation_id, amount,
         request_id: finalRequestId,
         userId,
@@ -570,10 +570,10 @@ router.post('/purchase', async (req, res) => {
     // =====================================
     // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
     // =====================================
-    const ebillsStatus = ebillsResponse.data.status;
+    const payBetaStatus = payBetaResponse.data.status;
     
     // Deduct balance immediately regardless of PayBeta status (as long as API call succeeded)
-    logger.info(`✅ PayBeta API succeeded (${ebillsStatus}), deducting balance immediately for ${finalRequestId}`);
+    logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance immediately for ${finalRequestId}`);
     
     try {
       await updateUserBalance(userId, currency, -amount);
@@ -599,10 +599,10 @@ router.post('/purchase', async (req, res) => {
         await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
           status: 'failed',
           processingErrors: [{
-            error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
-            timestamp: new Date(),
-            phase: 'balance_deduction',
-            ebills_order_id: ebillsResponse.data?.order_id
+        error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
+        timestamp: new Date(),
+        phase: 'balance_deduction',
+        paybeta_order_id: payBetaResponse.data?.order_id
           }]
         });
         
@@ -616,43 +616,43 @@ router.post('/purchase', async (req, res) => {
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
         status: 'failed',
         processingErrors: [{
-          error: `Balance deduction failed after eBills success: ${balanceError.message}`,
-          timestamp: new Date(),
-          phase: 'balance_deduction',
-          ebills_order_id: ebillsResponse.data?.order_id
+        error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
+        timestamp: new Date(),
+        phase: 'balance_deduction',
+        paybeta_order_id: payBetaResponse.data?.order_id
         }]
       });
       
       return res.status(500).json({
         success: false,
         error: 'BALANCE_UPDATE_FAILED',
-        message: 'eBills transaction succeeded but balance deduction failed. Please contact support immediately.',
+        message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
         details: {
-          ebills_order_id: ebillsResponse.data?.order_id,
-          ebills_status: ebillsResponse.data?.status,
+          paybeta_order_id: payBetaResponse.data?.order_id,
+          paybeta_status: payBetaResponse.data?.status,
           amount: amount,
           customer_id: customer_id
         }
       });
     }
     
-    // Step 10: Update transaction with eBills response
+    // Step 10: Update transaction with PayBeta response
     const updateData = {
-      orderId: ebillsResponse.data.order_id.toString(),
-      status: ebillsResponse.data.status,
-      productName: ebillsResponse.data.product_name,
+      orderId: payBetaResponse.data.order_id.toString(),
+      status: payBetaResponse.data.status,
+      productName: payBetaResponse.data.product_name,
       balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: ebillsResponse.data.service_name,
-        customer_name: ebillsResponse.data.customer_name,
-        discount: ebillsResponse.data.discount,
-        amount_charged: ebillsResponse.data.amount_charged,
+        service_name: payBetaResponse.data.service_name,
+        customer_name: payBetaResponse.data.customer_name,
+        discount: payBetaResponse.data.discount,
+        amount_charged: payBetaResponse.data.amount_charged,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        ebills_initial_balance: ebillsResponse.data.initial_balance,
-        ebills_final_balance: ebillsResponse.data.final_balance
+        paybeta_initial_balance: payBetaResponse.data.initial_balance,
+        paybeta_final_balance: payBetaResponse.data.final_balance
       }
     };
     
@@ -662,22 +662,22 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
-    if (ebillsStatus === 'successful') {
+    if (payBetaStatus === 'successful') {
       return res.status(200).json({
         success: true,
         message: 'Cable TV purchase completed successfully',
         data: {
-          order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
+          order_id: payBetaResponse.data.order_id,
+          status: payBetaResponse.data.status,
           service_name: service_id.toUpperCase(),
           customer_id: customer_id,
-          customer_name: ebillsResponse.data.customerId,
-          amount: ebillsResponse.data.amount,
-          amount_charged: ebillsResponse.data.chargedAmount,
+          customer_name: payBetaResponse.data.customerId,
+          amount: payBetaResponse.data.amount,
+          amount_charged: payBetaResponse.data.chargedAmount,
           request_id: finalRequestId,
           balance_action: 'updated_directly',
           payment_details: {
@@ -687,18 +687,18 @@ router.post('/purchase', async (req, res) => {
           }
         }
       });
-    } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
+    } else if (['initiated-api', 'processing-api'].includes(payBetaStatus)) {
       return res.status(202).json({
         success: true,
         message: 'Cable TV purchase is being processed',
         data: {
-          order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
+          order_id: payBetaResponse.data.order_id,
+          status: payBetaResponse.data.status,
           service_name: service_id.toUpperCase(),
           customer_id: customer_id,
-          customer_name: ebillsResponse.data.customerId,
-          amount: ebillsResponse.data.amount,
-          amount_charged: ebillsResponse.data.amount_charged,
+          customer_name: payBetaResponse.data.customerId,
+          amount: payBetaResponse.data.amount,
+          amount_charged: payBetaResponse.data.amount_charged,
           request_id: finalRequestId,
           balance_action: 'updated_directly', // Changed from 'reserved' since we deduct immediately
           payment_details: {
@@ -712,9 +712,9 @@ router.post('/purchase', async (req, res) => {
     } else {
       return res.status(200).json({
         success: true,
-        message: `Cable TV purchase status: ${ebillsStatus}`,
+        message: `Cable TV purchase status: ${payBetaStatus}`,
         data: {
-          ...ebillsResponse.data,
+          ...payBetaResponse.data,
           request_id: finalRequestId,
           balance_action: 'updated_directly',
           payment_details: {

@@ -205,7 +205,7 @@ function validateAirtimeRequest(body) {
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
       
-      const minAmount = 50;
+      const minAmount = 99;
       const maxAmount = 50000;
       if (sanitized.amount < minAmount) {
         errors.push(`Amount below minimum. Minimum airtime purchase is ${minAmount} NGNZ`);

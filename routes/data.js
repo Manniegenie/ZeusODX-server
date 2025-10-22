@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/user');
 const BillTransaction = require('../models/billstransaction');
 const { vtuAuth } = require('../auth/billauth');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
@@ -203,7 +204,7 @@ function validateDataRequest(body) {
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
       
-      const minAmount = 50; // UPDATED: Minimum changed from 100 to 50
+      const minAmount = 99; // UPDATED: Minimum changed from 100 to 99
       const maxAmount = 50000;
       if (sanitized.amount < minAmount) {
         errors.push(`Amount below minimum. Minimum data purchase is ${minAmount} NGNZ`);
@@ -298,6 +299,90 @@ async function callEBillsAPI({ phone, amount, service_id, variation_id, request_
 }
 
 /**
+ * Call PayBeta API for data purchase
+ */
+async function callPayBetaAPI({ phone, amount, service_id, variation_id, request_id, userId }) {
+  try {
+    // Map service_id to PayBeta format
+    const serviceMapping = {
+      'mtn': 'mtn_data',
+      'airtel': 'airtel_data', 
+      'glo': 'glo_data',
+      '9mobile': '9mobile_data'
+    };
+
+    const payBetaService = serviceMapping[service_id];
+    if (!payBetaService) {
+      throw new Error(`Unsupported service for PayBeta: ${service_id}`);
+    }
+
+    // Ensure reference is under 40 characters for PayBeta
+    const payBetaReference = request_id.length > 40 ? 
+      request_id.substring(0, 40) : request_id;
+
+    const payload = {
+      service: payBetaService,
+      amount: Math.round(amount), // PayBeta expects integer
+      phoneNumber: phone.trim(),
+      code: variation_id,
+      reference: payBetaReference
+    };
+
+    logger.info('Making PayBeta data purchase request:', {
+      phone, service_id, variation_id, amount, request_id, endpoint: '/v2/data-bundle/purchase'
+    });
+
+    const response = await payBetaAuth.makeRequest('POST', '/v2/data-bundle/purchase', payload, {
+      timeout: 25000
+    });
+
+    logger.info(`PayBeta API response for ${request_id}:`, {
+      status: response.status,
+      message: response.message,
+      reference: response.data?.reference,
+      transactionId: response.data?.transactionId
+    });
+
+    if (response.status !== 'successful') {
+      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+    }
+
+    // Transform PayBeta response to match eBills format for consistency
+    return {
+      code: 'success',
+      message: response.message,
+      data: {
+        status: 'successful',
+        order_id: response.data.transactionId,
+        reference: response.data.reference,
+        amount: response.data.amount,
+        chargedAmount: response.data.chargedAmount,
+        commission: response.data.commission,
+        biller: response.data.biller,
+        customerId: response.data.customerId,
+        transactionDate: response.data.transactionDate
+      }
+    };
+
+  } catch (error) {
+    logger.error('❌ PayBeta data purchase failed:', {
+      request_id, userId, error: error.message,
+      status: error.response?.status,
+      payBetaError: error.response?.data
+    });
+
+    if (error.message.includes('insufficient')) {
+      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
+    }
+    if (error.message.includes('validation')) {
+      throw new Error('Invalid request parameters. Please check your input.');
+    }
+
+    throw new Error(`PayBeta API error: ${error.message}`);
+  }
+}
+
+/**
  * STREAMLINED data purchase endpoint - ATOMIC IMMEDIATE DEBIT
  */
 router.post('/purchase', async (req, res) => {
@@ -305,7 +390,7 @@ router.post('/purchase', async (req, res) => {
   let balanceDeducted = false;
   let transactionCreated = false;
   let pendingTransaction = null;
-  let ebillsResponse = null;
+  let payBetaResponse = null;
   let validation;
 
   try {
@@ -460,9 +545,9 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | data | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
     
-    // Step 8: Call eBills API
+    // Step 8: Call PayBeta API
     try {
-      ebillsResponse = await callEBillsAPI({
+      payBetaResponse = await callPayBetaAPI({
         phone, amount, service_id, variation_id,
         request_id: finalRequestId,
         userId
@@ -479,7 +564,7 @@ router.post('/purchase', async (req, res) => {
       
       return res.status(500).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
+        error: 'PAYBETA_API_ERROR',
         message: apiError.message
       });
     }
@@ -487,10 +572,10 @@ router.post('/purchase', async (req, res) => {
     // =====================================
     // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
     // =====================================
-    const ebillsStatus = ebillsResponse.data.status;
+    const payBetaStatus = payBetaResponse.data.status;
     
-    // Deduct balance immediately regardless of eBills status (as long as API call succeeded)
-    logger.info(`✅ eBills API succeeded (${ebillsStatus}), deducting balance immediately for ${finalRequestId}`);
+    // Deduct balance immediately regardless of PayBeta status (as long as API call succeeded)
+    logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance immediately for ${finalRequestId}`);
     
     try {
       await updateUserBalance(userId, currency, -amount);
@@ -516,10 +601,10 @@ router.post('/purchase', async (req, res) => {
         await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
           status: 'failed',
           processingErrors: [{
-            error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
-            timestamp: new Date(),
-            phase: 'balance_deduction',
-            ebills_order_id: ebillsResponse.data?.order_id
+        error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
+        timestamp: new Date(),
+        phase: 'balance_deduction',
+        paybeta_order_id: payBetaResponse.data?.order_id
           }]
         });
         
@@ -533,41 +618,41 @@ router.post('/purchase', async (req, res) => {
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
         status: 'failed',
         processingErrors: [{
-          error: `Balance deduction failed after eBills success: ${balanceError.message}`,
-          timestamp: new Date(),
-          phase: 'balance_deduction',
-          ebills_order_id: ebillsResponse.data?.order_id
+        error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
+        timestamp: new Date(),
+        phase: 'balance_deduction',
+        paybeta_order_id: payBetaResponse.data?.order_id
         }]
       });
       
       return res.status(500).json({
         success: false,
         error: 'BALANCE_UPDATE_FAILED',
-        message: 'eBills transaction succeeded but balance deduction failed. Please contact support immediately.',
+        message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
         details: {
-          ebills_order_id: ebillsResponse.data?.order_id,
-          ebills_status: ebillsResponse.data?.status,
+          paybeta_order_id: payBetaResponse.data?.order_id,
+          paybeta_status: payBetaResponse.data?.status,
           amount: amount,
           phone: phone
         }
       });
     }
     
-    // Step 10: Update transaction with eBills response
+    // Step 10: Update transaction with PayBeta response
     const updateData = {
-      orderId: ebillsResponse.data.order_id.toString(),
-      status: ebillsResponse.data.status,
-      productName: ebillsResponse.data.product_name,
+      orderId: payBetaResponse.data.order_id.toString(),
+      status: payBetaResponse.data.status,
+      productName: payBetaResponse.data.product_name,
       balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: ebillsResponse.data.service_name,
-        amount_charged: ebillsResponse.data.amount_charged,
+        service_name: payBetaResponse.data.service_name,
+        amount_charged: payBetaResponse.data.amount_charged,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        ebills_initial_balance: ebillsResponse.data.initial_balance,
-        ebills_final_balance: ebillsResponse.data.final_balance
+        paybeta_initial_balance: payBetaResponse.data.initial_balance,
+        paybeta_final_balance: payBetaResponse.data.final_balance
       }
     };
     
@@ -577,20 +662,20 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
-    if (ebillsStatus === 'completed-api') {
+    if (payBetaStatus === 'successful') {
       return res.status(200).json({
         success: true,
         message: 'Data purchase completed successfully',
         data: {
-          order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
-          phone: ebillsResponse.data.phone,
-          amount: ebillsResponse.data.amount,
-          service_name: ebillsResponse.data.service_name,
+          order_id: payBetaResponse.data.order_id,
+          status: payBetaResponse.data.status,
+          phone: payBetaResponse.data.phone,
+          amount: payBetaResponse.data.amount,
+          service_name: payBetaResponse.data.service_name,
           request_id: finalRequestId,
           balance_action: 'updated_directly',
           payment_details: {
@@ -600,16 +685,16 @@ router.post('/purchase', async (req, res) => {
           }
         }
       });
-    } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
+    } else if (['initiated-api', 'processing-api'].includes(payBetaStatus)) {
       return res.status(202).json({
         success: true,
         message: 'Data purchase is being processed',
         data: {
-          order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
-          phone: ebillsResponse.data.phone,
-          amount: ebillsResponse.data.amount,
-          service_name: ebillsResponse.data.service_name,
+          order_id: payBetaResponse.data.order_id,
+          status: payBetaResponse.data.status,
+          phone: payBetaResponse.data.phone,
+          amount: payBetaResponse.data.amount,
+          service_name: payBetaResponse.data.service_name,
           request_id: finalRequestId,
           balance_action: 'updated_directly', // Changed from 'reserved' since we deduct immediately
           payment_details: {
@@ -623,9 +708,9 @@ router.post('/purchase', async (req, res) => {
     } else {
       return res.status(200).json({
         success: true,
-        message: `Data purchase status: ${ebillsStatus}`,
+        message: `Data purchase status: ${payBetaStatus}`,
         data: {
-          ...ebillsResponse.data,
+          ...payBetaResponse.data,
           request_id: finalRequestId,
           balance_action: 'updated_directly',
           payment_details: {

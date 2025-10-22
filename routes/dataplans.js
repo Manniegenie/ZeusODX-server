@@ -1,15 +1,15 @@
 const express = require('express');
-const axios = require('axios');
 const logger = require('../utils/logger');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 
-// eBills API configuration
-const EBILLS_BASE_URL = process.env.EBILLS_BASE_URL || 'https://ebills.africa/wp-json';
+// PayBeta API configuration
+const PAYBETA_BASE_URL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
 
 // Creating a router instance
 const router = express.Router();
 
 /**
- * Get data plan variations from eBills API
+ * Get data plan variations from PayBeta API
  * POST /data/plans - Get data plans with optional service_id filter
  */
 router.post('/plans', async (req, res) => {
@@ -18,86 +18,76 @@ router.post('/plans', async (req, res) => {
     
     // Validate service_id if provided
     if (service_id) {
-      const validServiceIds = ['mtn', 'airtel', 'glo', '9mobile', 'smile'];
+      const validServiceIds = ['mtn_data', 'airtel_data', 'glo_data', '9mobile_data', 'smile_data'];
       if (!validServiceIds.includes(service_id.toLowerCase())) {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID. Must be one of: mtn, airtel, glo, 9mobile, smile',
+          message: 'Invalid service ID. Must be one of: mtn_data, airtel_data, glo_data, 9mobile_data, smile_data',
           validServiceIds
         });
       }
     }
     
-    logger.info('Fetching data plan variations', { service_id: service_id || 'all' });
+    logger.info('Fetching data plan variations from PayBeta', { service_id: service_id || 'all' });
     
-    // Prepare query parameters
-    const queryParams = service_id ? { service_id: service_id.toLowerCase() } : {};
-    
-    // Make request to eBills API (this is a public endpoint, no auth required)
-    const response = await axios.get(`${EBILLS_BASE_URL}/api/v2/variations/data`, {
-      params: queryParams,
-      timeout: 15000,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
+    // Make request to PayBeta API
+    const response = await payBetaAuth.makeRequest('POST', '/v2/data-bundle/list', {
+      service: service_id || 'mtn_data' // Default to mtn_data if no service specified
     });
     
-    logger.info('Data plans fetched successfully', { 
-      service_id: service_id || 'all',
-      count: response.data?.data?.length || 0 
-    });
-    
-    // Handle eBills API response
-    if (response.data.code === 'success') {
-      // Filter out unavailable plans by default (can be made configurable)
-      const allPlans = response.data.data || [];
-      const availablePlans = allPlans.filter(plan => plan.availability === 'Available');
+    if (response.status === 'successful') {
+      const packages = response.data.packages || [];
       
-      // Group plans by service provider for better organization
-      const plansByProvider = availablePlans.reduce((acc, plan) => {
-        const provider = plan.service_id;
+      // Transform PayBeta packages to match our format
+      const transformedPackages = packages.map(pkg => ({
+        variation_id: pkg.code,
+        service_name: service_id ? service_id.replace('_data', '').toUpperCase() : 'Data Bundle',
+        service_id: service_id || 'mtn_data',
+        data_plan: pkg.description,
+        price: parseFloat(pkg.price),
+        price_formatted: `₦${parseFloat(pkg.price).toLocaleString()}`,
+        availability: 'Available'
+      }));
+      
+      // Group packages by service provider
+      const packagesByProvider = transformedPackages.reduce((acc, pkg) => {
+        const provider = pkg.service_id;
         if (!acc[provider]) {
           acc[provider] = [];
         }
-        acc[provider].push({
-          variation_id: plan.variation_id,
-          service_name: plan.service_name,
-          service_id: plan.service_id,
-          data_plan: plan.data_plan,
-          price: parseInt(plan.price), // Convert price to number
-          price_formatted: `₦${parseInt(plan.price).toLocaleString()}`,
-          availability: plan.availability
-        });
+        acc[provider].push(pkg);
         return acc;
       }, {});
+      
+      logger.info('Data plans fetched successfully from PayBeta', { 
+        service_id: service_id || 'all',
+        count: transformedPackages.length 
+      });
       
       return res.status(200).json({
         success: true,
         message: service_id ? 
-          `${service_id.toUpperCase()} data plans retrieved successfully` : 
+          `${service_id.replace('_data', '').toUpperCase()} data plans retrieved successfully` : 
           'All data plans retrieved successfully',
         data: {
-          plans_by_provider: plansByProvider,
-          total_available_plans: availablePlans.length,
-          total_all_plans: allPlans.length,
+          plans_by_provider: packagesByProvider,
+          total_available_plans: transformedPackages.length,
+          total_all_plans: transformedPackages.length,
           filter_applied: service_id || null,
-          providers_available: Object.keys(plansByProvider)
+          providers_available: Object.keys(packagesByProvider)
         },
         // Also include raw data for backward compatibility
-        raw_data: response.data
+        raw_data: response
       });
       
     } else {
-      // Handle eBills API error responses
-      logger.warn('eBills API returned error:', response.data);
+      logger.warn('PayBeta API returned error:', response);
       
       return res.status(400).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: response.data.message || 'Failed to fetch data plans',
-        ebills_code: response.data.code
+        error: 'PAYBETA_API_ERROR',
+        message: response.message || 'Failed to fetch data plans'
       });
     }
     
@@ -114,35 +104,27 @@ router.post('/plans', async (req, res) => {
       const status = error.response.status;
       const errorData = error.response.data;
       
-      if (status === 400 && errorData?.code === 'invalid_service_id') {
+      if (status === 400 && errorData?.message?.includes('service')) {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID provided to eBills API'
-        });
-      }
-      
-      if (status === 404 && errorData?.code === 'no_product') {
-        return res.status(404).json({
-          success: false,
-          error: 'NO_PRODUCT',
-          message: 'Data plans product not found'
+          message: 'Invalid service ID provided to PayBeta API'
         });
       }
       
       return res.status(status).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: errorData?.message || 'eBills API request failed'
+        error: 'PAYBETA_API_ERROR',
+        message: errorData?.message || 'PayBeta API request failed'
       });
     }
     
     // Network or timeout errors
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+    if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
       return res.status(504).json({
         success: false,
         error: 'TIMEOUT',
-        message: 'Request to eBills API timed out. Please try again.'
+        message: 'Request to PayBeta API timed out. Please try again.'
       });
     }
     
@@ -156,7 +138,7 @@ router.post('/plans', async (req, res) => {
 
 /**
  * Get data plan variations with query parameters (alternative endpoint)
- * GET /data/plans?service_id=mtn - Get data plans with optional service_id filter
+ * GET /data/plans?service_id=mtn_data - Get data plans with optional service_id filter
  */
 router.get('/plans', async (req, res) => {
   try {
@@ -164,59 +146,52 @@ router.get('/plans', async (req, res) => {
     
     // Validate service_id if provided
     if (service_id) {
-      const validServiceIds = ['mtn', 'airtel', 'glo', '9mobile', 'smile'];
+      const validServiceIds = ['mtn_data', 'airtel_data', 'glo_data', '9mobile_data', 'smile_data'];
       if (!validServiceIds.includes(service_id.toLowerCase())) {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID. Must be one of: mtn, airtel, glo, 9mobile, smile',
+          message: 'Invalid service ID. Must be one of: mtn_data, airtel_data, glo_data, 9mobile_data, smile_data',
           validServiceIds
         });
       }
     }
     
-    logger.info('Fetching data plan variations (GET)', { service_id: service_id || 'all' });
+    logger.info('Fetching data plan variations from PayBeta (GET)', { service_id: service_id || 'all' });
     
-    // Prepare query parameters
-    const queryParams = service_id ? { service_id: service_id.toLowerCase() } : {};
-    
-    // Make request to eBills API (this is a public endpoint, no auth required)
-    const response = await axios.get(`${EBILLS_BASE_URL}/api/v2/variations/data`, {
-      params: queryParams,
-      timeout: 15000,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
+    // Make request to PayBeta API
+    const response = await payBetaAuth.makeRequest('POST', '/v2/data-bundle/list', {
+      service: service_id || 'mtn_data' // Default to mtn_data if no service specified
     });
     
-    logger.info('Data plans fetched successfully (GET)', { 
-      service_id: service_id || 'all',
-      count: response.data?.data?.length || 0 
-    });
-    
-    // Handle eBills API response (same logic as POST endpoint)
-    if (response.data.code === 'success') {
-      const allPlans = response.data.data || [];
-      const availablePlans = allPlans.filter(plan => plan.availability === 'Available');
+    if (response.status === 'successful') {
+      const packages = response.data.packages || [];
+      
+      // Transform PayBeta packages to match our format
+      const transformedPackages = packages.map(pkg => ({
+        variation_id: pkg.code,
+        service_name: service_id ? service_id.replace('_data', '').toUpperCase() : 'Data Bundle',
+        service_id: service_id || 'mtn_data',
+        data_plan: pkg.description,
+        price: parseFloat(pkg.price),
+        price_formatted: `₦${parseFloat(pkg.price).toLocaleString()}`,
+        availability: 'Available'
+      }));
+      
+      logger.info('Data plans fetched successfully from PayBeta (GET)', { 
+        service_id: service_id || 'all',
+        count: transformedPackages.length 
+      });
       
       return res.status(200).json({
         success: true,
         message: service_id ? 
-          `${service_id.toUpperCase()} data plans retrieved successfully` : 
+          `${service_id.replace('_data', '').toUpperCase()} data plans retrieved successfully` : 
           'All data plans retrieved successfully',
         data: {
-          plans: availablePlans.map(plan => ({
-            variation_id: plan.variation_id,
-            service_name: plan.service_name,
-            service_id: plan.service_id,
-            data_plan: plan.data_plan,
-            price: parseInt(plan.price),
-            price_formatted: `₦${parseInt(plan.price).toLocaleString()}`,
-            availability: plan.availability
-          })),
-          total_available_plans: availablePlans.length,
-          total_all_plans: allPlans.length,
+          plans: transformedPackages,
+          total_available_plans: transformedPackages.length,
+          total_all_plans: transformedPackages.length,
           filter_applied: service_id || null
         }
       });
@@ -224,9 +199,8 @@ router.get('/plans', async (req, res) => {
     } else {
       return res.status(400).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: response.data.message || 'Failed to fetch data plans',
-        ebills_code: response.data.code
+        error: 'PAYBETA_API_ERROR',
+        message: response.message || 'Failed to fetch data plans'
       });
     }
     
@@ -243,34 +217,26 @@ router.get('/plans', async (req, res) => {
       const status = error.response.status;
       const errorData = error.response.data;
       
-      if (status === 400 && errorData?.code === 'invalid_service_id') {
+      if (status === 400 && errorData?.message?.includes('service')) {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID provided to eBills API'
-        });
-      }
-      
-      if (status === 404 && errorData?.code === 'no_product') {
-        return res.status(404).json({
-          success: false,
-          error: 'NO_PRODUCT',
-          message: 'Data plans product not found'
+          message: 'Invalid service ID provided to PayBeta API'
         });
       }
       
       return res.status(status).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
-        message: errorData?.message || 'eBills API request failed'
+        error: 'PAYBETA_API_ERROR',
+        message: errorData?.message || 'PayBeta API request failed'
       });
     }
     
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+    if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
       return res.status(504).json({
         success: false,
         error: 'TIMEOUT',
-        message: 'Request to eBills API timed out. Please try again.'
+        message: 'Request to PayBeta API timed out. Please try again.'
       });
     }
     
@@ -289,27 +255,27 @@ router.get('/plans', async (req, res) => {
 router.get('/providers', (req, res) => {
   const providers = [
     {
-      service_id: 'mtn',
+      service_id: 'mtn_data',
       service_name: 'MTN',
       description: 'MTN Nigeria data plans'
     },
     {
-      service_id: 'airtel',
+      service_id: 'airtel_data',
       service_name: 'Airtel',
       description: 'Airtel Nigeria data plans'
     },
     {
-      service_id: 'glo',
+      service_id: 'glo_data',
       service_name: 'Glo',
       description: 'Globacom Nigeria data plans'
     },
     {
-      service_id: '9mobile',
+      service_id: '9mobile_data',
       service_name: '9mobile',
       description: '9mobile Nigeria data plans'
     },
     {
-      service_id: 'smile',
+      service_id: 'smile_data',
       service_name: 'Smile',
       description: 'Smile Nigeria data plans'
     }
@@ -333,8 +299,8 @@ router.get('/health', (req, res) => {
     status: 'healthy',
     service: 'Data Plans API',
     timestamp: new Date().toISOString(),
-    ebillsBaseUrl: EBILLS_BASE_URL,
-    version: '1.0.0'
+    payBetaBaseUrl: PAYBETA_BASE_URL,
+    version: '2.0.0'
   });
 });
 
