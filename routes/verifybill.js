@@ -157,6 +157,11 @@ async function callEBillsVerificationAPI({ customer_id, service_id, variation_id
 
 /**
  * Call PayBeta API for cable TV customer verification
+ * Note: If PayBeta continues to fail with "Invalid Smart Card Number",
+ * we may need to fallback to eBills for cable TV verification
+ * 
+ * Working example: smartCardNumber "8072916698" (10 digits) works with PayBeta
+ * Issue: Some smart card numbers may not be in the correct format
  */
 async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, userId }) {
   try {
@@ -173,9 +178,89 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
       throw new Error(`Unsupported service for PayBeta: ${service_id}`);
     }
 
+    // Format and validate smart card number
+    let smartCardNumber = customer_id.trim();
+    
+    // Remove any spaces, dashes, or special characters that might interfere
+    smartCardNumber = smartCardNumber.replace(/[\s\-_]/g, '');
+    
+    // Additional cleaning: remove any non-numeric characters (fallback)
+    const originalSmartCardNumber = smartCardNumber;
+    smartCardNumber = smartCardNumber.replace(/[^0-9]/g, '');
+    
+    // Log if we had to clean the number
+    if (originalSmartCardNumber !== smartCardNumber) {
+      logger.warn(`🔍 [${requestId}] Smart card number was cleaned:`, {
+        requestId,
+        userId,
+        service_id,
+        payBetaService,
+        originalLength: originalSmartCardNumber.length,
+        cleanedLength: smartCardNumber.length,
+        originalStart: originalSmartCardNumber.substring(0, 4) + '***',
+        cleanedStart: smartCardNumber.substring(0, 4) + '***'
+      });
+    }
+    
+    // Basic validation for smart card number
+    if (!smartCardNumber || smartCardNumber.length < 6) {
+      throw new Error(`Invalid smart card number format. Must be at least 6 characters.`);
+    }
+    
+    // Additional validation for GOtv (common format is 10-11 digits)
+    if (payBetaService === 'gotv' && (smartCardNumber.length < 10 || smartCardNumber.length > 11)) {
+      logger.warn(`🔍 [${requestId}] GOtv smart card number length warning:`, {
+        requestId,
+        userId,
+        service_id,
+        smartCardLength: smartCardNumber.length,
+        expectedLength: '10-11 digits'
+      });
+    }
+    
+    // Validate that the smart card number is numeric
+    if (!/^\d+$/.test(smartCardNumber)) {
+      logger.error(`🔍 [${requestId}] Smart card number contains non-numeric characters:`, {
+        requestId,
+        userId,
+        service_id,
+        payBetaService,
+        smartCardNumber: smartCardNumber.substring(0, 4) + '***',
+        containsLetters: /[a-zA-Z]/.test(smartCardNumber),
+        containsSpecialChars: /[^0-9]/.test(smartCardNumber)
+      });
+      throw new Error(`Invalid smart card number format. Must contain only numbers.`);
+    }
+    
+    // Specific validation for GOtv based on working example (8072916698 = 10 digits)
+    if (payBetaService === 'gotv' && smartCardNumber.length !== 10) {
+      logger.warn(`🔍 [${requestId}] GOtv smart card number length mismatch:`, {
+        requestId,
+        userId,
+        service_id,
+        smartCardLength: smartCardNumber.length,
+        expectedLength: '10 digits (based on working example)',
+        note: 'PayBeta may require exactly 10 digits for GOtv'
+      });
+    }
+    
+    // Log the actual length for debugging (without exposing the full number)
+    logger.info(`🔍 [${requestId}] Smart card number validation:`, {
+      requestId,
+      userId,
+      service_id,
+      payBetaService,
+      smartCardLength: smartCardNumber.length,
+      startsWith: smartCardNumber.substring(0, 2),
+      endsWith: smartCardNumber.substring(smartCardNumber.length - 2),
+      isNumeric: /^\d+$/.test(smartCardNumber),
+      originalLength: customer_id.length,
+      trimmedLength: customer_id.trim().length
+    });
+
     const verificationPayload = {
       service: payBetaService,
-      smartCardNumber: customer_id.trim()
+      smartCardNumber: smartCardNumber
     };
 
     logger.info(`🔍 [${requestId}] Making PayBeta cable TV verification request:`, {
@@ -184,6 +269,7 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
       customer_id: customer_id?.substring(0, 4) + '***', // Mask for privacy
       service_id,
       payBetaService,
+      smartCardLength: smartCardNumber.length,
       endpoint: '/v2/cable/validate'
     });
 
@@ -246,6 +332,12 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
     }
     if (error.message.includes('validation error')) {
       throw new Error(`PayBeta validation error: ${error.message}`);
+    }
+    if (error.message.includes('Invalid Smart Card Number') || error.message.includes('Invalid smart card')) {
+      throw new Error('Invalid smart card number format. Please check the number and try again.');
+    }
+    if (error.response?.data?.message?.includes('Invalid Smart Card Number')) {
+      throw new Error('Invalid smart card number format. Please check the number and try again.');
     }
 
     throw new Error(`PayBeta API error: ${error.message}`);
