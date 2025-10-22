@@ -290,12 +290,17 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
     });
 
     // Log the exact request being made
+    const baseURL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
+    const fullURL = `${baseURL}/v2/cable/validate`;
+    
     logger.info(`🔍 [${requestId}] Making PayBeta request with axios:`, {
       requestId,
       userId,
       service_id,
       method: 'POST',
       endpoint: '/v2/cable/validate',
+      baseURL: baseURL,
+      fullURL: fullURL,
       payload: verificationPayload,
       timeout: 25000
     });
@@ -416,6 +421,45 @@ router.post('/test-paybeta', async (req, res) => {
 });
 
 /**
+ * Test PayBeta configuration comparison with airtime.js
+ */
+router.post('/test-paybeta-config', async (req, res) => {
+  try {
+    const baseURL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
+    const apiKey = process.env.PAYBETA_API_KEY;
+    
+    logger.info('🔧 PayBeta configuration check:', {
+      baseURL: baseURL,
+      hasApiKey: !!apiKey,
+      apiKeyLength: apiKey ? apiKey.length : 0,
+      endpoint: '/v2/cable/validate',
+      fullURL: `${baseURL}/v2/cable/validate`
+    });
+    
+    return res.status(200).json({
+      success: true,
+      message: 'PayBeta configuration details',
+      config: {
+        baseURL: baseURL,
+        hasApiKey: !!apiKey,
+        apiKeyLength: apiKey ? apiKey.length : 0,
+        endpoint: '/v2/cable/validate',
+        fullURL: `${baseURL}/v2/cable/validate`
+      }
+    });
+    
+  } catch (error) {
+    logger.error('❌ PayBeta config check failed:', error.message);
+    
+    return res.status(500).json({
+      success: false,
+      error: 'CONFIG_CHECK_FAILED',
+      message: error.message
+    });
+  }
+});
+
+/**
  * Test PayBeta with direct axios call (matching your working example)
  */
 router.post('/test-paybeta-direct', async (req, res) => {
@@ -429,7 +473,12 @@ router.post('/test-paybeta-direct', async (req, res) => {
     
     logger.info('🧪 Testing PayBeta with direct axios call:', testPayload);
     
-    const response = await axios.post('https://api.paybeta.ng/v2/cable/validate', testPayload, {
+    const baseURL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
+    const fullURL = `${baseURL}/v2/cable/validate`;
+    
+    logger.info('🧪 Using PayBeta base URL:', { baseURL, fullURL });
+    
+    const response = await axios.post(fullURL, testPayload, {
       headers: {
         'P-API-KEY': process.env.PAYBETA_API_KEY,
         'Accept': 'application/json',
