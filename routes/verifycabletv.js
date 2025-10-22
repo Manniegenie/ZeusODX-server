@@ -1,6 +1,6 @@
 // routes/verifycabletv.js
 const express = require('express');
-const axios = require('axios');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -13,51 +13,34 @@ const router = express.Router();
  */
 async function verifyCableTVCustomer(service, smartCardNumber) {
   try {
-    const baseURL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
-    const apiKey = process.env.PAYBETA_API_KEY;
-    
-    if (!apiKey) {
-      throw new Error('PayBeta API key not configured');
-    }
-
-    const data = JSON.stringify({
+    const payload = {
       service: service,
       smartCardNumber: smartCardNumber
-    });
-
-    const config = {
-      method: 'post',
-      url: `${baseURL}/v2/cable/validate`,
-      headers: { 
-        'Accept': '', 
-        'P-API-KEY': apiKey, 
-        'Content-Type': 'application/json'
-      },
-      data: data,
-      timeout: 25000
     };
 
     logger.info('🔍 Making PayBeta cable TV verification request:', {
       service: service,
       smartCardNumber: smartCardNumber.substring(0, 4) + '***',
-      url: config.url
+      endpoint: '/v2/cable/validate'
     });
 
-    const response = await axios(config);
+    const response = await payBetaAuth.makeRequest('POST', '/v2/cable/validate', payload, {
+      timeout: 25000
+    });
     
     logger.info('✅ PayBeta cable TV verification successful:', {
       service: service,
       smartCardNumber: smartCardNumber.substring(0, 4) + '***',
-      status: response.data.status,
-      customerName: response.data.data?.customerName
+      status: response.status,
+      customerName: response.data?.customerName
     });
 
     return {
       success: true,
       data: {
-        customer_name: response.data.data.customerName,
-        customer_id: response.data.data.smartCardNumber,
-        service_id: response.data.data.service,
+        customer_name: response.data.customerName,
+        customer_id: response.data.smartCardNumber,
+        service_id: response.data.service,
         status: 'verified',
         service_name: service.toUpperCase(),
         customer_phone_number: null,
@@ -81,15 +64,15 @@ async function verifyCableTVCustomer(service, smartCardNumber) {
       responseData: error.response?.data
     });
 
-    if (error.response?.status === 422) {
+    if (error.message.includes('Invalid Smart Card Number')) {
       throw new Error('Invalid smart card number. Please check the number and try again.');
     }
     
-    if (error.response?.status === 401) {
+    if (error.message.includes('authentication failed')) {
       throw new Error('PayBeta API authentication failed. Please contact support.');
     }
     
-    if (error.code === 'ETIMEDOUT') {
+    if (error.message.includes('timeout')) {
       throw new Error('Request timed out. Please try again.');
     }
 
