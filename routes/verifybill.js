@@ -371,10 +371,10 @@ async function callPayBetaVerificationAPI({ customer_id, service_id, requestId, 
       throw new Error(`PayBeta validation error: ${error.message}`);
     }
     if (error.message.includes('Invalid Smart Card Number') || error.message.includes('Invalid smart card')) {
-      throw new Error('Invalid smart card number format. Please check the number and try again.');
+      throw new Error('Smart card number not found in PayBeta system. This card may not be supported by PayBeta or may be inactive.');
     }
     if (error.response?.data?.message?.includes('Invalid Smart Card Number')) {
-      throw new Error('Invalid smart card number format. Please check the number and try again.');
+      throw new Error('Smart card number not found in PayBeta system. This card may not be supported by PayBeta or may be inactive.');
     }
 
     throw new Error(`PayBeta API error: ${error.message}`);
@@ -588,7 +588,8 @@ router.post('/customer', async (req, res) => {
             } catch (payBetaError) {
               // If PayBeta fails with "Invalid Smart Card Number", fallback to eBills
               if (payBetaError.message.includes('Invalid Smart Card Number') || 
-                  payBetaError.message.includes('Invalid smart card')) {
+                  payBetaError.message.includes('Invalid smart card') ||
+                  payBetaError.message.includes('not found in PayBeta system')) {
                 logger.warn(`🔄 [${requestId}] PayBeta failed, falling back to eBills for cable TV verification:`, {
                   requestId,
                   userId,
@@ -596,13 +597,27 @@ router.post('/customer', async (req, res) => {
                   payBetaError: payBetaError.message
                 });
                 
-                apiResponse = await callEBillsVerificationAPI({
-                  customer_id,
-                  service_id,
-                  variation_id: null, // Cable TV doesn't need variation_id for eBills
-                  requestId,
-                  userId
-                });
+                try {
+                  apiResponse = await callEBillsVerificationAPI({
+                    customer_id,
+                    service_id,
+                    variation_id: null, // Cable TV doesn't need variation_id for eBills
+                    requestId,
+                    userId
+                  });
+                } catch (eBillsError) {
+                  // If eBills also fails, provide a comprehensive error message
+                  logger.error(`❌ [${requestId}] Both PayBeta and eBills failed for cable TV verification:`, {
+                    requestId,
+                    userId,
+                    service_id,
+                    payBetaError: payBetaError.message,
+                    eBillsError: eBillsError.message
+                  });
+                  
+                  // Return a user-friendly error that explains both failures
+                  throw new Error(`Cable TV verification failed: ${payBetaError.message}. Please try again later or contact support.`);
+                }
               } else {
                 // Re-throw other PayBeta errors
                 throw payBetaError;
