@@ -284,7 +284,10 @@ app.use("/set-fee", authenticateAdminToken, requireAdmin, SetfeeRoutes);
 app.use("/updateuseraddress", authenticateAdminToken, requireAdmin, updateuseraddressRoutes);
 app.use("/marker", authenticateAdminToken, requireAdmin, pricemarkdownRoutes);
 app.use('/admingiftcard', authenticateAdminToken, requireAdmin, admingiftcardRoutes);
-app.use('/notification', authenticateAdminToken, requireAdmin, Pushnotification);
+// Public notification registration for users
+app.use('/notification', Pushnotification);
+// Admin notification management (requires auth)
+app.use('/admin/notification', authenticateAdminToken, requireAdmin, Pushnotification);
 
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);

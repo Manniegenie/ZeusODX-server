@@ -6,13 +6,28 @@ const User = require('../models/user');
 // POST /notification/register-token
 router.post('/register-token', async (req, res) => {
   try {
-    const { expoPushToken, deviceId } = req.body;
+    const { expoPushToken, deviceId, userId } = req.body;
 
     if (!expoPushToken || !deviceId) {
       return res.status(400).json({ error: 'expoPushToken and deviceId are required.' });
     }
 
-    // Find or create a user based on deviceId
+    // If userId is provided, update that specific user
+    if (userId) {
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+      
+      user.expoPushToken = expoPushToken;
+      user.deviceId = deviceId;
+      await user.save();
+      
+      console.log(`✅ Push token registered for authenticated user: ${user.email || user.username}`);
+      return res.json({ message: 'Push token registered successfully for authenticated user.' });
+    }
+
+    // Fallback: Find or create a user based on deviceId (for unauthenticated users)
     let user = await User.findOne({ deviceId });
     if (!user) {
       user = new User({ deviceId, expoPushToken });
@@ -21,6 +36,7 @@ router.post('/register-token', async (req, res) => {
     }
 
     await user.save();
+    console.log(`✅ Push token registered for device: ${deviceId}`);
     return res.json({ message: 'Push token registered successfully.' });
   } catch (err) {
     console.error('Error registering push token:', err);

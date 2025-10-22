@@ -38,12 +38,12 @@ const DEFAULT_STABLECOIN = 'USDT';
 
 /**
  * Map frontend currency to Obiex currency
- * MATIC from frontend should be mapped to Polygon for Obiex
+ * MATIC from frontend should be mapped to POL for Obiex
  */
 function mapToObiexCurrency(currency) {
   const upperCurrency = currency.toUpperCase();
   if (upperCurrency === 'MATIC') {
-    return 'Polygon';
+    return 'POL';
   }
   return upperCurrency;
 }
