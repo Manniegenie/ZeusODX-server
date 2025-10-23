@@ -698,21 +698,24 @@ router.post('/purchase', async (req, res) => {
       });
     }
     
-    // Step 10: Update transaction
+    // Step 10: Update transaction with proper status mapping
     const updateData = {
       orderId: ebillsResponse.data.order_id.toString(),
-      status: ebillsResponse.data.status,
-      productName: ebillsResponse.data.product_name,
+      status: ebillsStatus === 'successful' ? 'completed' : 'failed',
+      productName: ebillsResponse.data.biller || 'Airtime',
       balanceCompleted: true,
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: ebillsResponse.data.service_name,
-        amount_charged: ebillsResponse.data.amount_charged,
+        service_name: ebillsResponse.data.biller,
+        amount_charged: ebillsResponse.data.chargedAmount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        ebills_initial_balance: ebillsResponse.data.initial_balance,
-        ebills_final_balance: ebillsResponse.data.final_balance
+        paybeta_initial_balance: ebillsResponse.data.previousBalance,
+        paybeta_final_balance: ebillsResponse.data.currentBalance,
+        paybeta_status: ebillsStatus,
+        paybeta_transaction_id: ebillsResponse.data.order_id,
+        paybeta_reference: ebillsResponse.data.reference
       }
     };
     

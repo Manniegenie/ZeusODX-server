@@ -670,21 +670,24 @@ router.post('/purchase', async (req, res) => {
       });
     }
     
-    // Step 10: Update transaction with PayBeta response
+    // Step 10: Update transaction with proper status mapping
     const updateData = {
       orderId: payBetaResponse.data.order_id.toString(),
-      status: payBetaResponse.data.status,
-      productName: payBetaResponse.data.product_name,
+      status: payBetaStatus === 'successful' ? 'completed' : 'failed',
+      productName: payBetaResponse.data.biller || 'Data',
       balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: payBetaResponse.data.service_name,
-        amount_charged: payBetaResponse.data.amount_charged,
+        service_name: payBetaResponse.data.biller,
+        amount_charged: payBetaResponse.data.chargedAmount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        paybeta_initial_balance: payBetaResponse.data.initial_balance,
-        paybeta_final_balance: payBetaResponse.data.final_balance
+        paybeta_initial_balance: payBetaResponse.data.previousBalance,
+        paybeta_final_balance: payBetaResponse.data.currentBalance,
+        paybeta_status: payBetaStatus,
+        paybeta_transaction_id: payBetaResponse.data.order_id,
+        paybeta_reference: payBetaResponse.data.reference
       }
     };
     
