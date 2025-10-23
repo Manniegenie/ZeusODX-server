@@ -329,11 +329,12 @@ async function callPayBetaAPI({ phone, amount, service_id, variation_id, request
     };
 
     logger.info('Making PayBeta data purchase request:', {
-      phone, service_id, variation_id, amount, request_id, endpoint: '/v2/data-bundle/purchase'
+      phone, service_id, variation_id, amount, request_id, endpoint: '/v2/data-bundle/purchase',
+      payload: payload
     });
 
     const response = await payBetaAuth.makeRequest('POST', '/v2/data-bundle/purchase', payload, {
-      timeout: 25000
+      timeout: 60000 // Increased to 60 seconds
     });
 
     logger.info(`PayBeta API response for ${request_id}:`, {
@@ -368,9 +369,13 @@ async function callPayBetaAPI({ phone, amount, service_id, variation_id, request
     logger.error('❌ PayBeta data purchase failed:', {
       request_id, userId, error: error.message,
       status: error.response?.status,
-      payBetaError: error.response?.data
+      payBetaError: error.response?.data,
+      errorCode: error.code
     });
 
+    if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
+      throw new Error('PayBeta API request timed out. The service may be slow. Please try again.');
+    }
     if (error.message.includes('insufficient')) {
       throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
     }
@@ -545,7 +550,7 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | data | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
     
-    // Step 8: Call PayBeta API
+    // Step 8: Call PayBeta API first
     try {
       payBetaResponse = await callPayBetaAPI({
         phone, amount, service_id, variation_id,
@@ -570,65 +575,92 @@ router.post('/purchase', async (req, res) => {
     }
     
     // =====================================
-    // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
+    // STEP 9: ONLY DEDUCT BALANCE IF PAYBETA IS SUCCESSFUL
     // =====================================
     const payBetaStatus = payBetaResponse.data.status;
     
-    // Deduct balance immediately regardless of PayBeta status (as long as API call succeeded)
-    logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance immediately for ${finalRequestId}`);
-    
-    try {
-      await updateUserBalance(userId, currency, -amount);
-      balanceDeducted = true;
+    // Only deduct balance if PayBeta transaction is successful
+    if (payBetaStatus === 'successful') {
+      logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance for ${finalRequestId}`);
       
-      logger.info(`✅ Balance deducted immediately: -${amount} ${currency} for user ${userId}`);
-      
-    } catch (balanceError) {
-      logger.error('CRITICAL: Balance deduction failed after successful eBills API call:', {
-        request_id: finalRequestId,
-        userId,
-        currency,
-        amount,
-        error: balanceError.message,
-        ebills_order_id: ebillsResponse.data?.order_id
-      });
+      try {
+        await updateUserBalance(userId, currency, -amount);
+        balanceDeducted = true;
+        
+        logger.info(`✅ Balance deducted: -${amount} ${currency} for user ${userId}`);
+        
+      } catch (balanceError) {
+        logger.error('CRITICAL: Balance deduction failed after successful PayBeta API call:', {
+          request_id: finalRequestId,
+          userId,
+          currency,
+          amount,
+          error: balanceError.message,
+          paybeta_order_id: payBetaResponse.data?.order_id
+        });
 
-      // Check if this is an insufficient balance error during deduction
-      if (balanceError.message.includes('insufficient') || 
-          balanceError.message.includes('balance') ||
-          balanceError.message.toLowerCase().includes('ngnz')) {
+        // Check if this is an insufficient balance error during deduction
+        if (balanceError.message.includes('insufficient') || 
+            balanceError.message.includes('balance') ||
+            balanceError.message.toLowerCase().includes('ngnz')) {
+          
+          await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+            status: 'failed',
+            processingErrors: [{
+              error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
+              timestamp: new Date(),
+              phase: 'balance_deduction',
+              paybeta_order_id: payBetaResponse.data?.order_id
+            }]
+          });
+          
+          return res.status(400).json({
+            success: false,
+            error: 'INSUFFICIENT_NGNZ_BALANCE',
+            message: 'NGNZ balance insufficient'
+          });
+        }
         
         await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
           status: 'failed',
           processingErrors: [{
-        error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
-        timestamp: new Date(),
-        phase: 'balance_deduction',
-        paybeta_order_id: payBetaResponse.data?.order_id
+            error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
+            timestamp: new Date(),
+            phase: 'balance_deduction',
+            paybeta_order_id: payBetaResponse.data?.order_id
           }]
         });
         
-        return res.status(400).json({
+        return res.status(500).json({
           success: false,
-          error: 'INSUFFICIENT_NGNZ_BALANCE',
-          message: 'NGNZ balance insufficient'
+          error: 'BALANCE_UPDATE_FAILED',
+          message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
+          details: {
+            paybeta_order_id: payBetaResponse.data?.order_id,
+            paybeta_status: payBetaResponse.data?.status,
+            amount: amount,
+            phone: phone
+          }
         });
       }
+    } else {
+      // PayBeta was not successful, don't deduct balance
+      logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
       
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
         status: 'failed',
         processingErrors: [{
-        error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
-        timestamp: new Date(),
-        phase: 'balance_deduction',
-        paybeta_order_id: payBetaResponse.data?.order_id
+          error: `PayBeta transaction not successful: ${payBetaStatus}`,
+          timestamp: new Date(),
+          phase: 'paybeta_response',
+          paybeta_order_id: payBetaResponse.data?.order_id
         }]
       });
       
       return res.status(500).json({
         success: false,
-        error: 'BALANCE_UPDATE_FAILED',
-        message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
+        error: 'PAYBETA_TRANSACTION_FAILED',
+        message: `PayBeta transaction not successful: ${payBetaStatus}`,
         details: {
           paybeta_order_id: payBetaResponse.data?.order_id,
           paybeta_status: payBetaResponse.data?.status,
@@ -665,7 +697,7 @@ router.post('/purchase', async (req, res) => {
     logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
-    // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
+    // Step 11: Return response - ONLY SUCCESS WHEN PAYBETA IS SUCCESSFUL
     if (payBetaStatus === 'successful') {
       return res.status(200).json({
         success: true,
@@ -673,11 +705,11 @@ router.post('/purchase', async (req, res) => {
         data: {
           order_id: payBetaResponse.data.order_id,
           status: payBetaResponse.data.status,
-          phone: payBetaResponse.data.phone,
+          phone: payBetaResponse.data.customerId,
           amount: payBetaResponse.data.amount,
-          service_name: payBetaResponse.data.service_name,
+          service_name: payBetaResponse.data.biller,
           request_id: finalRequestId,
-          balance_action: 'updated_directly',
+          balance_action: 'deducted_on_success',
           payment_details: {
             currency: currency,
             ngnz_amount: amount,
@@ -685,34 +717,15 @@ router.post('/purchase', async (req, res) => {
           }
         }
       });
-    } else if (['initiated-api', 'processing-api'].includes(payBetaStatus)) {
-      return res.status(202).json({
-        success: true,
-        message: 'Data purchase is being processed',
-        data: {
-          order_id: payBetaResponse.data.order_id,
-          status: payBetaResponse.data.status,
-          phone: payBetaResponse.data.phone,
-          amount: payBetaResponse.data.amount,
-          service_name: payBetaResponse.data.service_name,
-          request_id: finalRequestId,
-          balance_action: 'updated_directly', // Changed from 'reserved' since we deduct immediately
-          payment_details: {
-            currency: currency,
-            ngnz_amount: amount,
-            amount_usd: (amount * (1 / 1554.42)).toFixed(2)
-          }
-        },
-        note: 'Balance deducted immediately. You will receive a notification when the data is activated'
-      });
     } else {
+      // This should not happen since we already handled non-successful cases above
       return res.status(200).json({
         success: true,
         message: `Data purchase status: ${payBetaStatus}`,
         data: {
           ...payBetaResponse.data,
           request_id: finalRequestId,
-          balance_action: 'updated_directly',
+          balance_action: 'not_deducted',
           payment_details: {
             currency: currency,
             ngnz_amount: amount,

@@ -537,7 +537,7 @@ router.post('/purchase', async (req, res) => {
     
     logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | airtime | ${amount} NGNZ | ✅ 2FA | ✅ PIN | PayBeta`);
     
-    // Step 8: Call PayBeta API
+    // Step 8: Call PayBeta API first
     try {
       ebillsResponse = await callPayBetaAPI({
         phone, amount, service_id,
@@ -578,70 +578,120 @@ router.post('/purchase', async (req, res) => {
       
       return res.status(500).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
+        error: 'PAYBETA_API_ERROR',
         message: apiError.message
       });
     }
     
-    // Step 9: Deduct balance
+    // Step 9: Only deduct balance if PayBeta is successful
     const ebillsStatus = ebillsResponse.data.status;
     
-    logger.info(`✅ eBills API succeeded (${ebillsStatus}), deducting balance immediately for ${finalRequestId}`);
-    
-    try {
-      await updateUserBalance(userId, currency, -amount);
-      balanceDeducted = true;
+    // Only deduct balance if PayBeta transaction is successful
+    if (ebillsStatus === 'successful') {
+      logger.info(`✅ PayBeta API succeeded (${ebillsStatus}), deducting balance for ${finalRequestId}`);
       
-      logger.info(`✅ Balance deducted immediately: -${amount} ${currency} for user ${userId}`);
-      
-    } catch (balanceError) {
-      logger.error('CRITICAL: Balance deduction failed after successful eBills API call:', {
-        request_id: finalRequestId,
-        userId,
-        currency,
-        amount,
-        error: balanceError.message,
-        ebills_order_id: ebillsResponse.data?.order_id
-      });
+      try {
+        await updateUserBalance(userId, currency, -amount);
+        balanceDeducted = true;
+        
+        logger.info(`✅ Balance deducted: -${amount} ${currency} for user ${userId}`);
+        
+      } catch (balanceError) {
+        logger.error('CRITICAL: Balance deduction failed after successful PayBeta API call:', {
+          request_id: finalRequestId,
+          userId,
+          currency,
+          amount,
+          error: balanceError.message,
+          paybeta_order_id: ebillsResponse.data?.order_id
+        });
 
-      if (balanceError.message.includes('insufficient') || 
-          balanceError.message.includes('balance') ||
-          balanceError.message.toLowerCase().includes('ngnz')) {
+        if (balanceError.message.includes('insufficient') || 
+            balanceError.message.includes('balance') ||
+            balanceError.message.toLowerCase().includes('ngnz')) {
+          
+          await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+            status: 'failed',
+            processingErrors: [{
+              error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
+              timestamp: new Date(),
+              phase: 'balance_deduction',
+              paybeta_order_id: ebillsResponse.data?.order_id
+            }]
+          });
+          
+          return res.status(400).json({
+            success: false,
+            error: 'INSUFFICIENT_NGNZ_BALANCE',
+            message: 'NGNZ balance insufficient'
+          });
+        }
         
         await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
           status: 'failed',
           processingErrors: [{
-            error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
+            error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
             timestamp: new Date(),
             phase: 'balance_deduction',
-            ebills_order_id: ebillsResponse.data?.order_id
+            paybeta_order_id: ebillsResponse.data?.order_id
           }]
         });
         
-        return res.status(400).json({
+        return res.status(500).json({
           success: false,
-          error: 'INSUFFICIENT_NGNZ_BALANCE',
-          message: 'NGNZ balance insufficient'
+          error: 'BALANCE_UPDATE_FAILED',
+          message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
+          details: {
+            paybeta_order_id: ebillsResponse.data?.order_id,
+            paybeta_status: ebillsResponse.data?.status,
+            amount: amount,
+            phone: phone
+          }
         });
       }
+    } else {
+      // PayBeta was not successful, don't deduct balance
+      logger.info(`❌ PayBeta API not successful (${ebillsStatus}), not deducting balance for ${finalRequestId}`);
       
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
         status: 'failed',
         processingErrors: [{
-          error: `Balance deduction failed after eBills success: ${balanceError.message}`,
+          error: `PayBeta transaction not successful: ${ebillsStatus}`,
           timestamp: new Date(),
-          phase: 'balance_deduction',
-          ebills_order_id: ebillsResponse.data?.order_id
+          phase: 'paybeta_response',
+          paybeta_order_id: ebillsResponse.data?.order_id
         }]
       });
       
+      // Send failure notification
+      try {
+        await sendAirtimePurchaseNotification(
+          userId,
+          amount,
+          service_id,
+          phone,
+          'failed',
+          {
+            requestId: finalRequestId,
+            error: `PayBeta transaction not successful: ${ebillsStatus}`,
+            currency: 'NGNZ'
+          }
+        );
+        logger.info('Airtime purchase failure notification sent', { userId, requestId: finalRequestId });
+      } catch (notificationError) {
+        logger.error('Failed to send airtime failure notification', {
+          userId,
+          error: notificationError.message
+        });
+      }
+      
       return res.status(500).json({
         success: false,
-        error: 'BALANCE_UPDATE_FAILED',
-        message: 'eBills transaction succeeded but balance deduction failed. Please contact support immediately.',
+        error: 'PAYBETA_TRANSACTION_FAILED',
+        message: `PayBeta transaction not successful: ${ebillsStatus}`,
         details: {
-          ebills_order_id: ebillsResponse.data?.order_id,
-          ebills_status: ebillsResponse.data?.status,
+          paybeta_order_id: ebillsResponse.data?.order_id,
+          paybeta_status: ebillsResponse.data?.status,
           amount: amount,
           phone: phone
         }
@@ -675,8 +725,8 @@ router.post('/purchase', async (req, res) => {
     logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
-    // Step 11: Return response - ONLY NOTIFICATION ON SUCCESS
-    if (ebillsStatus === 'completed-api') {
+    // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
+    if (ebillsStatus === 'successful') {
       
       // ✅ SEND SUCCESS NOTIFICATION
       try {
@@ -689,7 +739,7 @@ router.post('/purchase', async (req, res) => {
           {
             orderId: ebillsResponse.data.order_id.toString(),
             requestId: finalRequestId,
-            serviceName: ebillsResponse.data.service_name,
+            serviceName: ebillsResponse.data.biller,
             currency: 'NGNZ'
           }
         );
@@ -712,11 +762,11 @@ router.post('/purchase', async (req, res) => {
         data: {
           order_id: ebillsResponse.data.order_id,
           status: ebillsResponse.data.status,
-          phone: ebillsResponse.data.phone,
+          phone: ebillsResponse.data.customerId,
           amount: ebillsResponse.data.amount,
-          service_name: ebillsResponse.data.service_name,
+          service_name: ebillsResponse.data.biller,
           request_id: finalRequestId,
-          balance_action: 'updated_directly',
+          balance_action: 'deducted_on_success',
           payment_details: {
             currency: currency,
             ngnz_amount: amount,
@@ -724,37 +774,15 @@ router.post('/purchase', async (req, res) => {
           }
         }
       });
-    } else if (['initiated-api', 'processing-api'].includes(ebillsStatus)) {
-      
-      // ❌ NO NOTIFICATION FOR PROCESSING
-      
-      return res.status(202).json({
-        success: true,
-        message: 'Airtime purchase is being processed',
-        data: {
-          order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
-          phone: ebillsResponse.data.phone,
-          amount: ebillsResponse.data.amount,
-          service_name: ebillsResponse.data.service_name,
-          request_id: finalRequestId,
-          balance_action: 'updated_directly',
-          payment_details: {
-            currency: currency,
-            ngnz_amount: amount,
-            amount_usd: (amount * (1 / 1554.42)).toFixed(2)
-          }
-        },
-        note: 'Balance deducted immediately. You will receive a notification when the transaction is completed'
-      });
     } else {
+      // This should not happen since we already handled non-successful cases above
       return res.status(200).json({
         success: true,
         message: `Airtime purchase status: ${ebillsStatus}`,
         data: {
           ...ebillsResponse.data,
           request_id: finalRequestId,
-          balance_action: 'updated_directly',
+          balance_action: 'not_deducted',
           payment_details: {
             currency: currency,
             ngnz_amount: amount,
