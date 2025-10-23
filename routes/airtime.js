@@ -586,6 +586,14 @@ router.post('/purchase', async (req, res) => {
     // Step 9: Only deduct balance if PayBeta is successful
     const payBetaStatus = payBetaResponse.data.status;
     
+    // Debug: Log PayBeta response structure
+    logger.info(`🔍 PayBeta Response Debug:`, {
+      payBetaStatus,
+      fullResponse: payBetaResponse.data,
+      orderId: payBetaResponse.data.order_id,
+      biller: payBetaResponse.data.biller
+    });
+    
     // Only deduct balance if PayBeta transaction is successful
     if (payBetaStatus === 'successful') {
       logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance for ${finalRequestId}`);
@@ -699,9 +707,10 @@ router.post('/purchase', async (req, res) => {
     }
     
     // Step 10: Update transaction with proper status mapping
+    const finalStatus = payBetaStatus === 'successful' ? 'completed' : 'failed';
     const updateData = {
       orderId: payBetaResponse.data.order_id.toString(),
-      status: payBetaStatus === 'successful' ? 'completed' : 'failed',
+      status: finalStatus,
       productName: payBetaResponse.data.biller || 'Airtime',
       balanceCompleted: true,
       metaData: {
@@ -724,6 +733,8 @@ router.post('/purchase', async (req, res) => {
       updateData,
       { new: true }
     );
+    
+    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
     
     logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
