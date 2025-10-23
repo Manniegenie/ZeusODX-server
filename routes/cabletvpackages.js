@@ -32,10 +32,18 @@ router.post('/packages', async (req, res) => {
     
     logger.info('Fetching cable TV package variations from PayBeta', { service_id: service_id || 'all' });
     
-    // Make request to PayBeta API
-    const response = await payBetaAuth.makeRequest('POST', '/v2/cable/bouquet', {
-      service: service_id || 'dstv' // Default to dstv if no service specified
-    });
+    let response;
+    
+    // Handle Showmax separately as it has its own endpoint
+    if (service_id && service_id.toLowerCase() === 'showmax') {
+      logger.info('Fetching Showmax packages from dedicated endpoint');
+      response = await payBetaAuth.makeRequest('GET', '/v2/showmax/bouquet');
+    } else {
+      // Make request to PayBeta API for other providers
+      response = await payBetaAuth.makeRequest('POST', '/v2/cable/bouquet', {
+        service: service_id || 'dstv' // Default to dstv if no service specified
+      });
+    }
     
     if (response.status === 'successful') {
       const packages = response.data.packages || [];
@@ -46,8 +54,8 @@ router.post('/packages', async (req, res) => {
         service_name: service_id ? service_id.toUpperCase() : 'Cable TV',
         service_id: service_id || 'dstv',
         package_bouquet: pkg.description,
-        price: parseInt(pkg.price),
-        price_formatted: `₦${parseInt(pkg.price).toLocaleString()}`,
+        price: parseFloat(pkg.price), // Use parseFloat for Showmax decimal prices
+        price_formatted: `₦${parseFloat(pkg.price).toLocaleString()}`,
         availability: 'Available'
       }));
       
@@ -174,8 +182,8 @@ router.get('/packages', async (req, res) => {
         service_name: service_id ? service_id.toUpperCase() : 'Cable TV',
         service_id: service_id || 'dstv',
         package_bouquet: pkg.description,
-        price: parseInt(pkg.price),
-        price_formatted: `₦${parseInt(pkg.price).toLocaleString()}`,
+        price: parseFloat(pkg.price), // Use parseFloat for Showmax decimal prices
+        price_formatted: `₦${parseFloat(pkg.price).toLocaleString()}`,
         availability: 'Available'
       }));
       

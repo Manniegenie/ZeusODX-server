@@ -315,20 +315,38 @@ async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, r
     const payBetaReference = request_id.length > 40 ? 
       request_id.substring(0, 40) : request_id;
 
-    const payload = {
-      service: payBetaService,
-      smartCardNumber: customer_id.trim(),
-      amount: Math.round(amount), // PayBeta expects integer
-      packageCode: variation_id,
-      customerName: customer_name || 'CUSTOMER',
-      reference: payBetaReference
-    };
+    let payload;
+    let endpoint;
+    
+    // Handle Showmax differently as it has its own purchase endpoint
+    if (service_id.toLowerCase() === 'showmax') {
+      logger.info('Using Showmax-specific purchase endpoint and payload format');
+      payload = {
+        service: payBetaService,
+        smartCardNumber: customer_id.trim(),
+        amount: parseFloat(amount), // Showmax can handle decimal amounts
+        packageCode: variation_id,
+        customerName: customer_name || 'CUSTOMER',
+        reference: payBetaReference
+      };
+      endpoint = '/v2/showmax/purchase';
+    } else {
+      payload = {
+        service: payBetaService,
+        smartCardNumber: customer_id.trim(),
+        amount: Math.round(amount), // Other providers expect integer
+        packageCode: variation_id,
+        customerName: customer_name || 'CUSTOMER',
+        reference: payBetaReference
+      };
+      endpoint = '/v2/cable/purchase';
+    }
 
     logger.info('Making PayBeta cable TV purchase request:', {
-      customer_id, service_id, variation_id, amount, request_id, endpoint: '/v2/cable/purchase'
+      customer_id, service_id, variation_id, amount, request_id, endpoint
     });
 
-    const response = await payBetaAuth.makeRequest('POST', '/v2/cable/purchase', payload, {
+    const response = await payBetaAuth.makeRequest('POST', endpoint, payload, {
       timeout: 25000
     });
 
