@@ -584,13 +584,13 @@ router.post('/purchase', async (req, res) => {
     }
     
     // Step 9: Only deduct balance if PayBeta is successful
-    const payBetaStatus = payBetaResponse.data.status;
+    const payBetaStatus = payBetaResponse.status; // Status is at top level, not in data
     
     // Debug: Log PayBeta response structure
     logger.info(`🔍 PayBeta Response Debug:`, {
       payBetaStatus,
-      fullResponse: payBetaResponse.data,
-      orderId: payBetaResponse.data.order_id,
+      fullResponse: payBetaResponse,
+      orderId: payBetaResponse.data.transactionId,
       biller: payBetaResponse.data.biller
     });
     
@@ -709,7 +709,7 @@ router.post('/purchase', async (req, res) => {
     // Step 10: Update transaction with proper status mapping
     const finalStatus = payBetaStatus === 'successful' ? 'completed' : 'failed';
     const updateData = {
-      orderId: payBetaResponse.data.order_id.toString(),
+      orderId: payBetaResponse.data.transactionId.toString(),
       status: finalStatus,
       productName: payBetaResponse.data.biller || 'Airtime',
       balanceCompleted: true,
@@ -720,11 +720,12 @@ router.post('/purchase', async (req, res) => {
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        paybeta_initial_balance: payBetaResponse.data.previousBalance,
-        paybeta_final_balance: payBetaResponse.data.currentBalance,
         paybeta_status: payBetaStatus,
-        paybeta_transaction_id: payBetaResponse.data.order_id,
-        paybeta_reference: payBetaResponse.data.reference
+        paybeta_transaction_id: payBetaResponse.data.transactionId,
+        paybeta_reference: payBetaResponse.data.reference,
+        paybeta_commission: payBetaResponse.data.commission,
+        paybeta_customer_id: payBetaResponse.data.customerId,
+        paybeta_transaction_date: payBetaResponse.data.transactionDate
       }
     };
     
@@ -734,9 +735,9 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
+    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.transactionId} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
     
-    logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    logger.info(`📋 Transaction completed: ${payBetaResponse.data.transactionId} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
     // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
@@ -751,7 +752,7 @@ router.post('/purchase', async (req, res) => {
           phone,
           'completed',
           {
-            orderId: payBetaResponse.data.order_id.toString(),
+            orderId: payBetaResponse.data.transactionId.toString(),
             requestId: finalRequestId,
             serviceName: payBetaResponse.data.biller,
             currency: 'NGNZ'
@@ -760,12 +761,12 @@ router.post('/purchase', async (req, res) => {
         
         logger.info('Airtime purchase notification sent (completed)', { 
           userId, 
-          orderId: payBetaResponse.data.order_id 
+          orderId: payBetaResponse.data.transactionId 
         });
       } catch (notificationError) {
         logger.error('Failed to send airtime purchase notification', {
           userId,
-          orderId: payBetaResponse.data.order_id,
+          orderId: payBetaResponse.data.transactionId,
           error: notificationError.message
         });
       }
@@ -774,8 +775,8 @@ router.post('/purchase', async (req, res) => {
         success: true,
         message: 'Airtime purchase completed successfully',
         data: {
-          order_id: payBetaResponse.data.order_id,
-          status: payBetaResponse.data.status,
+          order_id: payBetaResponse.data.transactionId,
+          status: payBetaResponse.status,
           phone: payBetaResponse.data.customerId,
           amount: payBetaResponse.data.amount,
           service_name: payBetaResponse.data.biller,
