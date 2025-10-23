@@ -402,7 +402,7 @@ class KYCLimitService {
   async getSuccessfulBillTransactions(userId, sinceDate) {
     return await BillTransaction.find({
       userId,
-      status: 'completed-api',
+      status: 'completed',
       createdAt: { $gte: sinceDate }
     }).select('amountNaira amountNGNB amount createdAt').lean();
   }

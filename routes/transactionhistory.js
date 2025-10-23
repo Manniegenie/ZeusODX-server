@@ -198,7 +198,7 @@ function formatBillType(billType) {
 function formatStatus(status, type = 'token') {
   if (type === 'bill') {
     switch (status) {
-      case 'completed-api': return 'Successful';
+      case 'completed': return 'Successful';
       case 'failed': return 'Failed';
       case 'initiated-api':
       case 'processing-api': return 'Pending';
@@ -490,7 +490,7 @@ router.post('/all-utilities', async (req, res) => {
 
     if (status) {
       switch (status.toLowerCase()) {
-        case 'successful': filter.status = 'completed-api'; break;
+        case 'successful': filter.status = 'completed'; break;  // ✅ FIXED: Use 'completed' not 'completed-api'
         case 'failed': filter.status = 'failed'; break;
         case 'pending': filter.status = { $in: ['initiated-api', 'processing-api'] }; break;
       }
@@ -688,7 +688,7 @@ router.post('/complete-history', async (req, res) => {
       switch (status.toLowerCase()) {
         case 'successful':
           tokenFilter.status = { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] };
-          billFilter.status = 'completed-api';
+          billFilter.status = 'completed';
           break;
         case 'failed':
           tokenFilter.status = { $in: ['FAILED', 'REJECTED'] };

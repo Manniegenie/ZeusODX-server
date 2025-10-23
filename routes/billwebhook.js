@@ -240,7 +240,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
     
     // Handle different webhook statuses
     switch (webhookData.status) {
-      case 'completed-api':
+      case 'completed':
         logger.info(`Processing completed NGNB bill transaction: ${webhookData.order_id}`);
         
         // For completed transactions: release pending balance and update portfolio

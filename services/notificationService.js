@@ -500,7 +500,6 @@ async function sendAirtimePurchaseNotification(userId, amount, network, phone, s
     
     switch (status.toLowerCase()) {
       case 'completed':
-      case 'completed-api':
         template = NOTIFICATION_TEMPLATES.AIRTIME_PURCHASE;
         break;
       case 'processing':

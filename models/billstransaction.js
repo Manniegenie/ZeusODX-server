@@ -15,7 +15,7 @@ const billTransactionSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['initiated-api', 'processing-api', 'completed-api', 'failed', 'refunded']
+    enum: ['initiated-api', 'processing-api', 'completed', 'failed', 'refunded']
   },
   billType: {
     type: String,
@@ -238,7 +238,7 @@ billTransactionSchema.virtual('paymentSummary').get(function() {
 
 // Instance method to check if transaction is successful
 billTransactionSchema.methods.isSuccessful = function() {
-  return this.status === 'completed-api';
+  return this.status === 'completed';
 };
 
 // Instance method to check if transaction is pending
@@ -325,7 +325,7 @@ billTransactionSchema.statics.getUserPendingTransactions = function(userId, bill
 billTransactionSchema.statics.getBillTypeSummary = function(userId, dateRange = {}) {
   const matchQuery = { 
     userId, 
-    status: 'completed-api',
+    status: 'completed',
     paymentCurrency: 'NGNZ'
   };
   
@@ -356,7 +356,7 @@ billTransactionSchema.statics.getBillTypeSummary = function(userId, dateRange = 
 billTransactionSchema.statics.getNGNZSummary = function(userId, dateRange = {}) {
   const matchQuery = { 
     userId, 
-    status: 'completed-api',
+    status: 'completed',
     paymentCurrency: 'NGNZ'
   };
   
