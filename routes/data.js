@@ -577,13 +577,13 @@ router.post('/purchase', async (req, res) => {
     // =====================================
     // STEP 9: ONLY DEDUCT BALANCE IF PAYBETA IS SUCCESSFUL
     // =====================================
-    const payBetaStatus = payBetaResponse.status; // Status is at top level, not in data
+    const payBetaStatus = payBetaResponse.data.status; // Status is in data object
     
     // Debug: Log PayBeta response structure
     logger.info(`🔍 PayBeta Response Debug:`, {
       payBetaStatus,
       fullResponse: payBetaResponse,
-      orderId: payBetaResponse.data.transactionId,
+      orderId: payBetaResponse.data.order_id,
       biller: payBetaResponse.data.biller
     });
     
@@ -681,7 +681,7 @@ router.post('/purchase', async (req, res) => {
     // Step 10: Update transaction with proper status mapping
     const finalStatus = payBetaStatus === 'successful' ? 'completed' : 'failed';
     const updateData = {
-      orderId: payBetaResponse.data.transactionId.toString(),
+      orderId: payBetaResponse.data.order_id.toString(),
       status: finalStatus,
       productName: payBetaResponse.data.biller || 'Data',
       balanceCompleted: true, // Always true since we deduct immediately
@@ -693,7 +693,7 @@ router.post('/purchase', async (req, res) => {
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
         paybeta_status: payBetaStatus,
-        paybeta_transaction_id: payBetaResponse.data.transactionId,
+        paybeta_transaction_id: payBetaResponse.data.order_id,
         paybeta_reference: payBetaResponse.data.reference,
         paybeta_commission: payBetaResponse.data.commission,
         paybeta_customer_id: payBetaResponse.data.customerId,
@@ -707,9 +707,9 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.transactionId} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
+    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
     
-    logger.info(`📋 Transaction completed: ${payBetaResponse.data.transactionId} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
     // Step 11: Return response - ONLY SUCCESS WHEN PAYBETA IS SUCCESSFUL
@@ -718,8 +718,8 @@ router.post('/purchase', async (req, res) => {
         success: true,
         message: 'Data purchase completed successfully',
         data: {
-          order_id: payBetaResponse.data.transactionId,
-          status: payBetaResponse.status,
+          order_id: payBetaResponse.data.order_id,
+          status: payBetaResponse.data.status,
           phone: payBetaResponse.data.customerId,
           amount: payBetaResponse.data.amount,
           service_name: payBetaResponse.data.biller,
