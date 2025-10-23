@@ -568,12 +568,21 @@ router.post('/purchase', async (req, res) => {
     }
     
     // =====================================
-    // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
+    // STEP 9: ONLY DEDUCT BALANCE IF PAYBETA IS SUCCESSFUL
     // =====================================
-    const payBetaStatus = payBetaResponse.data.status;
+    const payBetaStatus = payBetaResponse.data.status; // Status is in data object
     
-    // Deduct balance immediately regardless of PayBeta status (as long as API call succeeded)
-    logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance immediately for ${finalRequestId}`);
+    // Debug: Log PayBeta response structure
+    logger.info(`🔍 PayBeta Response Debug:`, {
+      payBetaStatus,
+      fullResponse: payBetaResponse,
+      orderId: payBetaResponse.data.order_id,
+      service: payBetaResponse.data.service_name
+    });
+    
+    // Only deduct balance if PayBeta transaction is successful
+    if (payBetaStatus === 'successful') {
+      logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance for ${finalRequestId}`);
     
     try {
       await updateUserBalance(userId, currency, -amount);
@@ -634,14 +643,45 @@ router.post('/purchase', async (req, res) => {
           customer_id: customer_id
         }
       });
+    } else {
+      // PayBeta was not successful, don't deduct balance
+      logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
+      
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+        status: 'failed',
+        processingErrors: [{
+          error: `PayBeta transaction not successful: ${payBetaStatus}`,
+          timestamp: new Date(),
+          phase: 'paybeta_status_check'
+        }]
+      });
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Cable TV purchase not successful',
+        data: {
+          order_id: payBetaResponse.data.order_id,
+          status: payBetaResponse.data.status,
+          service_name: service_id.toUpperCase(),
+          customer_id: customer_id,
+          request_id: finalRequestId,
+          balance_action: 'not_deducted',
+          payment_details: {
+            currency: currency,
+            ngnz_amount: amount,
+            amount_usd: (amount * (1 / 1554.42)).toFixed(2)
+          }
+        }
+      });
     }
     
-    // Step 10: Update transaction with PayBeta response
+    // Step 10: Update transaction with proper status mapping
+    const finalStatus = payBetaStatus === 'successful' ? 'completed' : 'failed';
     const updateData = {
       orderId: payBetaResponse.data.order_id.toString(),
-      status: payBetaResponse.data.status,
-      productName: payBetaResponse.data.product_name,
-      balanceCompleted: true, // Always true since we deduct immediately
+      status: finalStatus,
+      productName: payBetaResponse.data.product_name || 'Cable TV',
+      balanceCompleted: true,
       metaData: {
         ...initialTransactionData.metaData,
         service_name: payBetaResponse.data.service_name,
@@ -651,6 +691,9 @@ router.post('/purchase', async (req, res) => {
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
+        paybeta_status: payBetaStatus,
+        paybeta_transaction_id: payBetaResponse.data.order_id,
+        paybeta_reference: payBetaResponse.data.reference,
         paybeta_initial_balance: payBetaResponse.data.initial_balance,
         paybeta_final_balance: payBetaResponse.data.final_balance
       }
@@ -662,10 +705,30 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
+    // Verify the database update worked
+    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
+    logger.info(`📋 Database update verification:`, {
+      transactionId: finalTransaction?._id,
+      status: finalTransaction?.status,
+      orderId: finalTransaction?.orderId,
+      balanceCompleted: finalTransaction?.balanceCompleted
+    });
+    
+    // Double-check by querying the database directly
+    const verifyTransaction = await BillTransaction.findById(pendingTransaction._id);
+    logger.info(`📋 Direct database verification:`, {
+      id: verifyTransaction?._id,
+      status: verifyTransaction?.status,
+      orderId: verifyTransaction?.orderId,
+      balanceCompleted: verifyTransaction?.balanceCompleted,
+      billType: verifyTransaction?.billType,
+      userId: verifyTransaction?.userId
+    });
+    
     logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
-    // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
+    // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
     if (payBetaStatus === 'successful') {
       return res.status(200).json({
         success: true,
@@ -679,7 +742,7 @@ router.post('/purchase', async (req, res) => {
           amount: payBetaResponse.data.amount,
           amount_charged: payBetaResponse.data.chargedAmount,
           request_id: finalRequestId,
-          balance_action: 'updated_directly',
+          balance_action: 'deducted_on_success',
           payment_details: {
             currency: currency,
             ngnz_amount: amount,
