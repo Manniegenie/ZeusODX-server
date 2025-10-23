@@ -707,7 +707,14 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
+    // Verify the database update worked
     logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
+    logger.info(`📋 Database update verification:`, {
+      transactionId: finalTransaction?._id,
+      status: finalTransaction?.status,
+      orderId: finalTransaction?.orderId,
+      balanceCompleted: finalTransaction?.balanceCompleted
+    });
     
     logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     

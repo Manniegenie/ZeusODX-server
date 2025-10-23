@@ -735,7 +735,25 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
+    // Verify the database update worked
     logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
+    logger.info(`📋 Database update verification:`, {
+      transactionId: finalTransaction?._id,
+      status: finalTransaction?.status,
+      orderId: finalTransaction?.orderId,
+      balanceCompleted: finalTransaction?.balanceCompleted
+    });
+    
+    // Double-check by querying the database directly
+    const verifyTransaction = await BillTransaction.findById(pendingTransaction._id);
+    logger.info(`📋 Direct database verification:`, {
+      id: verifyTransaction?._id,
+      status: verifyTransaction?.status,
+      orderId: verifyTransaction?.orderId,
+      balanceCompleted: verifyTransaction?.balanceCompleted,
+      billType: verifyTransaction?.billType,
+      userId: verifyTransaction?.userId
+    });
     
     logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
