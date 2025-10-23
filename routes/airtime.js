@@ -387,7 +387,7 @@ router.post('/purchase', async (req, res) => {
   let balanceDeducted = false;
   let transactionCreated = false;
   let pendingTransaction = null;
-  let ebillsResponse = null;
+  let payBetaResponse = null;
   let validation;
 
   try {
@@ -539,7 +539,7 @@ router.post('/purchase', async (req, res) => {
     
     // Step 8: Call PayBeta API first
     try {
-      ebillsResponse = await callPayBetaAPI({
+      payBetaResponse = await callPayBetaAPI({
         phone, amount, service_id,
         request_id: finalRequestId,
         userId
@@ -584,11 +584,11 @@ router.post('/purchase', async (req, res) => {
     }
     
     // Step 9: Only deduct balance if PayBeta is successful
-    const ebillsStatus = ebillsResponse.data.status;
+    const payBetaStatus = payBetaResponse.data.status;
     
     // Only deduct balance if PayBeta transaction is successful
-    if (ebillsStatus === 'successful') {
-      logger.info(`✅ PayBeta API succeeded (${ebillsStatus}), deducting balance for ${finalRequestId}`);
+    if (payBetaStatus === 'successful') {
+      logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance for ${finalRequestId}`);
       
       try {
         await updateUserBalance(userId, currency, -amount);
@@ -603,7 +603,7 @@ router.post('/purchase', async (req, res) => {
           currency,
           amount,
           error: balanceError.message,
-          paybeta_order_id: ebillsResponse.data?.order_id
+          paybeta_order_id: payBetaResponse.data?.order_id
         });
 
         if (balanceError.message.includes('insufficient') || 
@@ -616,7 +616,7 @@ router.post('/purchase', async (req, res) => {
               error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
               timestamp: new Date(),
               phase: 'balance_deduction',
-              paybeta_order_id: ebillsResponse.data?.order_id
+              paybeta_order_id: payBetaResponse.data?.order_id
             }]
           });
           
@@ -633,7 +633,7 @@ router.post('/purchase', async (req, res) => {
             error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
             timestamp: new Date(),
             phase: 'balance_deduction',
-            paybeta_order_id: ebillsResponse.data?.order_id
+            paybeta_order_id: payBetaResponse.data?.order_id
           }]
         });
         
@@ -642,8 +642,8 @@ router.post('/purchase', async (req, res) => {
           error: 'BALANCE_UPDATE_FAILED',
           message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
           details: {
-            paybeta_order_id: ebillsResponse.data?.order_id,
-            paybeta_status: ebillsResponse.data?.status,
+            paybeta_order_id: payBetaResponse.data?.order_id,
+            paybeta_status: payBetaResponse.data?.status,
             amount: amount,
             phone: phone
           }
@@ -651,15 +651,15 @@ router.post('/purchase', async (req, res) => {
       }
     } else {
       // PayBeta was not successful, don't deduct balance
-      logger.info(`❌ PayBeta API not successful (${ebillsStatus}), not deducting balance for ${finalRequestId}`);
+      logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
       
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
         status: 'failed',
         processingErrors: [{
-          error: `PayBeta transaction not successful: ${ebillsStatus}`,
+          error: `PayBeta transaction not successful: ${payBetaStatus}`,
           timestamp: new Date(),
           phase: 'paybeta_response',
-          paybeta_order_id: ebillsResponse.data?.order_id
+          paybeta_order_id: payBetaResponse.data?.order_id
         }]
       });
       
@@ -673,7 +673,7 @@ router.post('/purchase', async (req, res) => {
           'failed',
           {
             requestId: finalRequestId,
-            error: `PayBeta transaction not successful: ${ebillsStatus}`,
+            error: `PayBeta transaction not successful: ${payBetaStatus}`,
             currency: 'NGNZ'
           }
         );
@@ -688,10 +688,10 @@ router.post('/purchase', async (req, res) => {
       return res.status(500).json({
         success: false,
         error: 'PAYBETA_TRANSACTION_FAILED',
-        message: `PayBeta transaction not successful: ${ebillsStatus}`,
+        message: `PayBeta transaction not successful: ${payBetaStatus}`,
         details: {
-          paybeta_order_id: ebillsResponse.data?.order_id,
-          paybeta_status: ebillsResponse.data?.status,
+          paybeta_order_id: payBetaResponse.data?.order_id,
+          paybeta_status: payBetaResponse.data?.status,
           amount: amount,
           phone: phone
         }
@@ -700,22 +700,22 @@ router.post('/purchase', async (req, res) => {
     
     // Step 10: Update transaction with proper status mapping
     const updateData = {
-      orderId: ebillsResponse.data.order_id.toString(),
-      status: ebillsStatus === 'successful' ? 'completed' : 'failed',
-      productName: ebillsResponse.data.biller || 'Airtime',
+      orderId: payBetaResponse.data.order_id.toString(),
+      status: payBetaStatus === 'successful' ? 'completed' : 'failed',
+      productName: payBetaResponse.data.biller || 'Airtime',
       balanceCompleted: true,
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: ebillsResponse.data.biller,
-        amount_charged: ebillsResponse.data.chargedAmount,
+        service_name: payBetaResponse.data.biller,
+        amount_charged: payBetaResponse.data.chargedAmount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        paybeta_initial_balance: ebillsResponse.data.previousBalance,
-        paybeta_final_balance: ebillsResponse.data.currentBalance,
-        paybeta_status: ebillsStatus,
-        paybeta_transaction_id: ebillsResponse.data.order_id,
-        paybeta_reference: ebillsResponse.data.reference
+        paybeta_initial_balance: payBetaResponse.data.previousBalance,
+        paybeta_final_balance: payBetaResponse.data.currentBalance,
+        paybeta_status: payBetaStatus,
+        paybeta_transaction_id: payBetaResponse.data.order_id,
+        paybeta_reference: payBetaResponse.data.reference
       }
     };
     
@@ -725,11 +725,11 @@ router.post('/purchase', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
     
 
     // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
-    if (ebillsStatus === 'successful') {
+    if (payBetaStatus === 'successful') {
       
       // ✅ SEND SUCCESS NOTIFICATION
       try {
@@ -740,21 +740,21 @@ router.post('/purchase', async (req, res) => {
           phone,
           'completed',
           {
-            orderId: ebillsResponse.data.order_id.toString(),
+            orderId: payBetaResponse.data.order_id.toString(),
             requestId: finalRequestId,
-            serviceName: ebillsResponse.data.biller,
+            serviceName: payBetaResponse.data.biller,
             currency: 'NGNZ'
           }
         );
         
         logger.info('Airtime purchase notification sent (completed)', { 
           userId, 
-          orderId: ebillsResponse.data.order_id 
+          orderId: payBetaResponse.data.order_id 
         });
       } catch (notificationError) {
         logger.error('Failed to send airtime purchase notification', {
           userId,
-          orderId: ebillsResponse.data.order_id,
+          orderId: payBetaResponse.data.order_id,
           error: notificationError.message
         });
       }
@@ -763,11 +763,11 @@ router.post('/purchase', async (req, res) => {
         success: true,
         message: 'Airtime purchase completed successfully',
         data: {
-          order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
-          phone: ebillsResponse.data.customerId,
-          amount: ebillsResponse.data.amount,
-          service_name: ebillsResponse.data.biller,
+          order_id: payBetaResponse.data.order_id,
+          status: payBetaResponse.data.status,
+          phone: payBetaResponse.data.customerId,
+          amount: payBetaResponse.data.amount,
+          service_name: payBetaResponse.data.biller,
           request_id: finalRequestId,
           balance_action: 'deducted_on_success',
           payment_details: {
@@ -781,9 +781,9 @@ router.post('/purchase', async (req, res) => {
       // This should not happen since we already handled non-successful cases above
       return res.status(200).json({
         success: true,
-        message: `Airtime purchase status: ${ebillsStatus}`,
+        message: `Airtime purchase status: ${payBetaStatus}`,
         data: {
-          ...ebillsResponse.data,
+          ...payBetaResponse.data,
           request_id: finalRequestId,
           balance_action: 'not_deducted',
           payment_details: {

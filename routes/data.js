@@ -139,7 +139,7 @@ async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
 }
 
 /**
- * Validate phone number format according to eBills API specs
+ * Validate phone number format according to PayBeta API specs
  */
 function validatePhoneNumber(phone) {
   if (!phone || typeof phone !== 'string') return false;
@@ -242,7 +242,7 @@ function validateDataRequest(body) {
 }
 
 /**
- * Call eBills API for data purchase
+ * Call PayBeta API for data purchase
  */
 async function callEBillsAPI({ phone, amount, service_id, variation_id, request_id, userId }) {
   try {
@@ -254,15 +254,15 @@ async function callEBillsAPI({ phone, amount, service_id, variation_id, request_
       request_id 
     };
 
-    logger.info('Making eBills data purchase request:', {
-      phone, amount, service_id, variation_id, request_id, endpoint: '/api/v2/data'
+    logger.info('Making PayBeta data purchase request:', {
+      phone, amount, service_id, variation_id, request_id, endpoint: '/v2/data-bundle/purchase'
     });
 
     const response = await vtuAuth.makeRequest('POST', '/api/v2/data', payload, {
       timeout: 25000 // Reduced from 45s for faster failure
     });
 
-    logger.info(`eBills API response for ${request_id}:`, {
+    logger.info(`PayBeta API response for ${request_id}:`, {
       code: response.code,
       message: response.message,
       status: response.data?.status,
@@ -270,23 +270,23 @@ async function callEBillsAPI({ phone, amount, service_id, variation_id, request_
     });
 
     if (response.code !== 'success') {
-      throw new Error(`eBills API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
     }
 
     return response;
 
   } catch (error) {
-    logger.error('❌ eBills data purchase failed:', {
+    logger.error('❌ PayBeta data purchase failed:', {
       request_id, userId, error: error.message,
       status: error.response?.status,
-      ebillsError: error.response?.data
+      payBetaError: error.response?.data
     });
 
     if (error.message.includes('IP Address')) {
-      throw new Error('IP address not whitelisted with eBills. Please contact support.');
+      throw new Error('IP address not whitelisted with PayBeta. Please contact support.');
     }
     if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with eBills provider. Please contact support.');
+      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
     }
     if (error.response?.status === 422) {
       const validationErrors = error.response.data?.errors || {};
@@ -294,7 +294,7 @@ async function callEBillsAPI({ phone, amount, service_id, variation_id, request_
       throw new Error(`Validation error: ${errorMessages.join(', ')}`);
     }
 
-    throw new Error(`eBills API error: ${error.message}`);
+    throw new Error(`PayBeta API error: ${error.message}`);
   }
 }
 
@@ -348,7 +348,7 @@ async function callPayBetaAPI({ phone, amount, service_id, variation_id, request
       throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
     }
 
-    // Transform PayBeta response to match eBills format for consistency
+    // Transform PayBeta response to match internal format for consistency
     return {
       code: 'success',
       message: response.message,
