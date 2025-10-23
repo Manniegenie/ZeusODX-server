@@ -601,14 +601,14 @@ router.post('/purchase', async (req, res) => {
     // Only deduct balance if PayBeta transaction is successful
     if (payBetaStatus === 'successful') {
       logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance for ${finalRequestId}`);
-    
-    try {
-      await updateUserBalance(userId, currency, -amount);
-      balanceDeducted = true;
       
-      logger.info(`✅ Balance deducted immediately: -${amount} ${currency} for user ${userId}`);
-      
-    } catch (balanceError) {
+      try {
+        await updateUserBalance(userId, currency, -amount);
+        balanceDeducted = true;
+        
+        logger.info(`✅ Balance deducted immediately: -${amount} ${currency} for user ${userId}`);
+        
+      } catch (balanceError) {
       logger.error('CRITICAL: Balance deduction failed after successful PayBeta API call:', {
         request_id: finalRequestId,
         userId,
@@ -661,6 +661,7 @@ router.post('/purchase', async (req, res) => {
           customer_id: customer_id
         }
       });
+    }
     } else {
       // PayBeta was not successful, don't deduct balance
       logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
