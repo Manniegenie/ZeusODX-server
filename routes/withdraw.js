@@ -347,6 +347,11 @@ function validateWithdrawalRequest(body) {
   if (upperCurrency === 'USDT' && network && !['ERC20', 'TRC20', 'BEP20'].includes(network.toUpperCase())) {
     errors.push('Invalid network for USDT. Supported networks: ERC20, TRC20, BEP20');
   }
+  
+  // For TRX currency, allow both TRX and TRC20 networks (TRC20 will be mapped to TRX)
+  if (upperCurrency === 'TRX' && network && !['TRX', 'TRC20'].includes(network.toUpperCase())) {
+    errors.push('Invalid network for TRX. Supported networks: TRX, TRC20');
+  }
 
   if (errors.length > 0) {
     return {
@@ -540,8 +545,24 @@ async function initiateObiexWithdrawal(withdrawalData) {
   
   // Add optional destination fields
   if (network) {
-    // Map TRC20 to TRX for Obiex API
-    destination.network = network.toUpperCase() === 'TRC20' ? 'TRX' : network;
+    const originalNetwork = network.toUpperCase();
+    let mappedNetwork = originalNetwork;
+    
+    // Force TRX network for Obiex API when dealing with Tron-based networks
+    // This ensures that both TRC20 and TRX requests use TRX network for Obiex API
+    if (originalNetwork === 'TRC20' || originalNetwork === 'TRX') {
+      mappedNetwork = 'TRX';
+    }
+    
+    destination.network = mappedNetwork;
+    
+    logger.info('Network mapping for Obiex API', {
+      originalNetwork,
+      mappedNetwork,
+      currency,
+      address: address.substring(0, 10) + '...',
+      reason: originalNetwork === 'TRC20' ? 'TRC20 mapped to TRX for Obiex' : 'Network used as-is'
+    });
   }
   if (memo?.trim()) destination.memo = memo.trim();
 
@@ -709,6 +730,7 @@ router.post('/crypto', async (req, res) => {
       userId,
       currency,
       amount,
+      network,
       address: address.substring(0, 10) + '...'
     });
 
