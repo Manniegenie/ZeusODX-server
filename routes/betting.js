@@ -160,14 +160,12 @@ function validateBettingRequest(body) {
     }
   }
   
-  // Service ID validation
+  // Service ID validation - Let PayBeta handle provider validation
   if (!body.service_id) {
     errors.push('Service ID is required');
   } else {
     sanitized.service_id = String(body.service_id).trim();
-    if (!BETTING_SERVICES.includes(sanitized.service_id)) {
-      errors.push(`Invalid service ID. Must be one of: ${BETTING_SERVICES.join(', ')}`);
-    }
+    // Removed hardcoded provider validation - PayBeta API will validate
   }
   
   // Amount validation - UPDATED: References NGNZ
