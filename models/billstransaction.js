@@ -116,7 +116,8 @@ const billTransactionSchema = new mongoose.Schema({
       // Betting providers
       '1xBet', 'BangBet', 'Bet9ja', 'BetKing', 'BetLand', 'BetLion',
       'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet',
-      'NairaBet', 'SupaBet',
+      'NairaBet', 'SupaBet', 'HallaBet', 'MLotto', 'WesternLotto', 
+      'GreenLotto', 'SportyBet',
       
       null
     ]

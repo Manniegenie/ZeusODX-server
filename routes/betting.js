@@ -16,6 +16,38 @@ const router = express.Router();
 const userCache = new Map();
 const CACHE_TTL = 30000; // 30 seconds
 
+/**
+ * Normalize service ID to match network enum format
+ * @param {string} serviceId - Service ID from request
+ * @returns {string} Normalized service ID for network enum
+ */
+function normalizeServiceIdForNetwork(serviceId) {
+  const serviceMapping = {
+    '1xbet': '1xBet',
+    'bangbet': 'BangBet', 
+    'bet9ja': 'Bet9ja',
+    'betking': 'BetKing',
+    'betland': 'BetLand',
+    'betlion': 'BetLion',
+    'betway': 'BetWay',
+    'cloudbet': 'CloudBet',
+    'livescorebet': 'LiveScoreBet',
+    'merrybet': 'MerryBet',
+    'naijabet': 'NaijaBet',
+    'nairabet': 'NairaBet',
+    'supabet': 'SupaBet',
+    'bet9ja_agent': 'Bet9ja',
+    'livescore': 'LiveScoreBet',
+    'hallabet': 'HallaBet',
+    'mlotto': 'MLotto',
+    'westernlotto': 'WesternLotto',
+    'greenlotto': 'GreenLotto',
+    'sportybet': 'SportyBet'
+  };
+  
+  return serviceMapping[serviceId.toLowerCase()] || serviceId;
+}
+
 // Valid betting service providers
 const BETTING_SERVICES = [
   '1xBet', 'BangBet', 'Bet9ja', 'BetKing', 'BetLand', 'BetLion',
@@ -432,7 +464,7 @@ router.post('/fund', async (req, res) => {
         passwordpin_validated: true,
         is_ngnz_transaction: true
       },
-      network: service_id,
+      network: normalizeServiceIdForNetwork(service_id),
       customerPhone: customer_id,
       customerInfo: {
         customer_id,
