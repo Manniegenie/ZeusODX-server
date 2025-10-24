@@ -576,9 +576,10 @@ router.post('/fund', async (req, res) => {
     }
     
     // Step 10: Update transaction with eBills response
+    const finalStatus = ebillsResponse.data.status === 'completed' ? 'completed' : 'failed';
     const updateData = {
       orderId: ebillsResponse.data.order_id.toString(),
-      status: ebillsResponse.data.status,
+      status: finalStatus,
       productName: ebillsResponse.data.product_name,
       balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
@@ -604,7 +605,14 @@ router.post('/fund', async (req, res) => {
       { new: true }
     );
     
-    logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    // Verify the database update worked
+    logger.info(`📋 Transaction status updated: ${ebillsResponse.data.order_id} | ${finalStatus} | eBills: ${ebillsStatus} | Balance: immediate_debit`);
+    logger.info(`📋 Database update verification:`, {
+      transactionId: finalTransaction?._id,
+      status: finalTransaction?.status,
+      orderId: finalTransaction?.orderId,
+      balanceCompleted: finalTransaction?.balanceCompleted
+    });
     
 
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE

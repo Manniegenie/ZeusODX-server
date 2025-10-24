@@ -925,9 +925,10 @@ router.post('/purchase', async (req, res) => {
     }
 
     // Step 10: Update transaction with PayBeta response
+    const finalStatus = 'completed'; // PayBeta successful response means completed
     const updateData = {
       orderId: ebillsResponse.data.transactionId?.toString?.() || String(ebillsResponse.data.transactionId),
-      status: 'completed', // PayBeta successful response means completed
+      status: finalStatus,
       productName: 'Electricity',
       balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
@@ -937,20 +938,34 @@ router.post('/purchase', async (req, res) => {
         customer_address: customerAddress,
         token: ebillsResponse.data.token,
         units: ebillsResponse.data.unit,
-        band: ebillsResponse.data.band,
         amount_charged: ebillsResponse.data.chargedAmount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        paybeta_reference: ebillsResponse.data.reference,
+        paybeta_status: 'successful',
         paybeta_transaction_id: ebillsResponse.data.transactionId,
+        paybeta_reference: ebillsResponse.data.reference,
         paybeta_commission: ebillsResponse.data.commission,
-        paybeta_bonus_token: ebillsResponse.data.bonusToken
+        paybeta_bonus_token: ebillsResponse.data.bonusToken,
+        paybeta_customer_id: ebillsResponse.data.customerId,
+        paybeta_transaction_date: ebillsResponse.data.transactionDate
       }
     };
 
-    await BillTransaction.findByIdAndUpdate(pendingTransaction._id, updateData, { new: true });
-    logger.info(`📋 Transaction completed: ${ebillsResponse.data.transactionId} | completed | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    const finalTransaction = await BillTransaction.findByIdAndUpdate(
+      pendingTransaction._id,
+      updateData,
+      { new: true }
+    );
+    
+    // Verify the database update worked
+    logger.info(`📋 Transaction status updated: ${ebillsResponse.data.transactionId} | ${finalStatus} | PayBeta: successful | Balance: immediate_debit`);
+    logger.info(`📋 Database update verification:`, {
+      transactionId: finalTransaction?._id,
+      status: finalTransaction?.status,
+      orderId: finalTransaction?.orderId,
+      balanceCompleted: finalTransaction?.balanceCompleted
+    });
 
     // Step 11: Return response - maintaining PayBeta format for compatibility
     return res.status(200).json({
@@ -967,7 +982,12 @@ router.post('/purchase', async (req, res) => {
         units: ebillsResponse.data.unit,
         amount_charged: ebillsResponse.data.chargedAmount,
         transactionId: ebillsResponse.data.transactionId,
-        reference: ebillsResponse.data.reference
+        reference: ebillsResponse.data.reference,
+        // Additional PayBeta fields for utility receipt
+        bonusToken: ebillsResponse.data.bonusToken,
+        commission: ebillsResponse.data.commission,
+        transactionDate: ebillsResponse.data.transactionDate,
+        customerId: ebillsResponse.data.customerId
       }
     });
 
