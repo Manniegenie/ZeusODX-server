@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/user');
 const BillTransaction = require('../models/billstransaction');
 const { vtuAuth } = require('../auth/billauth');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
@@ -22,6 +23,30 @@ const ELECTRICITY_SERVICES = [
 ];
 
 const VALID_METER_TYPES = ['prepaid', 'postpaid'];
+
+/**
+ * Normalize service ID to match network enum format
+ * @param {string} serviceId - Service ID from request
+ * @returns {string} Normalized service ID for network enum
+ */
+function normalizeServiceIdForNetwork(serviceId) {
+  const serviceMapping = {
+    'ikeja-electric': 'IKEJA-ELECTRIC',
+    'eko-electric': 'EKO-ELECTRIC', 
+    'kano-electric': 'KANO-ELECTRIC',
+    'portharcourt-electric': 'PORTHARCOURT-ELECTRIC',
+    'jos-electric': 'JOS-ELECTRIC',
+    'ibadan-electric': 'IBADAN-ELECTRIC',
+    'kaduna-electric': 'KADUNA-ELECTRIC',
+    'abuja-electric': 'ABUJA-ELECTRIC',
+    'enugu-electric': 'ENUGU-ELECTRIC',
+    'benin-electric': 'BENIN-ELECTRIC',
+    'aba-electric': 'ABA-ELECTRIC',
+    'yola-electric': 'YOLA-ELECTRIC'
+  };
+  
+  return serviceMapping[serviceId.toLowerCase()] || serviceId;
+}
 
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
@@ -212,6 +237,332 @@ function validateElectricityRequest(body) {
   sanitized.payment_currency = 'NGNZ';
 
   return { isValid: errors.length === 0, errors, sanitized };
+}
+
+/**
+ * GET /electricity/providers - Fetch electricity providers from PayBeta
+ */
+router.get('/providers', async (req, res) => {
+  const requestId = `electricity_providers_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+  
+  try {
+    logger.info(`🔌 [${requestId}] Fetching electricity providers from PayBeta`, {
+      timestamp: new Date().toISOString()
+    });
+
+    // Check if PayBeta API key is configured
+    if (!process.env.PAYBETA_API_KEY) {
+      logger.error(`❌ [${requestId}] PayBeta API key not configured`);
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Electricity service is temporarily unavailable. Please try again later.'
+      });
+    }
+
+    const startTime = Date.now();
+    
+    // Call PayBeta electricity providers endpoint
+    const response = await payBetaAuth.makeRequest('GET', '/v2/electricity/providers', {}, {
+      timeout: 15000
+    });
+
+    const processingTime = Date.now() - startTime;
+    
+    logger.info(`🔌 [${requestId}] PayBeta providers response: ${response.status}`, {
+      providerCount: response.data?.length || 0,
+      requestId,
+      status: response.status,
+      timestamp: new Date().toISOString()
+    });
+
+    // Log raw response for debugging
+    logger.info(`🔍 [${requestId}] Raw PayBeta response:`, {
+      rawData: response.data,
+      rawDataLength: response.data?.length || 0,
+      rawDataTypes: response.data?.map(item => ({
+        name: item.name,
+        slug: item.slug,
+        hasLogo: !!item.logo
+      })),
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    if (response.status !== 'successful') {
+      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+    }
+
+    // Process providers to add hasLogo and icon properties
+    const processedProviders = (response.data || []).map(provider => ({
+      id: provider.slug || provider.name?.toLowerCase().replace(/\s+/g, '-'),
+      name: provider.name,
+      displayName: provider.name,
+      slug: provider.slug,
+      category: provider.category || 'electricity',
+      logo: provider.logo || '',
+      hasLogo: !!provider.logo,
+      status: provider.status !== false
+    }));
+
+    // Remove duplicates based on ID
+    const uniqueProviders = processedProviders.filter((provider, index, self) => 
+      index === self.findIndex(p => p.id === p.id)
+    );
+
+    logger.info(`🔍 [${requestId}] After deduplication:`, {
+      originalCount: processedProviders.length,
+      uniqueCount: uniqueProviders.length,
+      removedDuplicates: processedProviders.length - uniqueProviders.length,
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    logger.info(`🔍 [${requestId}] Processed providers:`, {
+      processedCount: uniqueProviders.length,
+      processedProviders: uniqueProviders.map(p => ({
+        id: p.id,
+        name: p.name,
+        slug: p.slug
+      })),
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    logger.info(`✅ [${requestId}] Electricity providers fetched successfully`, {
+      processingTime: `${processingTime}ms`,
+      providerCount: uniqueProviders.length,
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        providers: uniqueProviders
+      },
+      message: 'Electricity providers fetched successfully'
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - Date.now();
+    
+    logger.error(`❌ [${requestId}] Electricity providers fetch failed:`, {
+      error: error.message,
+      processingTime: `${processingTime}ms`,
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    if (error.message.includes('timeout') || error.message.includes('TIMEOUT')) {
+      return res.status(504).json({
+        success: false,
+        error: 'PROVIDERS_TIMEOUT',
+        message: 'Electricity providers request timed out. Please try again.'
+      });
+    }
+
+    if (error.message.includes('SERVICE_CONFIGURATION_ERROR')) {
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Electricity service is temporarily unavailable. Please try again later.'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: 'PROVIDERS_API_ERROR',
+      message: 'Failed to fetch electricity providers. Please try again later.'
+    });
+  }
+});
+
+/**
+ * POST /electricity/validate - Validate electricity customer using PayBeta
+ */
+router.post('/validate', async (req, res) => {
+  const requestId = `electricity_validate_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+  
+  try {
+    const { service, meterNumber, meterType } = req.body;
+    
+    logger.info(`🔌 [${requestId}] Electricity customer validation request:`, {
+      service,
+      meterNumber: meterNumber ? `${meterNumber.substring(0, 3)}***${meterNumber.substring(meterNumber.length - 3)}` : 'N/A',
+      meterType,
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    // Validate required fields
+    if (!service || !meterNumber || !meterType) {
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: 'Service, meter number, and meter type are required'
+      });
+    }
+
+    // Check if PayBeta API key is configured
+    if (!process.env.PAYBETA_API_KEY) {
+      logger.error(`❌ [${requestId}] PayBeta API key not configured`);
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Electricity validation service is temporarily unavailable. Please try again later.'
+      });
+    }
+
+    const startTime = Date.now();
+    
+    // Call PayBeta electricity validation endpoint
+    const payload = {
+      service: service.toLowerCase(),
+      meterNumber: meterNumber.trim(),
+      meterType: meterType.toLowerCase()
+    };
+
+    const response = await payBetaAuth.makeRequest('POST', '/v2/electricity/validate', payload, {
+      timeout: 15000
+    });
+
+    const processingTime = Date.now() - startTime;
+    
+    logger.info(`🔌 [${requestId}] PayBeta validation response: ${response.status}`, {
+      requestId,
+      status: response.status,
+      processingTime: `${processingTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+
+    if (response.status !== 'successful') {
+      logger.warn(`⚠️ [${requestId}] PayBeta validation failed:`, {
+        error: response.message,
+        requestId,
+        timestamp: new Date().toISOString()
+      });
+      
+      return res.status(400).json({
+        success: false,
+        error: 'CUSTOMER_NOT_FOUND',
+        message: response.message || 'Customer not found or invalid meter details'
+      });
+    }
+
+    // Process validation response
+    const validationData = response.data || {};
+    
+    logger.info(`✅ [${requestId}] Electricity customer validation successful:`, {
+      customerName: validationData.customerName,
+      customerAddress: validationData.customerAddress,
+      meterNumber: validationData.meterNumber,
+      meterType: validationData.meterType,
+      minimumAmount: validationData.minimuVendAmount,
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        customerName: validationData.customerName,
+        customerAddress: validationData.customerAddress,
+        meterNumber: validationData.meterNumber,
+        meterType: validationData.meterType,
+        minimumAmount: validationData.minimuVendAmount,
+        service: service,
+        verifiedAt: new Date().toISOString(),
+        requestId: requestId
+      },
+      message: 'Customer validation successful'
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - Date.now();
+    
+    logger.error(`❌ [${requestId}] Electricity customer validation failed:`, {
+      error: error.message,
+      processingTime: `${processingTime}ms`,
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    if (error.message.includes('timeout') || error.message.includes('TIMEOUT')) {
+      return res.status(504).json({
+        success: false,
+        error: 'VALIDATION_TIMEOUT',
+        message: 'Customer validation timed out. Please try again.'
+      });
+    }
+
+    if (error.message.includes('SERVICE_CONFIGURATION_ERROR')) {
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Electricity validation service is temporarily unavailable. Please try again later.'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: 'VALIDATION_API_ERROR',
+      message: 'Customer validation failed. Please try again later.'
+    });
+  }
+});
+
+async function callPayBetaElectricityAPI({ service, meterNumber, meterType, amount, customerName, customerAddress, reference, userId }) {
+  try {
+    const payload = {
+      service: service.toLowerCase(),
+      meterNumber: meterNumber.trim(),
+      meterType: meterType.toLowerCase(),
+      amount: parseInt(amount),
+      customerName: customerName,
+      customerAddress: customerAddress,
+      reference: reference
+    };
+
+    logger.info('Making PayBeta electricity purchase request:', {
+      service, meterNumber: `${meterNumber.substring(0, 3)}***${meterNumber.substring(meterNumber.length - 3)}`, 
+      meterType, amount, reference, endpoint: '/v2/electricity/purchase'
+    });
+
+    const response = await payBetaAuth.makeRequest('POST', '/v2/electricity/purchase', payload, {
+      timeout: 30000
+    });
+
+    logger.info(`PayBeta Electricity API response:`, {
+      status: response.status,
+      message: response.message,
+      transactionId: response.data?.transactionId,
+      reference: response.data?.reference
+    });
+
+    if (response.status !== 'successful') {
+      throw new Error(`PayBeta Electricity API error: ${response.message || 'Unknown error'}`);
+    }
+
+    return response;
+  } catch (error) {
+    logger.error('❌ PayBeta electricity purchase failed:', {
+      userId, error: error.message,
+      status: error.response?.status,
+      paybetaError: error.response?.data
+    });
+
+    if (error.message.includes('insufficient')) {
+      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
+    }
+    if (error.response?.status === 422) {
+      const validationErrors = error.response.data?.errors || {};
+      const errorMessages = Object.values(validationErrors).flat();
+      throw new Error(`Validation error: ${errorMessages.join(', ')}`);
+    }
+
+    throw new Error(`PayBeta Electricity API error: ${error.message}`);
+  }
 }
 
 async function callEBillsElectricityAPI({ customer_id, service_id, variation_id, amount, request_id, userId }) {
@@ -412,7 +763,7 @@ router.post('/purchase', async (req, res) => {
         passwordpin_validated: true,
         is_ngnz_transaction: true
       },
-      network: service_id.toUpperCase(),
+      network: normalizeServiceIdForNetwork(service_id),
       customerPhone: customer_id,
       customerInfo: {
         customer_id,
@@ -431,11 +782,22 @@ router.post('/purchase', async (req, res) => {
 
     logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | electricity | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
 
-    // Step 8: Call eBills API
+    // Step 8: Call PayBeta API
     try {
-      ebillsResponse = await callEBillsElectricityAPI({
-        customer_id, service_id, variation_id, amount,
-        request_id: finalRequestId, userId
+      // For PayBeta, we need customer details from validation
+      // These should be passed from the frontend after validation
+      const customerName = req.body.customerName || 'Customer';
+      const customerAddress = req.body.customerAddress || 'Address';
+      
+      ebillsResponse = await callPayBetaElectricityAPI({
+        service: service_id,
+        meterNumber: customer_id,
+        meterType: variation_id,
+        amount: amount,
+        customerName: customerName,
+        customerAddress: customerAddress,
+        reference: finalRequestId,
+        userId: userId
       });
     } catch (apiError) {
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
@@ -444,7 +806,7 @@ router.post('/purchase', async (req, res) => {
       });
       return res.status(500).json({
         success: false,
-        error: 'EBILLS_ELECTRICITY_API_ERROR',
+        error: 'PAYBETA_ELECTRICITY_API_ERROR',
         message: apiError.message
       });
     }
@@ -518,35 +880,52 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 10: Update transaction with eBills response
+    // Step 10: Update transaction with PayBeta response
     const updateData = {
-      orderId: ebillsResponse.data.order_id?.toString?.() || String(ebillsResponse.data.order_id),
-      status: ebillsResponse.data.status,
-      productName: ebillsResponse.data.product_name,
+      orderId: ebillsResponse.data.transactionId?.toString?.() || String(ebillsResponse.data.transactionId),
+      status: 'completed', // PayBeta successful response means completed
+      productName: 'Electricity',
       balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: ebillsResponse.data.service_name,
-        customer_name: ebillsResponse.data.customer_name,
-        customer_address: ebillsResponse.data.customer_address,
+        service_name: ebillsResponse.data.biller,
+        customer_name: customerName,
+        customer_address: customerAddress,
         token: ebillsResponse.data.token,
-        units: ebillsResponse.data.units,
+        units: ebillsResponse.data.unit,
         band: ebillsResponse.data.band,
-        amount_charged: ebillsResponse.data.amount_charged,
+        amount_charged: ebillsResponse.data.chargedAmount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
-        ebills_initial_balance: ebillsResponse.data.initial_balance,
-        ebills_final_balance: ebillsResponse.data.final_balance
+        paybeta_reference: ebillsResponse.data.reference,
+        paybeta_transaction_id: ebillsResponse.data.transactionId,
+        paybeta_commission: ebillsResponse.data.commission,
+        paybeta_bonus_token: ebillsResponse.data.bonusToken
       }
     };
 
     await BillTransaction.findByIdAndUpdate(pendingTransaction._id, updateData, { new: true });
-    logger.info(`📋 Transaction completed: ${ebillsResponse.data.order_id} | ${ebillsStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    logger.info(`📋 Transaction completed: ${ebillsResponse.data.transactionId} | completed | Balance: immediate_debit | ${Date.now() - startTime}ms`);
 
-
-    // Step 11: Return response - maintaining the exact eBills format for compatibility
-    return res.status(200).json(ebillsResponse);
+    // Step 11: Return response - maintaining PayBeta format for compatibility
+    return res.status(200).json({
+      code: 'success',
+      message: 'Electricity purchase successful',
+      data: {
+        order_id: ebillsResponse.data.transactionId,
+        status: 'completed',
+        product_name: 'Electricity',
+        service_name: ebillsResponse.data.biller,
+        customer_name: customerName,
+        customer_address: customerAddress,
+        token: ebillsResponse.data.token,
+        units: ebillsResponse.data.unit,
+        amount_charged: ebillsResponse.data.chargedAmount,
+        transactionId: ebillsResponse.data.transactionId,
+        reference: ebillsResponse.data.reference
+      }
+    });
 
   } catch (error) {
     logger.error('Electricity purchase unexpected error:', {
