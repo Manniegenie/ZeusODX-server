@@ -19,6 +19,54 @@ const obiexAxios = axios.create({
 });
 obiexAxios.interceptors.request.use(attachObiexAuth);
 
+// Obiex API fees (extracted from their documentation)
+const OBIEX_FEES = {
+  USDT: {
+    'TRX': { min: 1, max: 15, fee: 2 }, // Tron (TRC20) - mapped to TRX
+    'ETH': { min: 1, max: 20, fee: 3 }, // Ethereum (ERC20)
+    'BSC': { min: 1, max: 10.50, fee: 0.50 }, // BSC (BEP20)
+    'MATIC': { min: 1, max: 10.50, fee: 1 }, // Polygon (MATIC)
+    'ARBITRUM': { min: 1, max: 10.50, fee: 0.65 }, // Arbitrum One
+    'AVAXC': { min: 1, max: 2, fee: 0.50 }, // Avax C-Chain
+    'SOL': { min: 1, max: 12, fee: 1 } // Solana
+  },
+  USDC: {
+    'BSC': { min: 1, max: 10, fee: 0.50 }, // BSC (BEP20)
+    'MATIC': { min: 1, max: 10, fee: 1 }, // Polygon (MATIC)
+    'AVAXC': { min: 1, max: 0.40, fee: 0.20 }, // Avax C-Chain
+    'ARBITRUM': { min: 1, max: 1, fee: 0.50 }, // Arbitrum One
+    'SOL': { min: 1, max: 10, fee: 3 }, // Solana
+    'ETH': { min: 1, max: 25, fee: 3 }, // Ethereum (ERC20)
+    'BASE': { min: 0.10, max: 11, fee: 1.20 } // Base
+  },
+  BTC: {
+    'BSC': { min: 0, max: 0.0001, fee: 0.00005 }, // BSC (BEP20)
+    'BTC': { min: 0.00005, max: 0.0003, fee: 0.0001 } // Bitcoin
+  },
+  ETH: {
+    'ETH': { min: 0, max: 0.014, fee: 0.005 }, // Ethereum (ERC20)
+    'BASE': { min: 0, max: 0, fee: 0 }, // Base
+    'ARBITRUM': { min: 0, max: 0.001, fee: 0.0004 }, // Arbitrum One
+    'BSC': { min: 0, max: 0.00013, fee: 0.00035 } // BSC (BEP20)
+  },
+  SOL: {
+    'SOL': { min: 0.01, max: 0.10, fee: 0.015 }, // Solana
+    'BSC': { min: 0, max: 0.00018, fee: 0.10 } // BSC (BEP20)
+  },
+  BNB: {
+    'ETH': { min: 0, max: 0.012, fee: 0.002 }, // Ethereum (ERC20)
+    'BSC': { min: 0, max: 0.01, fee: 0.001 } // BSC (BEP20)
+  },
+  MATIC: {
+    'BSC': { min: 0, max: 0.20, fee: 1.40 }, // BSC (BEP20)
+    'ETH': { min: 0, max: 20, fee: 12 }, // Ethereum (ERC20)
+    'MATIC': { min: 0, max: 21, fee: 0.40 } // Polygon (MATIC)
+  },
+  TRX: {
+    'TRX': { min: 5, max: 35, fee: 5 } // Tron (TRC20)
+  }
+};
+
 // Supported tokens configuration
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin', symbol: 'BTC', decimals: 8, isStablecoin: false },
@@ -427,6 +475,26 @@ async function checkDuplicateWithdrawal(userId, currency, amount, address) {
 }
 
 /**
+ * Get Obiex fee for a specific currency and network
+ * @param {string} currency - Currency symbol
+ * @param {string} network - Network identifier
+ * @returns {number} Obiex fee amount
+ */
+function getObiexFee(currency, network) {
+  const upperCurrency = currency.toUpperCase();
+  const upperNetwork = network.toUpperCase();
+  
+  // Check if we have Obiex fee data for this currency/network combination
+  if (OBIEX_FEES[upperCurrency] && OBIEX_FEES[upperCurrency][upperNetwork]) {
+    return OBIEX_FEES[upperCurrency][upperNetwork].fee;
+  }
+  
+  // Default to 0 if no Obiex fee data available
+  logger.warn('No Obiex fee data found', { currency: upperCurrency, network: upperNetwork });
+  return 0;
+}
+
+/**
  * Gets withdrawal fee configuration - converts network fee to withdrawal currency equivalent
  * @param {string} currency - Currency symbol being withdrawn
  * @param {string} network - Network (optional, for matching specific network fees)
@@ -452,6 +520,20 @@ async function getWithdrawalFee(currency, network = null) {
       throw new Error(`Invalid fee configuration for ${currency.toUpperCase()}`);
     }
 
+    // Get Obiex fee for this currency/network combination
+    const obiexFee = getObiexFee(currency, network);
+    
+    // Calculate total fee: our network fee + Obiex fee
+    const totalFee = networkFee + obiexFee;
+    
+    logger.info('Fee calculation with Obiex fees', {
+      currency: currency.toUpperCase(),
+      network: network?.toUpperCase(),
+      ourNetworkFee: networkFee,
+      obiexFee: obiexFee,
+      totalFee: totalFee
+    });
+
     // Determine the network's native currency for fee conversion
     const networkCurrency = getNetworkNativeCurrency(network);
     const withdrawalCurrency = currency.toUpperCase();
@@ -461,9 +543,9 @@ async function getWithdrawalFee(currency, network = null) {
 
     if (networkCurrency === withdrawalCurrency) {
       // Same currency - no conversion needed
-      feeInWithdrawalCurrency = networkFee;
+      feeInWithdrawalCurrency = totalFee;
       const cryptoPrice = await getCryptoPriceInternal(withdrawalCurrency);
-      feeUsd = networkFee * cryptoPrice;
+      feeUsd = totalFee * cryptoPrice;
     } else {
       // Different currencies - convert network fee to withdrawal currency equivalent
       const prices = await getOriginalPricesWithCache([networkCurrency, withdrawalCurrency]);
@@ -474,13 +556,15 @@ async function getWithdrawalFee(currency, network = null) {
         throw new Error(`Unable to get prices for fee conversion: ${networkCurrency} = ${networkPrice}, ${withdrawalCurrency} = ${withdrawalPrice}`);
       }
 
-      // Convert network fee to USD, then to withdrawal currency equivalent
-      const feeValueUsd = networkFee * networkPrice;
+      // Convert total fee to USD, then to withdrawal currency equivalent
+      const feeValueUsd = totalFee * networkPrice;
       feeInWithdrawalCurrency = feeValueUsd / withdrawalPrice;
       feeUsd = feeValueUsd;
 
-      logger.info('Converted cross-currency fee', {
+      logger.info('Converted cross-currency fee with Obiex', {
         originalFee: `${networkFee} ${networkCurrency}`,
+        obiexFee: `${obiexFee} ${networkCurrency}`,
+        totalFee: `${totalFee} ${networkCurrency}`,
         convertedFee: `${feeInWithdrawalCurrency} ${withdrawalCurrency}`,
         feeUsd: `${feeUsd}`,
         networkPrice: `${networkPrice}`,
@@ -493,6 +577,8 @@ async function getWithdrawalFee(currency, network = null) {
       networkFee: parseFloat(feeInWithdrawalCurrency.toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)),
       feeUsd: parseFloat(feeUsd.toFixed(2)),
       originalNetworkFee: networkFee,
+      obiexFee: obiexFee,
+      totalFee: totalFee,
       networkCurrency,
       networkName: feeDoc.networkName
     };
@@ -810,19 +896,29 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    const { networkFee, feeUsd } = feeInfo;
+    const { networkFee, feeUsd, obiexFee } = feeInfo;
     const totalAmount = amount;
-    const receiverAmount = amount - networkFee;
+    
+    // Calculate total fees (your fee + Obiex fee)
+    const totalFees = networkFee + obiexFee;
+    
+    // Receiver gets: amount - total fees (your fee + Obiex fee)
+    const receiverAmount = amount - totalFees;
+    
+    // Calculate the amount to send to Obiex (user amount minus our fee, but Obiex will deduct their fee)
+    const obiexAmount = amount - networkFee;
 
     // Validate that receiver will get a positive amount after fee deduction
     if (receiverAmount <= 0) {
       return res.status(400).json({
         success: false,
         error: 'AMOUNT_TOO_LOW',
-        message: `Withdrawal amount too low. Fee (${networkFee} ${currency}) exceeds requested amount (${amount} ${currency}).`,
+        message: `Withdrawal amount too low. Total fees (${totalFees} ${currency}) exceed requested amount (${amount} ${currency}).`,
         details: {
           requestedAmount: amount,
-          fee: networkFee,
+          yourFee: networkFee,
+          obiexFee: obiexFee,
+          totalFees: totalFees,
           wouldReceive: receiverAmount,
           currency: currency
         }
@@ -858,13 +954,17 @@ router.post('/crypto', async (req, res) => {
       amount,
       totalAmount,
       address: address.substring(0, 10) + '...',
-      networkFee,
+      yourFee: networkFee,
+      obiexFee: obiexFee,
+      totalFees: totalFees,
+      receiverAmount: receiverAmount,
+      obiexAmount: obiexAmount,
       security_status: '2FA + PIN + Balance validated'
     });
 
     // Initiate Obiex withdrawal
     const obiexResult = await initiateObiexWithdrawal({
-      amount: receiverAmount,
+      amount: obiexAmount,
       address,
       currency,
       network,
@@ -946,7 +1046,9 @@ router.post('/crypto', async (req, res) => {
         currency,
         requestedAmount: amount,
         receiverAmount: receiverAmount,
-        fee: networkFee,
+        yourFee: networkFee,
+        obiexFee: obiexFee,
+        totalFees: totalFees,
         feeUsd,
         totalAmount,
         estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`,
@@ -1087,16 +1189,23 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    const { networkFee, feeUsd } = feeInfo;
+    const { networkFee, feeUsd, obiexFee } = feeInfo;
     const totalAmount = amount;
-    const receiverAmount = amount - networkFee;
+    
+    // Calculate total fees (your fee + Obiex fee)
+    const totalFees = networkFee + obiexFee;
+    
+    // Receiver gets: amount - total fees (your fee + Obiex fee)
+    const receiverAmount = amount - totalFees;
 
     const response = {
       success: true,
       data: {
         amount,
         currency,
-        fee: networkFee,
+        yourFee: networkFee,
+        obiexFee: obiexFee,
+        totalFees: totalFees,
         feeUsd,
         receiverAmount,
         totalAmount
