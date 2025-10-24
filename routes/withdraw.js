@@ -19,16 +19,16 @@ const obiexAxios = axios.create({
 });
 obiexAxios.interceptors.request.use(attachObiexAuth);
 
-// Obiex API fees (extracted from their documentation)
+// Obiex API fees (in network currency)
 const OBIEX_FEES = {
   USDT: {
-    'TRX': { min: 1, max: 15, fee: 2 }, // Tron (TRC20) - mapped to TRX
-    'ETH': { min: 1, max: 20, fee: 3 }, // Ethereum (ERC20)
-    'BSC': { min: 1, max: 10.50, fee: 0.50 }, // BSC (BEP20)
-    'MATIC': { min: 1, max: 10.50, fee: 1 }, // Polygon (MATIC)
-    'ARBITRUM': { min: 1, max: 10.50, fee: 0.65 }, // Arbitrum One
-    'AVAXC': { min: 1, max: 2, fee: 0.50 }, // Avax C-Chain
-    'SOL': { min: 1, max: 12, fee: 1 } // Solana
+    'TRX': { min: 1, max: 15, fee: 2 }, // 2 TRX fee for USDT on TRX network
+    'ETH': { min: 1, max: 20, fee: 3 }, // 3 ETH fee for USDT on ETH network
+    'BSC': { min: 1, max: 10.50, fee: 0.50 }, // 0.50 BNB fee for USDT on BSC network
+    'MATIC': { min: 1, max: 10.50, fee: 1 }, // 1 MATIC fee for USDT on MATIC network
+    'ARBITRUM': { min: 1, max: 10.50, fee: 0.65 }, // 0.65 ARB fee for USDT on ARBITRUM network
+    'AVAXC': { min: 1, max: 2, fee: 0.50 }, // 0.50 AVAX fee for USDT on AVAXC network
+    'SOL': { min: 1, max: 12, fee: 1 } // 1 SOL fee for USDT on SOL network
   },
   USDC: {
     'BSC': { min: 1, max: 10, fee: 0.50 }, // BSC (BEP20)
@@ -549,6 +549,19 @@ async function getWithdrawalFee(currency, network = null) {
 
     const networkFee = feeDoc.networkFee;
     
+    logger.info('Database fee configuration found', {
+      currency: currency.toUpperCase(),
+      network: network?.toUpperCase(),
+      networkFee: networkFee,
+      feeDoc: {
+        _id: feeDoc._id,
+        currency: feeDoc.currency,
+        network: feeDoc.network,
+        networkFee: feeDoc.networkFee,
+        networkName: feeDoc.networkName
+      }
+    });
+    
     if (!networkFee || networkFee < 0) {
       throw new Error(`Invalid fee configuration for ${currency.toUpperCase()}`);
     }
@@ -557,6 +570,7 @@ async function getWithdrawalFee(currency, network = null) {
     const obiexFee = getObiexFee(currency, network);
     
     // Calculate total fee: our network fee + Obiex fee
+    // Note: Obiex fee is already in the withdrawal currency (USDT), so we add it directly
     const totalFee = networkFee + obiexFee;
     
     logger.info('Fee calculation with Obiex fees', {
@@ -565,7 +579,13 @@ async function getWithdrawalFee(currency, network = null) {
       ourNetworkFee: networkFee,
       obiexFee: obiexFee,
       totalFee: totalFee,
-      obiexFeeLookup: OBIEX_FEES[currency.toUpperCase()]?.[network?.toUpperCase()]
+      obiexFeeLookup: OBIEX_FEES[currency.toUpperCase()]?.[network?.toUpperCase()],
+      feeDoc: {
+        networkFee: feeDoc.networkFee,
+        networkName: feeDoc.networkName,
+        currency: feeDoc.currency,
+        network: feeDoc.network
+      }
     });
 
     // Determine the network's native currency for fee conversion
@@ -580,6 +600,13 @@ async function getWithdrawalFee(currency, network = null) {
       feeInWithdrawalCurrency = totalFee;
       const cryptoPrice = await getCryptoPriceInternal(withdrawalCurrency);
       feeUsd = totalFee * cryptoPrice;
+      
+      logger.info('USD conversion calculation', {
+        currency: withdrawalCurrency,
+        totalFee: totalFee,
+        cryptoPrice: cryptoPrice,
+        feeUsd: feeUsd
+      });
     } else {
       // Different currencies - convert network fee to withdrawal currency equivalent
       const prices = await getOriginalPricesWithCache([networkCurrency, withdrawalCurrency]);
@@ -1238,7 +1265,13 @@ router.post('/initiate', async (req, res) => {
       obiexFee,
       totalFees,
       receiverAmount,
-      feeUsd
+      feeUsd,
+      feeInfo: {
+        networkFee: feeInfo.networkFee,
+        feeUsd: feeInfo.feeUsd,
+        obiexFee: feeInfo.obiexFee,
+        totalFee: feeInfo.totalFee
+      }
     });
 
     const response = {
