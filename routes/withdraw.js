@@ -484,13 +484,46 @@ function getObiexFee(currency, network) {
   const upperCurrency = currency.toUpperCase();
   const upperNetwork = network ? network.toUpperCase() : null;
   
+  // Map network names to Obiex fee keys
+  const networkMapping = {
+    'TRC20': 'TRX',
+    'TRON': 'TRX',
+    'BSC': 'BSC',
+    'BEP20': 'BSC',
+    'ETH': 'ETH',
+    'ERC20': 'ETH',
+    'MATIC': 'MATIC',
+    'POLYGON': 'MATIC',
+    'SOL': 'SOL',
+    'SOLANA': 'SOL',
+    'ARBITRUM': 'ARBITRUM',
+    'AVAXC': 'AVAXC',
+    'BASE': 'BASE',
+    'BTC': 'BTC',
+    'BITCOIN': 'BTC'
+  };
+  
+  const obiexNetworkKey = networkMapping[upperNetwork] || upperNetwork;
+  
   // Check if we have Obiex fee data for this currency/network combination
-  if (upperNetwork && OBIEX_FEES[upperCurrency] && OBIEX_FEES[upperCurrency][upperNetwork]) {
-    return OBIEX_FEES[upperCurrency][upperNetwork].fee;
+  if (obiexNetworkKey && OBIEX_FEES[upperCurrency] && OBIEX_FEES[upperCurrency][obiexNetworkKey]) {
+    const fee = OBIEX_FEES[upperCurrency][obiexNetworkKey].fee;
+    logger.info('Obiex fee found', { 
+      currency: upperCurrency, 
+      originalNetwork: upperNetwork, 
+      mappedNetwork: obiexNetworkKey, 
+      fee 
+    });
+    return fee;
   }
   
   // Default to 0 if no Obiex fee data available
-  logger.warn('No Obiex fee data found', { currency: upperCurrency, network: upperNetwork });
+  logger.warn('No Obiex fee data found', { 
+    currency: upperCurrency, 
+    originalNetwork: upperNetwork, 
+    mappedNetwork: obiexNetworkKey,
+    availableNetworks: OBIEX_FEES[upperCurrency] ? Object.keys(OBIEX_FEES[upperCurrency]) : []
+  });
   return 0;
 }
 
@@ -531,7 +564,8 @@ async function getWithdrawalFee(currency, network = null) {
       network: network?.toUpperCase(),
       ourNetworkFee: networkFee,
       obiexFee: obiexFee,
-      totalFee: totalFee
+      totalFee: totalFee,
+      obiexFeeLookup: OBIEX_FEES[currency.toUpperCase()]?.[network?.toUpperCase()]
     });
 
     // Determine the network's native currency for fee conversion
@@ -1195,6 +1229,17 @@ router.post('/initiate', async (req, res) => {
     
     // Receiver gets: amount - total fees (your fee + Obiex fee)
     const receiverAmount = amount - totalFees;
+    
+    logger.info('Fee calculation endpoint response', {
+      currency,
+      network,
+      amount,
+      networkFee,
+      obiexFee,
+      totalFees,
+      receiverAmount,
+      feeUsd
+    });
 
     const response = {
       success: true,
