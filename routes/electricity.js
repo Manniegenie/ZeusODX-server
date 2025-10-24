@@ -234,6 +234,15 @@ function validateElectricityRequest(body) {
     }
   }
 
+  // Add customer details for PayBeta
+  if (body.customerName) {
+    sanitized.customerName = String(body.customerName).trim();
+  }
+  
+  if (body.customerAddress) {
+    sanitized.customerAddress = String(body.customerAddress).trim();
+  }
+
   sanitized.payment_currency = 'NGNZ';
 
   return { isValid: errors.length === 0, errors, sanitized };
@@ -470,7 +479,7 @@ router.post('/validate', async (req, res) => {
         customerAddress: validationData.customerAddress,
         meterNumber: validationData.meterNumber,
         meterType: validationData.meterType,
-        minimumAmount: validationData.minimuVendAmount,
+        minimumAmount: validationData.minimuVendAmount || validationData.minimumAmount || 0,
         service: service,
         verifiedAt: new Date().toISOString(),
         requestId: requestId
@@ -524,9 +533,21 @@ async function callPayBetaElectricityAPI({ service, meterNumber, meterType, amou
       reference: reference
     };
 
+    logger.info('PayBeta electricity payload:', {
+      service: payload.service,
+      meterNumber: `${payload.meterNumber.substring(0, 3)}***${payload.meterNumber.substring(payload.meterNumber.length - 3)}`,
+      meterType: payload.meterType,
+      amount: payload.amount,
+      customerName: payload.customerName,
+      customerAddress: payload.customerAddress,
+      reference: payload.reference
+    });
+
     logger.info('Making PayBeta electricity purchase request:', {
       service, meterNumber: `${meterNumber.substring(0, 3)}***${meterNumber.substring(meterNumber.length - 3)}`, 
-      meterType, amount, reference, endpoint: '/v2/electricity/purchase'
+      meterType, amount, reference, endpoint: '/v2/electricity/purchase',
+      customerName: customerName ? `${customerName.substring(0, 3)}***` : 'N/A',
+      customerAddress: customerAddress ? `${customerAddress.substring(0, 10)}***` : 'N/A'
     });
 
     const response = await payBetaAuth.makeRequest('POST', '/v2/electricity/purchase', payload, {
@@ -648,7 +669,7 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    const { customer_id, service_id, variation_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
+    const { customer_id, service_id, variation_id, amount, twoFactorCode, passwordpin, customerName, customerAddress } = validation.sanitized;
     const currency = 'NGNZ';
 
     // Step 2: Get user data
@@ -784,18 +805,17 @@ router.post('/purchase', async (req, res) => {
 
     // Step 8: Call PayBeta API
     try {
-      // For PayBeta, we need customer details from validation
-      // These should be passed from the frontend after validation
-      const customerName = req.body.customerName || 'Customer';
-      const customerAddress = req.body.customerAddress || 'Address';
+      // Use customer details from validation (passed from frontend after validation)
+      const payBetaCustomerName = customerName || 'Customer';
+      const payBetaCustomerAddress = customerAddress || 'Address';
       
       ebillsResponse = await callPayBetaElectricityAPI({
         service: service_id,
         meterNumber: customer_id,
         meterType: variation_id,
         amount: amount,
-        customerName: customerName,
-        customerAddress: customerAddress,
+        customerName: payBetaCustomerName,
+        customerAddress: payBetaCustomerAddress,
         reference: finalRequestId,
         userId: userId
       });
