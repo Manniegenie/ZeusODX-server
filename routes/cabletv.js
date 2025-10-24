@@ -916,6 +916,17 @@ router.post('/verify', async (req, res) => {
     // Call PayBeta API for customer verification
     let payBetaResponse;
     try {
+      // Check if PayBeta API key is configured
+      if (!process.env.PAYBETA_API_KEY) {
+        logger.error(`❌ [${requestId}] PayBeta API key not configured`);
+        return res.status(503).json({
+          success: false,
+          error: 'SERVICE_CONFIGURATION_ERROR',
+          message: 'Cable TV verification service is not properly configured. Please contact support.',
+          requestId
+        });
+      }
+      
       // Use PayBeta's customer verification endpoint
       const response = await payBetaAuth.makeRequest('POST', '/v2/cable/verify', {
         service: service_id.toLowerCase(),
@@ -938,10 +949,21 @@ router.post('/verify', async (req, res) => {
         customer_id: customer_id?.substring(0, 4) + '***',
         error: apiError.message,
         status: apiError.response?.status,
-        payBetaError: apiError.response?.data
+        payBetaError: apiError.response?.data,
+        hasApiKey: !!process.env.PAYBETA_API_KEY
       });
       
       // Handle different error types
+      if (apiError.message.includes('API key not configured') || 
+          apiError.message.includes('authentication failed')) {
+        return res.status(503).json({
+          success: false,
+          error: 'SERVICE_CONFIGURATION_ERROR',
+          message: 'Cable TV verification service is not properly configured. Please contact support.',
+          requestId
+        });
+      }
+      
       if (apiError.message.includes('Customer not found') || 
           apiError.message.includes('Invalid customer')) {
         return res.status(404).json({

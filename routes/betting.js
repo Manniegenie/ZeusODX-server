@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/user');
 const BillTransaction = require('../models/billstransaction');
 const { vtuAuth } = require('../auth/billauth');
+const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
@@ -219,58 +220,73 @@ function validateBettingRequest(body) {
 }
 
 /**
- * Call eBills API for betting funding
+ * Call PayBeta API for betting funding
  */
-async function callEBillsAPI({ customer_id, service_id, amount, request_id, userId }) {
+async function callPayBetaAPI({ customer_id, service_id, amount, request_id, userId, customer_name }) {
   try {
+    // Ensure reference is under 40 characters for PayBeta
+    const payBetaReference = request_id.length > 40 ? 
+      request_id.substring(0, 40) : request_id;
+
     const payload = {
-      request_id: request_id,
-      customer_id: customer_id.trim(),
-      service_id,
-      amount: parseInt(amount)
+      service: service_id.toLowerCase(),
+      customerId: customer_id.trim(),
+      amount: Math.round(amount), // PayBeta expects integer
+      customerName: customer_name || 'CUSTOMER',
+      reference: payBetaReference
     };
 
-    logger.info('Making eBills betting funding request:', {
-      customer_id, service_id, amount, request_id, endpoint: '/api/v2/betting'
+    logger.info('Making PayBeta betting funding request:', {
+      customer_id, service_id, amount, request_id, endpoint: '/v2/gaming/purchase'
     });
 
-    const response = await vtuAuth.makeRequest('POST', '/api/v2/betting', payload, {
-      timeout: 25000 // Reduced from 45s for faster failure
+    const response = await payBetaAuth.makeRequest('POST', '/v2/gaming/purchase', payload, {
+      timeout: 25000
     });
 
-    logger.info(`eBills API response for ${request_id}:`, {
-      code: response.code,
+    logger.info(`PayBeta API response for ${request_id}:`, {
+      status: response.status,
       message: response.message,
-      status: response.data?.status,
-      order_id: response.data?.order_id
+      reference: response.data?.reference,
+      transactionId: response.data?.transactionId
     });
 
-    if (response.code !== 'success') {
-      throw new Error(`eBills API error: ${response.message || 'Unknown error'}`);
+    if (response.status !== 'successful') {
+      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
     }
 
-    return response;
+    // Transform PayBeta response to match eBills format for consistency
+    return {
+      code: 'success',
+      message: response.message,
+      data: {
+        status: 'successful',
+        order_id: response.data.transactionId,
+        reference: response.data.reference,
+        amount: response.data.amount,
+        chargedAmount: response.data.chargedAmount,
+        commission: response.data.commission,
+        biller: response.data.biller,
+        customerId: response.data.customerId,
+        transactionDate: response.data.transactionDate
+      }
+    };
 
   } catch (error) {
-    logger.error('❌ eBills betting funding failed:', {
+    logger.error('❌ PayBeta betting funding failed:', {
       request_id, userId, error: error.message,
       status: error.response?.status,
-      ebillsError: error.response?.data
+      payBetaError: error.response?.data
     });
 
-    if (error.message.includes('IP Address')) {
-      throw new Error('IP address not whitelisted with eBills. Please contact support.');
-    }
     if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with eBills provider. Please contact support.');
+      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
     }
-    if (error.response?.status === 422) {
-      const validationErrors = error.response.data?.errors || {};
-      const errorMessages = Object.values(validationErrors).flat();
-      throw new Error(`Validation error: ${errorMessages.join(', ')}`);
+    if (error.message.includes('validation')) {
+      throw new Error('Invalid request parameters. Please check your input.');
     }
 
-    throw new Error(`eBills API error: ${error.message}`);
+    throw new Error(`PayBeta API error: ${error.message}`);
   }
 }
 
@@ -435,12 +451,13 @@ router.post('/fund', async (req, res) => {
     
     logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | betting | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
     
-    // Step 8: Call eBills API
+    // Step 8: Call PayBeta API
     try {
-      ebillsResponse = await callEBillsAPI({
+      ebillsResponse = await callPayBetaAPI({
         customer_id, service_id, amount,
         request_id: finalRequestId,
-        userId
+        userId,
+        customer_name: 'CUSTOMER' // You can enhance this to get actual customer name
       });
     } catch (apiError) {
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
@@ -454,7 +471,7 @@ router.post('/fund', async (req, res) => {
       
       return res.status(500).json({
         success: false,
-        error: 'EBILLS_API_ERROR',
+        error: 'PAYBETA_API_ERROR',
         message: apiError.message
       });
     }
@@ -676,6 +693,257 @@ router.post('/fund', async (req, res) => {
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
       message: 'An unexpected error occurred while processing your betting account funding'
+    });
+  }
+});
+
+/**
+ * Get betting providers from PayBeta API
+ * GET /betting/providers
+ */
+router.get('/providers', async (req, res) => {
+  const startTime = Date.now();
+  const requestId = `betting_providers_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  
+  try {
+    logger.info(`🎰 Fetching betting providers from PayBeta:`, {
+      requestId,
+      userId: req.user?.id
+    });
+
+    // Check if PayBeta API key is configured
+    if (!process.env.PAYBETA_API_KEY) {
+      logger.error(`❌ [${requestId}] PayBeta API key not configured`);
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Betting providers service is not properly configured. Please contact support.',
+        requestId
+      });
+    }
+
+    // Call PayBeta API for providers
+    const response = await payBetaAuth.makeRequest('GET', '/v2/gaming/providers');
+    
+    logger.info(`📡 [${requestId}] PayBeta providers response:`, {
+      requestId,
+      status: response.status,
+      message: response.message,
+      providerCount: response.data?.length || 0
+    });
+
+    if (response.status === 'successful' && response.data) {
+      // Process providers and add default images for those without logos
+      const processedProviders = response.data.map(provider => ({
+        id: provider.slug || provider.name?.toLowerCase(),
+        name: provider.name,
+        displayName: provider.name,
+        slug: provider.slug,
+        category: provider.category || 'gaming',
+        logo: provider.logo || null, // Will be handled on frontend with default image
+        hasLogo: !!provider.logo
+      }));
+
+      logger.info(`✅ [${requestId}] Betting providers fetched successfully`, {
+        requestId,
+        providerCount: processedProviders.length,
+        processingTime: `${Date.now() - startTime}ms`
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Betting providers fetched successfully',
+        data: {
+          providers: processedProviders,
+          total: processedProviders.length,
+          requestId
+        }
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'PROVIDERS_FETCH_FAILED',
+        message: response.message || 'Failed to fetch betting providers',
+        requestId
+      });
+    }
+
+  } catch (error) {
+    logger.error(`💀 [${requestId}] Betting providers fetch error:`, {
+      requestId,
+      userId: req.user?.id,
+      error: error.message,
+      stack: error.stack,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+    // Handle different error types
+    if (error.message.includes('API key not configured') || 
+        error.message.includes('authentication failed')) {
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Betting providers service is not properly configured. Please contact support.',
+        requestId
+      });
+    }
+
+    if (error.message.includes('timeout')) {
+      return res.status(504).json({
+        success: false,
+        error: 'PROVIDERS_TIMEOUT',
+        message: 'Request timed out. Please try again.',
+        requestId
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: 'PROVIDERS_API_ERROR',
+      message: 'Failed to fetch betting providers. Please try again later.',
+      requestId
+    });
+  }
+});
+
+/**
+ * Validate betting customer using PayBeta API
+ * POST /betting/validate
+ */
+router.post('/validate', async (req, res) => {
+  const startTime = Date.now();
+  const requestId = `betting_validate_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  
+  try {
+    const { service, customerId } = req.body;
+    
+    logger.info(`🎰 Betting customer validation request:`, {
+      requestId,
+      userId: req.user?.id,
+      service,
+      customerId: customerId?.substring(0, 4) + '***'
+    });
+
+    // Validate required fields
+    if (!service) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service is required'
+      });
+    }
+    
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer ID is required'
+      });
+    }
+
+    // Check if PayBeta API key is configured
+    if (!process.env.PAYBETA_API_KEY) {
+      logger.error(`❌ [${requestId}] PayBeta API key not configured`);
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Betting validation service is not properly configured. Please contact support.',
+        requestId
+      });
+    }
+
+    // Call PayBeta API for customer validation
+    const response = await payBetaAuth.makeRequest('POST', '/v2/gaming/validate', {
+      service: service.toLowerCase(),
+      customerId: customerId.trim()
+    });
+    
+    logger.info(`📡 [${requestId}] PayBeta validation response:`, {
+      requestId,
+      status: response.status,
+      message: response.message,
+      hasData: !!response.data
+    });
+
+    if (response.status === 'successful') {
+      const customerData = response.data;
+      
+      const enhancedResponse = {
+        success: true,
+        message: 'Betting customer validation successful',
+        data: {
+          customerId: customerData.customerId,
+          customerName: customerData.customerName,
+          service: customerData.service,
+          minimumAmount: customerData.minimumAmount,
+          verified_at: new Date().toISOString(),
+          requestId
+        }
+      };
+      
+      logger.info(`✅ [${requestId}] Betting validation completed successfully`, {
+        requestId,
+        service,
+        customerId: customerId?.substring(0, 4) + '***',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+      
+      return res.status(200).json(enhancedResponse);
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_FAILED',
+        message: response.message || 'Customer validation failed',
+        details: {
+          service,
+          customerId: customerId?.substring(0, 4) + '***',
+          requestId
+        }
+      });
+    }
+
+  } catch (error) {
+    logger.error(`💀 [${requestId}] Betting validation error:`, {
+      requestId,
+      userId: req.user?.id,
+      error: error.message,
+      stack: error.stack,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+    // Handle different error types
+    if (error.message.includes('API key not configured') || 
+        error.message.includes('authentication failed')) {
+      return res.status(503).json({
+        success: false,
+        error: 'SERVICE_CONFIGURATION_ERROR',
+        message: 'Betting validation service is not properly configured. Please contact support.',
+        requestId
+      });
+    }
+
+    if (error.message.includes('Customer not found') || 
+        error.message.includes('Invalid customer')) {
+      return res.status(404).json({
+        success: false,
+        error: 'CUSTOMER_NOT_FOUND',
+        message: 'Customer not found or invalid customer details',
+        requestId
+      });
+    }
+
+    if (error.message.includes('timeout')) {
+      return res.status(504).json({
+        success: false,
+        error: 'VALIDATION_TIMEOUT',
+        message: 'Customer validation request timed out. Please try again.',
+        requestId
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: 'VALIDATION_API_ERROR',
+      message: 'Customer validation service is temporarily unavailable',
+      requestId
     });
   }
 });
