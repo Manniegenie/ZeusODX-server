@@ -482,10 +482,10 @@ async function checkDuplicateWithdrawal(userId, currency, amount, address) {
  */
 function getObiexFee(currency, network) {
   const upperCurrency = currency.toUpperCase();
-  const upperNetwork = network.toUpperCase();
+  const upperNetwork = network ? network.toUpperCase() : null;
   
   // Check if we have Obiex fee data for this currency/network combination
-  if (OBIEX_FEES[upperCurrency] && OBIEX_FEES[upperCurrency][upperNetwork]) {
+  if (upperNetwork && OBIEX_FEES[upperCurrency] && OBIEX_FEES[upperCurrency][upperNetwork]) {
     return OBIEX_FEES[upperCurrency][upperNetwork].fee;
   }
   
@@ -1046,9 +1046,7 @@ router.post('/crypto', async (req, res) => {
         currency,
         requestedAmount: amount,
         receiverAmount: receiverAmount,
-        yourFee: networkFee,
-        obiexFee: obiexFee,
-        totalFees: totalFees,
+        fee: totalFees, // Show total fees as the network fee
         feeUsd,
         totalAmount,
         estimatedConfirmationTime: `${WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency] || 1} blocks`,
@@ -1203,9 +1201,7 @@ router.post('/initiate', async (req, res) => {
       data: {
         amount,
         currency,
-        yourFee: networkFee,
-        obiexFee: obiexFee,
-        totalFees: totalFees,
+        fee: totalFees, // Show total fees as the network fee
         feeUsd,
         receiverAmount,
         totalAmount
