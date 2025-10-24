@@ -20,6 +20,8 @@ const obiexAxios = axios.create({
 obiexAxios.interceptors.request.use(attachObiexAuth);
 
 // Obiex API fees (in network currency)
+// NOTE: Our database stores network as "TRC20" but Obiex API expects "TRX"
+// This mapping handles the conversion: TRC20 (our DB) -> TRX (Obiex API)
 const OBIEX_FEES = {
   USDT: {
     'TRX': { min: 1, max: 15, fee: 2 }, // 2 TRX fee for USDT on TRX network
@@ -485,8 +487,10 @@ function getObiexFee(currency, network) {
   const upperNetwork = network ? network.toUpperCase() : null;
   
   // Map network names to Obiex fee keys
+  // IMPORTANT: Our database uses "TRC20" but Obiex API expects "TRX"
+  // This mapping ensures we send the correct network identifier to Obiex
   const networkMapping = {
-    'TRC20': 'TRX',
+    'TRC20': 'TRX',  // Our DB network -> Obiex API network
     'TRON': 'TRX',
     'BSC': 'BSC',
     'BEP20': 'BSC',
@@ -579,8 +583,8 @@ async function getWithdrawalFee(currency, network = null) {
     // Get Obiex fee for this currency/network combination
     const obiexFee = getObiexFee(currency, network);
     
-    // Calculate total fee: our network fee + Obiex fee
-    // Note: Obiex fee is already in the withdrawal currency (USDT), so we add it directly
+    // Both networkFee and obiexFee are in the native token of the network
+    // We need to convert both to USD first, then to withdrawal currency
     const totalFee = networkFee + obiexFee;
     
     logger.info('Fee calculation with Obiex fees', {
@@ -597,10 +601,10 @@ async function getWithdrawalFee(currency, network = null) {
         network: feeDoc.network
       },
       breakdown: {
-        step1: `Database network fee: ${networkFee} USDT`,
-        step2: `Obiex fee: ${obiexFee} TRX`,
-        step3: `Total fee before conversion: ${totalFee} TRX`,
-        step4: `This will be converted to USDT based on TRX price`
+        step1: `Database network fee: ${networkFee} (native token)`,
+        step2: `Obiex fee: ${obiexFee} (native token)`,
+        step3: `Total fee in native token: ${totalFee}`,
+        step4: `This will be converted to USD first, then to withdrawal currency`
       }
     });
 
@@ -624,7 +628,7 @@ async function getWithdrawalFee(currency, network = null) {
         feeUsd: feeUsd
       });
     } else {
-      // Different currencies - convert network fee to withdrawal currency equivalent
+      // Different currencies - convert total fee (in native token) to USD, then to withdrawal currency
       const prices = await getOriginalPricesWithCache([networkCurrency, withdrawalCurrency]);
       const networkPrice = prices[networkCurrency] || 0;
       const withdrawalPrice = prices[withdrawalCurrency] || 0;
@@ -633,19 +637,24 @@ async function getWithdrawalFee(currency, network = null) {
         throw new Error(`Unable to get prices for fee conversion: ${networkCurrency} = ${networkPrice}, ${withdrawalCurrency} = ${withdrawalPrice}`);
       }
 
-      // Convert total fee to USD, then to withdrawal currency equivalent
+      // Convert total fee (in native token) to USD first, then to withdrawal currency
       const feeValueUsd = totalFee * networkPrice;
       feeInWithdrawalCurrency = feeValueUsd / withdrawalPrice;
       feeUsd = feeValueUsd;
 
       logger.info('Converted cross-currency fee with Obiex', {
-        originalFee: `${networkFee} ${networkCurrency}`,
+        ourNetworkFee: `${networkFee} ${networkCurrency}`,
         obiexFee: `${obiexFee} ${networkCurrency}`,
-        totalFee: `${totalFee} ${networkCurrency}`,
+        totalFeeInNativeToken: `${totalFee} ${networkCurrency}`,
         convertedFee: `${feeInWithdrawalCurrency} ${withdrawalCurrency}`,
         feeUsd: `${feeUsd}`,
         networkPrice: `${networkPrice}`,
-        withdrawalPrice: `${withdrawalPrice}`
+        withdrawalPrice: `${withdrawalPrice}`,
+        conversionSteps: {
+          step1: `Total fee in native token: ${totalFee} ${networkCurrency}`,
+          step2: `Convert to USD: ${totalFee} × ${networkPrice} = ${feeValueUsd} USD`,
+          step3: `Convert to withdrawal currency: ${feeValueUsd} ÷ ${withdrawalPrice} = ${feeInWithdrawalCurrency} ${withdrawalCurrency}`
+        }
       });
     }
 
@@ -653,9 +662,10 @@ async function getWithdrawalFee(currency, network = null) {
       success: true,
       networkFee: parseFloat(feeInWithdrawalCurrency.toFixed(WITHDRAWAL_CONFIG.AMOUNT_PRECISION)),
       feeUsd: parseFloat(feeUsd.toFixed(2)),
-      originalNetworkFee: networkFee,
-      obiexFee: obiexFee,
-      totalFee: totalFee,
+      originalNetworkFee: networkFee, // Our fee in native token
+      obiexFee: obiexFee, // Obiex fee in native token
+      totalFee: totalFee, // Total fee in native token
+      totalFeeInWithdrawalCurrency: feeInWithdrawalCurrency, // Total fee converted to withdrawal currency
       networkCurrency,
       networkName: feeDoc.networkName
     };
@@ -712,6 +722,7 @@ async function initiateObiexWithdrawal(withdrawalData) {
     let mappedNetwork = originalNetwork;
     
     // Force TRX network for Obiex API when dealing with Tron-based networks
+    // IMPORTANT: Our database stores "TRC20" but Obiex API expects "TRX"
     // This ensures that both TRC20 and TRX requests use TRX network for Obiex API
     if (originalNetwork === 'TRC20' || originalNetwork === 'TRX') {
       mappedNetwork = 'TRX';
@@ -973,17 +984,17 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
-    const { networkFee, feeUsd, obiexFee } = feeInfo;
+    const { networkFee, feeUsd, obiexFee, originalNetworkFee, totalFeeInWithdrawalCurrency } = feeInfo;
     const totalAmount = amount;
     
-    // Calculate total fees (your fee + Obiex fee)
-    const totalFees = networkFee + obiexFee;
+    // networkFee now represents the total fee in withdrawal currency (our fee + Obiex fee converted)
+    const totalFees = networkFee;
     
-    // Receiver gets: amount - total fees (your fee + Obiex fee)
+    // Receiver gets: amount - total fees
     const receiverAmount = amount - totalFees;
     
-    // Calculate the amount to send to Obiex (user amount minus our fee, but Obiex will deduct their fee)
-    const obiexAmount = amount - networkFee;
+    // Calculate the amount to send to Obiex (user amount minus our fee in native token, but Obiex will deduct their fee)
+    const obiexAmount = amount - originalNetworkFee;
 
     // Validate that receiver will get a positive amount after fee deduction
     if (receiverAmount <= 0) {
@@ -993,9 +1004,9 @@ router.post('/crypto', async (req, res) => {
         message: `Withdrawal amount too low. Total fees (${totalFees} ${currency}) exceed requested amount (${amount} ${currency}).`,
         details: {
           requestedAmount: amount,
-          yourFee: networkFee,
-          obiexFee: obiexFee,
-          totalFees: totalFees,
+          yourFee: originalNetworkFee, // Our fee in native token
+          obiexFee: obiexFee, // Obiex fee in native token
+          totalFees: totalFees, // Total fee in withdrawal currency
           wouldReceive: receiverAmount,
           currency: currency
         }
@@ -1019,7 +1030,7 @@ router.post('/crypto', async (req, res) => {
           requiredAmount: totalAmount,
           withdrawalAmount: amount,
           receiverAmount: receiverAmount,
-          fee: networkFee,
+          fee: totalFees, // Total fee in withdrawal currency
           currency: currency
         }
       });
@@ -1031,9 +1042,9 @@ router.post('/crypto', async (req, res) => {
       amount,
       totalAmount,
       address: address.substring(0, 10) + '...',
-      yourFee: networkFee,
-      obiexFee: obiexFee,
-      totalFees: totalFees,
+      yourFee: originalNetworkFee, // Our fee in native token
+      obiexFee: obiexFee, // Obiex fee in native token
+      totalFees: totalFees, // Total fee in withdrawal currency
       receiverAmount: receiverAmount,
       obiexAmount: obiexAmount,
       security_status: '2FA + PIN + Balance validated'
@@ -1073,7 +1084,7 @@ router.post('/crypto', async (req, res) => {
       address,
       network,
       memo,
-      fee: networkFee,
+      fee: totalFees, // Total fee in withdrawal currency
       obiexTransactionId: obiexResult.data.transactionId,
       obiexReference: obiexResult.data.reference,
       narration,
@@ -1264,28 +1275,31 @@ router.post('/initiate', async (req, res) => {
       });
     }
 
-    const { networkFee, feeUsd, obiexFee } = feeInfo;
+    const { networkFee, feeUsd, obiexFee, originalNetworkFee, totalFeeInWithdrawalCurrency } = feeInfo;
     const totalAmount = amount;
     
-    // Calculate total fees (your fee + Obiex fee)
-    const totalFees = networkFee + obiexFee;
+    // networkFee now represents the total fee in withdrawal currency (our fee + Obiex fee converted)
+    const totalFees = networkFee;
     
-    // Receiver gets: amount - total fees (your fee + Obiex fee)
+    // Receiver gets: amount - total fees
     const receiverAmount = amount - totalFees;
     
     logger.info('Fee calculation endpoint response', {
       currency,
       network,
       amount,
-      networkFee,
-      obiexFee,
+      networkFee, // Total fee in withdrawal currency
+      originalNetworkFee, // Our fee in native token
+      obiexFee, // Obiex fee in native token
       totalFees,
       receiverAmount,
       feeUsd,
       feeInfo: {
-        networkFee: feeInfo.networkFee,
+        networkFee: feeInfo.networkFee, // Total fee in withdrawal currency
+        originalNetworkFee: feeInfo.originalNetworkFee, // Our fee in native token
+        obiexFee: feeInfo.obiexFee, // Obiex fee in native token
+        totalFeeInWithdrawalCurrency: feeInfo.totalFeeInWithdrawalCurrency, // Total fee converted
         feeUsd: feeInfo.feeUsd,
-        obiexFee: feeInfo.obiexFee,
         totalFee: feeInfo.totalFee
       }
     });
