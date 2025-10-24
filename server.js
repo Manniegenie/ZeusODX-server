@@ -320,6 +320,7 @@ app.use("/verifybill", authenticateToken, VerifybillRoutes);
 app.use("/electricity", authenticateToken, ElectricityRoutes);
 app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
+app.use("/verifycabletv", authenticateToken, CableTVRoutes);
 app.use("/dashboard", authenticateToken, dashboardRoutes);
 app.use("/swap", authenticateToken, swapRoutes);
 app.use("/ngnz-swap", authenticateToken, ngnzSwapRoutes);
