@@ -733,6 +733,14 @@ router.get('/providers', async (req, res) => {
     });
 
     if (response.status === 'successful' && response.data) {
+      // Debug: Log the raw PayBeta response
+      logger.info(`🔍 [${requestId}] Raw PayBeta response:`, {
+        requestId,
+        rawData: response.data,
+        rawDataLength: response.data.length,
+        rawDataTypes: response.data.map(p => ({ name: p.name, slug: p.slug, hasLogo: !!p.logo }))
+      });
+
       // Process providers and add default images for those without logos
       const processedProviders = response.data.map(provider => ({
         id: provider.slug || provider.name?.toLowerCase(),
@@ -744,9 +752,42 @@ router.get('/providers', async (req, res) => {
         hasLogo: !!provider.logo
       }));
 
+      // Debug: Check for duplicate IDs and remove them
+      const providerIds = processedProviders.map(p => p.id);
+      const uniqueIds = [...new Set(providerIds)];
+      const duplicateIds = providerIds.filter((id, index) => providerIds.indexOf(id) !== index);
+      
+      if (duplicateIds.length > 0) {
+        logger.warn(`⚠️ [${requestId}] Duplicate provider IDs found:`, {
+          requestId,
+          duplicateIds,
+          totalProcessed: processedProviders.length,
+          uniqueCount: uniqueIds.length
+        });
+      }
+
+      // Remove duplicates by keeping only the first occurrence of each ID
+      const uniqueProviders = processedProviders.filter((provider, index, self) => 
+        index === self.findIndex(p => p.id === provider.id)
+      );
+
+      logger.info(`🔍 [${requestId}] After deduplication:`, {
+        requestId,
+        originalCount: processedProviders.length,
+        uniqueCount: uniqueProviders.length,
+        removedDuplicates: processedProviders.length - uniqueProviders.length
+      });
+
+      // Debug: Log processed providers
+      logger.info(`🔍 [${requestId}] Processed providers:`, {
+        requestId,
+        processedCount: uniqueProviders.length,
+        processedProviders: uniqueProviders.map(p => ({ id: p.id, name: p.name, slug: p.slug }))
+      });
+
       logger.info(`✅ [${requestId}] Betting providers fetched successfully`, {
         requestId,
-        providerCount: processedProviders.length,
+        providerCount: uniqueProviders.length,
         processingTime: `${Date.now() - startTime}ms`
       });
 
@@ -754,8 +795,8 @@ router.get('/providers', async (req, res) => {
         success: true,
         message: 'Betting providers fetched successfully',
         data: {
-          providers: processedProviders,
-          total: processedProviders.length,
+          providers: uniqueProviders,
+          total: uniqueProviders.length,
           requestId
         }
       });
