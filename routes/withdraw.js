@@ -562,6 +562,16 @@ async function getWithdrawalFee(currency, network = null) {
       }
     });
     
+    // Check if the database fee is too high
+    if (networkFee > 2) {
+      logger.warn('High network fee detected', {
+        currency: currency.toUpperCase(),
+        network: network?.toUpperCase(),
+        networkFee: networkFee,
+        expectedRange: '0.5-1.5 USDT'
+      });
+    }
+    
     if (!networkFee || networkFee < 0) {
       throw new Error(`Invalid fee configuration for ${currency.toUpperCase()}`);
     }
@@ -585,6 +595,12 @@ async function getWithdrawalFee(currency, network = null) {
         networkName: feeDoc.networkName,
         currency: feeDoc.currency,
         network: feeDoc.network
+      },
+      breakdown: {
+        step1: `Database network fee: ${networkFee} USDT`,
+        step2: `Obiex fee: ${obiexFee} TRX`,
+        step3: `Total fee before conversion: ${totalFee} TRX`,
+        step4: `This will be converted to USDT based on TRX price`
       }
     });
 
