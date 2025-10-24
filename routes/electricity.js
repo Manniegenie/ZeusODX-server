@@ -540,7 +540,17 @@ async function callPayBetaElectricityAPI({ service, meterNumber, meterType, amou
       amount: payload.amount,
       customerName: payload.customerName,
       customerAddress: payload.customerAddress,
-      reference: payload.reference
+      reference: payload.reference,
+      referenceLength: payload.reference.length,
+      allFieldsPresent: {
+        service: !!payload.service,
+        meterNumber: !!payload.meterNumber,
+        meterType: !!payload.meterType,
+        amount: !!payload.amount,
+        customerName: !!payload.customerName,
+        customerAddress: !!payload.customerAddress,
+        reference: !!payload.reference
+      }
     });
 
     logger.info('Making PayBeta electricity purchase request:', {
@@ -738,8 +748,22 @@ router.post('/purchase', async (req, res) => {
     // Step 5: Generate unique IDs
     const timestamp = Date.now();
     const randomSuffix = Math.random().toString(36).substring(2, 8);
-    const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
+    // Create shorter reference for PayBeta (max 40 characters)
+    const shortUserId = userId.substring(0, 8); // Take first 8 chars of userId
+    const shortTimestamp = timestamp.toString().slice(-8); // Take last 8 digits of timestamp
+    const finalRequestId = `elec_${shortUserId}_${shortTimestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
+    
+    // Ensure reference is within PayBeta's 40 character limit
+    const validatedReference = finalRequestId.length <= 40 ? finalRequestId : `elec_${randomSuffix}_${Date.now().toString().slice(-6)}`;
+    
+    logger.info('Generated reference for PayBeta:', {
+      finalRequestId,
+      validatedReference,
+      referenceLength: validatedReference.length,
+      maxAllowed: 40,
+      isWithinLimit: validatedReference.length <= 40
+    });
 
     // Step 6: REDUNDANT BALANCE CHECK (in case balance changed between cache and now)
     // Re-fetch latest balance from database for final confirmation
@@ -816,7 +840,7 @@ router.post('/purchase', async (req, res) => {
         amount: amount,
         customerName: payBetaCustomerName,
         customerAddress: payBetaCustomerAddress,
-        reference: finalRequestId,
+        reference: validatedReference,
         userId: userId
       });
     } catch (apiError) {
