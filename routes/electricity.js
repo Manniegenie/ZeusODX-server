@@ -571,6 +571,16 @@ async function callPayBetaElectricityAPI({ service, meterNumber, meterType, amou
       reference: response.data?.reference
     });
 
+    // Debug: Log all available fields in PayBeta response
+    logger.info(`🔍 PayBeta Electricity API response fields:`, {
+      availableFields: Object.keys(response.data || {}),
+      fullResponse: response.data,
+      hasToken: !!(response.data?.token),
+      hasUnit: !!(response.data?.unit),
+      hasChargedAmount: !!(response.data?.chargedAmount),
+      hasBiller: !!(response.data?.biller)
+    });
+
     if (response.status !== 'successful') {
       throw new Error(`PayBeta Electricity API error: ${response.message || 'Unknown error'}`);
     }
@@ -965,6 +975,20 @@ router.post('/purchase', async (req, res) => {
       status: finalTransaction?.status,
       orderId: finalTransaction?.orderId,
       balanceCompleted: finalTransaction?.balanceCompleted
+    });
+
+    // Debug: Log what token and other fields were stored
+    logger.info(`🔍 Token and fields stored in database:`, {
+      token: ebillsResponse.data.token,
+      units: ebillsResponse.data.unit,
+      chargedAmount: ebillsResponse.data.chargedAmount,
+      biller: ebillsResponse.data.biller,
+      commission: ebillsResponse.data.commission,
+      bonusToken: ebillsResponse.data.bonusToken,
+      customerId: ebillsResponse.data.customerId,
+      transactionDate: ebillsResponse.data.transactionDate,
+      metaDataToken: finalTransaction?.metaData?.token,
+      metaDataUnits: finalTransaction?.metaData?.units
     });
 
     // Step 11: Return response - maintaining PayBeta format for compatibility
