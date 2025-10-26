@@ -943,22 +943,22 @@ router.post('/purchase', async (req, res) => {
       balanceCompleted: true, // Always true since we deduct immediately
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: ebillsResponse.data.biller,
+        service_name: service_id,
         customer_name: customerName,
         customer_address: customerAddress,
-        token: ebillsResponse.data.token,
-        units: ebillsResponse.data.unit,
-        amount_charged: ebillsResponse.data.chargedAmount,
+        token: ebillsResponse.data.transactionId,
+        units: `${amount} NGN`,
+        amount_charged: amount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
         paybeta_status: 'successful',
         paybeta_transaction_id: ebillsResponse.data.transactionId,
         paybeta_reference: ebillsResponse.data.reference,
-        paybeta_commission: ebillsResponse.data.commission,
-        paybeta_bonus_token: ebillsResponse.data.bonusToken,
-        paybeta_customer_id: ebillsResponse.data.customerId,
-        paybeta_transaction_date: ebillsResponse.data.transactionDate
+        paybeta_commission: null,
+        paybeta_bonus_token: null,
+        paybeta_customer_id: customer_id,
+        paybeta_transaction_date: new Date().toISOString()
       }
     };
 
@@ -999,19 +999,19 @@ router.post('/purchase', async (req, res) => {
         order_id: ebillsResponse.data.transactionId,
         status: 'completed',
         product_name: 'Electricity',
-        service_name: ebillsResponse.data.biller,
+        service_name: service_id,
         customer_name: customerName,
         customer_address: customerAddress,
-        token: ebillsResponse.data.token,
-        units: ebillsResponse.data.unit,
-        amount_charged: ebillsResponse.data.chargedAmount,
+        token: ebillsResponse.data.transactionId,
+        units: `${amount} NGN`,
+        amount_charged: amount,
         transactionId: ebillsResponse.data.transactionId,
         reference: ebillsResponse.data.reference,
         // Additional PayBeta fields for utility receipt
-        bonusToken: ebillsResponse.data.bonusToken,
-        commission: ebillsResponse.data.commission,
-        transactionDate: ebillsResponse.data.transactionDate,
-        customerId: ebillsResponse.data.customerId
+        bonusToken: null,
+        commission: null,
+        transactionDate: new Date().toISOString(),
+        customerId: customer_id
       }
     });
 
