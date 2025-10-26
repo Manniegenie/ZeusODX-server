@@ -576,7 +576,7 @@ router.post('/fund', async (req, res) => {
     }
     
     // Step 10: Update transaction with eBills response
-    const finalStatus = ebillsResponse.data.status === 'completed' ? 'completed' : 'failed';
+    const finalStatus = ebillsResponse.data.status === 'successful' ? 'completed' : 'failed';
     const updateData = {
       orderId: ebillsResponse.data.order_id.toString(),
       status: finalStatus,
@@ -622,7 +622,7 @@ router.post('/fund', async (req, res) => {
         message: 'Betting account funding completed successfully',
         data: {
           order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
+          status: finalStatus,
           service_name: ebillsResponse.data.service_name,
           customer_id: ebillsResponse.data.customer_id,
           customer_name: ebillsResponse.data.customer_name,
@@ -643,7 +643,7 @@ router.post('/fund', async (req, res) => {
         message: 'Betting account funding is being processed',
         data: {
           order_id: ebillsResponse.data.order_id,
-          status: ebillsResponse.data.status,
+          status: finalStatus,
           service_name: ebillsResponse.data.service_name,
           customer_id: ebillsResponse.data.customer_id,
           customer_name: ebillsResponse.data.customer_name,
