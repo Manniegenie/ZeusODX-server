@@ -755,6 +755,13 @@ router.post('/complete-history', async (req, res) => {
 
         // Add electricity-specific details (token, units, band)
         if (tx.billType === 'electricity' && tx.metaData) {
+          console.log('🔍 Electricity transaction metaData:', {
+            transactionId: tx._id,
+            billType: tx.billType,
+            metaData: tx.metaData,
+            hasToken: !!(tx.metaData.token),
+            tokenValue: tx.metaData.token
+          });
           if (tx.metaData.token) {
             details.token = tx.metaData.token;
           }
