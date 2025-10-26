@@ -779,7 +779,7 @@ router.post('/complete-history', async (req, res) => {
           }
         }
 
-        return {
+        const formattedTx = {
           id: tx._id,
           type: formatBillType(tx.billType),
           status: formatStatus(tx.status, 'bill'),
@@ -788,6 +788,18 @@ router.post('/complete-history', async (req, res) => {
           createdAt: createdAtISO,
           details
         };
+
+        // Debug: Log what's being sent to frontend for electricity transactions
+        if (tx.billType === 'electricity') {
+          console.log('🔍 Sending electricity transaction to frontend:', {
+            transactionId: formattedTx.id,
+            hasDetailsToken: !!(formattedTx.details?.token),
+            detailsToken: formattedTx.details?.token,
+            detailsKeys: Object.keys(formattedTx.details || {})
+          });
+        }
+
+        return formattedTx;
       });
       allTransactions = [...allTransactions, ...formattedBills];
       totalCount += billCount;
