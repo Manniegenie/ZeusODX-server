@@ -2,6 +2,51 @@ const express = require('express');
 const router = express.Router();
 const CryptoFeeMarkup = require('../models/cryptofee'); // Adjust path as needed
 
+// POST /crypto-fee - Create new crypto fee
+router.post('/crypto-fee', async (req, res) => {
+  try {
+    const { currency, network, networkName, networkFee } = req.body;
+
+    if (!currency || !network || networkFee === undefined) {
+      return res.status(400).json({ message: 'currency, network, and networkFee are required.' });
+    }
+
+    if (typeof networkFee !== 'number' || networkFee < 0) {
+      return res.status(400).json({ message: 'networkFee must be a non-negative number.' });
+    }
+
+    // Check if the currency and network combination already exists
+    const existingFee = await CryptoFeeMarkup.findOne({
+      currency: currency.toUpperCase(),
+      network: network.toUpperCase()
+    });
+
+    if (existingFee) {
+      return res.status(409).json({ 
+        message: 'Crypto fee already exists for this currency and network combination.' 
+      });
+    }
+
+    // Create new crypto fee
+    const newFee = new CryptoFeeMarkup({
+      currency: currency.toUpperCase(),
+      network: network.toUpperCase(),
+      networkName: networkName ? networkName.trim() : '',
+      networkFee: networkFee
+    });
+
+    await newFee.save();
+
+    res.status(201).json({
+      message: 'Crypto fee created successfully.',
+      data: newFee,
+    });
+  } catch (error) {
+    console.error('Error creating crypto fee:', error);
+    res.status(500).json({ message: 'Server error creating crypto fee.' });
+  }
+});
+
 // PUT /crypto-fee - Update networkFee for a currency and network combination
 router.put('/crypto-fee', async (req, res) => {
   try {
@@ -112,6 +157,32 @@ router.get('/crypto-fee/:currency/:network', async (req, res) => {
   } catch (error) {
     console.error('Error fetching crypto fee:', error);
     res.status(500).json({ message: 'Server error fetching crypto fee.' });
+  }
+});
+
+// DELETE /crypto-fee/:currency/:network - Delete specific crypto fee by currency and network
+router.delete('/crypto-fee/:currency/:network', async (req, res) => {
+  try {
+    const { currency, network } = req.params;
+
+    const deletedFee = await CryptoFeeMarkup.findOneAndDelete({
+      currency: currency.toUpperCase(),
+      network: network.toUpperCase()
+    });
+
+    if (!deletedFee) {
+      return res.status(404).json({ 
+        message: 'Crypto fee not found for the specified currency and network.' 
+      });
+    }
+
+    res.status(200).json({
+      message: 'Crypto fee deleted successfully.',
+      data: deletedFee,
+    });
+  } catch (error) {
+    console.error('Error deleting crypto fee:', error);
+    res.status(500).json({ message: 'Server error deleting crypto fee.' });
   }
 });
 
