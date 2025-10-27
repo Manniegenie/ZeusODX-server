@@ -930,8 +930,30 @@ router.post('/validate', async (req, res) => {
     }
 
     // Call PayBeta API for customer validation
+    // Map service names to PayBeta expected format
+    const serviceMapping = {
+      'betway': 'BetWay',
+      'bet9ja': 'Bet9ja',
+      'betking': 'BetKing',
+      'bangbet': 'BangBet',
+      '1xbet': '1xBet',
+      'merrybet': 'MerryBet',
+      'betland': 'BetLand',
+      'naijabet': 'NaijaBet',
+      'nairabet': 'NairaBet',
+      'supabet': 'SupaBet',
+      'bet9ja_agent': 'Bet9ja Agent',
+      'cloudbet': 'CloudBet',
+      'livescore': 'LiveScore',
+      'hallabet': 'HallaBet',
+      'mlotto': 'MLotto',
+      'westernlotto': 'WesternLotto',
+      'greenlotto': 'GreenLotto',
+      'sportybet': 'SportyBet'
+    };
+    
     const payBetaPayload = {
-      service: service.toLowerCase(),
+      service: serviceMapping[service.toLowerCase()] || service,
       customerId: customerId.trim()
     };
     
