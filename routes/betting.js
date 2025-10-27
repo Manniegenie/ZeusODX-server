@@ -616,7 +616,7 @@ router.post('/fund', async (req, res) => {
     
 
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
-    if (ebillsStatus === 'completed') {
+    if (finalStatus === 'completed') {
       return res.status(200).json({
         success: true,
         message: 'Betting account funding completed successfully',

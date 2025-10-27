@@ -246,6 +246,7 @@ const EmailVerifyRoutes = require('./routes/EmailVerify')
 const KYCRoutes = require('./routes/KYC');
 const ForgotPinRoutes = require('./routes/forgotpasswordpin');
 const AccountnameRoutes = require('./routes/Accountname');
+const DebugRoutes = require('./routes/debug');
 const Pushnotification = require('./adminRoutes/pushnotification');
 const AdminKYCRoutes = require('./adminRoutes/kyc');
 const collectionRoutes = require('./routes/collections');
@@ -320,6 +321,7 @@ app.use("/verifybill", authenticateToken, VerifybillRoutes);
 app.use("/electricity", authenticateToken, ElectricityRoutes);
 app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
+app.use("/debug", DebugRoutes);
 app.use("/verifycabletv", authenticateToken, CableTVRoutes);
 app.use("/dashboard", authenticateToken, dashboardRoutes);
 app.use("/swap", authenticateToken, swapRoutes);
