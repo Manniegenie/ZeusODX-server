@@ -893,9 +893,10 @@ router.get('/test-paybeta', async (req, res) => {
   try {
     logger.info('🧪 Testing PayBeta API directly...');
     
+    // Test with the exact format from PayBeta docs
     const testPayload = {
       service: 'nairabet',
-      customerId: '12345678'
+      customerId: '20***96'  // Use the exact format from their docs
     };
     
     logger.info('🧪 Test payload:', testPayload);
@@ -1003,9 +1004,18 @@ router.post('/validate', async (req, res) => {
       payBetaServiceName = service.toLowerCase(); // Use exact service name
     }
     
+    // Try different customer ID formats that PayBeta might expect
+    let payBetaCustomerId = customerId.trim();
+    
+    // If the customer ID is too short, pad it or try a different format
+    if (payBetaCustomerId.length < 8) {
+      // Try padding with zeros
+      payBetaCustomerId = payBetaCustomerId.padStart(8, '0');
+    }
+    
     const payBetaPayload = {
       service: payBetaServiceName,
-      customerId: customerId.trim()
+      customerId: payBetaCustomerId
     };
     
     logger.info(`📡 [${requestId}] PayBeta API payload:`, {
