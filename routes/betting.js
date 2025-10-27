@@ -970,6 +970,7 @@ router.post('/validate', async (req, res) => {
       requestId,
       status: response.status,
       message: response.message,
+      fullResponse: response,
       hasData: !!response.data
     });
 
