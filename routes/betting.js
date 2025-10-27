@@ -1081,8 +1081,8 @@ router.post('/validate', async (req, res) => {
         error.message.includes('authentication failed')) {
       return res.status(503).json({
         success: false,
-        error: 'SERVICE_CONFIGURATION_ERROR',
-        message: 'Betting validation service is not properly configured. Please contact support.',
+        error: 'SERVICE_UNAVAILABLE',
+        message: 'Service Unavailable',
         requestId
       });
     }
@@ -1091,8 +1091,8 @@ router.post('/validate', async (req, res) => {
         error.message.includes('Invalid customer')) {
       return res.status(404).json({
         success: false,
-        error: 'CUSTOMER_NOT_FOUND',
-        message: 'Customer not found or invalid customer details',
+        error: 'SERVICE_UNAVAILABLE',
+        message: 'Service Unavailable',
         requestId
       });
     }
@@ -1100,16 +1100,16 @@ router.post('/validate', async (req, res) => {
     if (error.message.includes('timeout')) {
       return res.status(504).json({
         success: false,
-        error: 'VALIDATION_TIMEOUT',
-        message: 'Customer validation request timed out. Please try again.',
+        error: 'SERVICE_UNAVAILABLE',
+        message: 'Service Unavailable',
         requestId
       });
     }
 
     return res.status(500).json({
       success: false,
-      error: 'VALIDATION_API_ERROR',
-      message: 'Customer validation service is temporarily unavailable',
+      error: 'SERVICE_UNAVAILABLE',
+      message: 'Service Unavailable',
       requestId
     });
   }
