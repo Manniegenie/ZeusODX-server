@@ -931,8 +931,8 @@ router.post('/validate', async (req, res) => {
 
     // Call PayBeta API for customer validation
     const response = await payBetaAuth.makeRequest('POST', '/v2/gaming/validate', {
-      service_id: service.toLowerCase(),
-      customer_id: customerId.trim()
+      service: service.toLowerCase(),
+      customerId: customerId.trim()
     });
     
     logger.info(`📡 [${requestId}] PayBeta validation response:`, {
