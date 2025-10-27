@@ -886,6 +886,43 @@ router.get('/providers', async (req, res) => {
 });
 
 /**
+ * Test PayBeta API directly
+ * GET /betting/test-paybeta
+ */
+router.get('/test-paybeta', async (req, res) => {
+  try {
+    logger.info('🧪 Testing PayBeta API directly...');
+    
+    const testPayload = {
+      service: 'nairabet',
+      customerId: '12345678'
+    };
+    
+    logger.info('🧪 Test payload:', testPayload);
+    
+    const response = await payBetaAuth.makeRequest('POST', '/v2/gaming/validate', testPayload);
+    
+    logger.info('🧪 PayBeta test response:', response);
+    
+    res.json({
+      success: true,
+      message: 'PayBeta test successful',
+      data: response
+    });
+    
+  } catch (error) {
+    logger.error('🧪 PayBeta test failed:', error);
+    
+    res.status(500).json({
+      success: false,
+      message: 'PayBeta test failed',
+      error: error.message,
+      details: error
+    });
+  }
+});
+
+/**
  * Validate betting customer using PayBeta API
  * POST /betting/validate
  */
@@ -952,6 +989,10 @@ router.post('/validate', async (req, res) => {
       'sportybet': 'sportybet'
     };
     
+    // Try with nairabet first since it's in PayBeta docs
+    // If the service is betway, use nairabet as a test
+    const testService = service.toLowerCase() === 'betway' ? 'nairabet' : (serviceMapping[service.toLowerCase()] || service);
+    
     const payBetaPayload = {
       service: serviceMapping[service.toLowerCase()] || service,
       customerId: customerId.trim()
@@ -961,7 +1002,19 @@ router.post('/validate', async (req, res) => {
       requestId,
       payload: payBetaPayload,
       service: service,
-      customerId: customerId?.substring(0, 4) + '***'
+      customerId: customerId?.substring(0, 4) + '***',
+      fullPayload: payBetaPayload
+    });
+    
+    // Add comprehensive debugging
+    logger.info(`🔍 [${requestId}] PayBeta API Debug - Before Request:`, {
+      requestId,
+      endpoint: '/v2/gaming/validate',
+      method: 'POST',
+      payload: payBetaPayload,
+      hasApiKey: !!process.env.PAYBETA_API_KEY,
+      apiKeyLength: process.env.PAYBETA_API_KEY?.length,
+      baseURL: process.env.PAYBETA_API_URL || 'https://api.paybeta.ng'
     });
     
     const response = await payBetaAuth.makeRequest('POST', '/v2/gaming/validate', payBetaPayload);

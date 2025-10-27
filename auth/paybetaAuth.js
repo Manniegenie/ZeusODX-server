@@ -59,9 +59,16 @@ class PayBetaAuth {
         requestConfig.data = data;
       }
 
-      logger.debug(`Making ${method.toUpperCase()} request to PayBeta: ${endpoint}`, {
+      logger.info(`🔍 PayBeta API Request Debug:`, {
+        method: method.toUpperCase(),
+        endpoint,
+        fullURL: `${this.baseURL}${endpoint}`,
         hasApiKey: !!this.apiKey,
-        dataKeys: data ? Object.keys(data) : []
+        apiKeyLength: this.apiKey?.length,
+        dataKeys: data ? Object.keys(data) : [],
+        data: data,
+        headers: requestConfig.headers,
+        timeout: requestConfig.timeout
       });
       
       const response = await axios(requestConfig);
@@ -73,13 +80,24 @@ class PayBetaAuth {
       return response.data;
 
     } catch (error) {
-      logger.error(`PayBeta API request failed:`, {
+      logger.error(`💥 PayBeta API request failed - COMPREHENSIVE DEBUG:`, {
         method: method.toUpperCase(),
         endpoint,
+        fullURL: `${this.baseURL}${endpoint}`,
         status: error.response?.status,
         statusText: error.response?.statusText,
         message: error.response?.data?.message || error.message,
-        data: error.response?.data
+        data: error.response?.data,
+        headers: error.response?.headers,
+        requestData: data,
+        errorCode: error.code,
+        errorMessage: error.message,
+        stack: error.stack,
+        axiosError: {
+          isAxiosError: error.isAxiosError,
+          config: error.config,
+          response: error.response
+        }
       });
       
       if (error.response?.status === 401) {
