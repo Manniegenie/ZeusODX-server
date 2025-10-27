@@ -930,26 +930,26 @@ router.post('/validate', async (req, res) => {
     }
 
     // Call PayBeta API for customer validation
-    // Map service names to PayBeta expected format
+    // Map service names to PayBeta expected format (based on their documentation)
     const serviceMapping = {
-      'betway': 'BetWay',
-      'bet9ja': 'Bet9ja',
-      'betking': 'BetKing',
-      'bangbet': 'BangBet',
-      '1xbet': '1xBet',
-      'merrybet': 'MerryBet',
-      'betland': 'BetLand',
-      'naijabet': 'NaijaBet',
-      'nairabet': 'NairaBet',
-      'supabet': 'SupaBet',
-      'bet9ja_agent': 'Bet9ja Agent',
-      'cloudbet': 'CloudBet',
-      'livescore': 'LiveScore',
-      'hallabet': 'HallaBet',
-      'mlotto': 'MLotto',
-      'westernlotto': 'WesternLotto',
-      'greenlotto': 'GreenLotto',
-      'sportybet': 'SportyBet'
+      'betway': 'betway',  // Try lowercase first
+      'bet9ja': 'bet9ja',
+      'betking': 'betking',
+      'bangbet': 'bangbet',
+      '1xbet': '1xbet',
+      'merrybet': 'merrybet',
+      'betland': 'betland',
+      'naijabet': 'naijabet',
+      'nairabet': 'nairabet',  // This is in their docs
+      'supabet': 'supabet',
+      'bet9ja_agent': 'bet9ja_agent',
+      'cloudbet': 'cloudbet',
+      'livescore': 'livescore',
+      'hallabet': 'hallabet',
+      'mlotto': 'mlotto',
+      'westernlotto': 'westernlotto',
+      'greenlotto': 'greenlotto',
+      'sportybet': 'sportybet'
     };
     
     const payBetaPayload = {
