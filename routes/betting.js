@@ -993,8 +993,18 @@ router.post('/validate', async (req, res) => {
     // If the service is betway, use nairabet as a test
     const testService = service.toLowerCase() === 'betway' ? 'nairabet' : (serviceMapping[service.toLowerCase()] || service);
     
+    // Try different service name formats that PayBeta might expect
+    let payBetaServiceName;
+    
+    // For betway, try nairabet first since it's in PayBeta docs
+    if (service.toLowerCase() === 'betway') {
+      payBetaServiceName = 'nairabet'; // Use nairabet as fallback for betway
+    } else {
+      payBetaServiceName = service.toLowerCase(); // Use exact service name
+    }
+    
     const payBetaPayload = {
-      service: serviceMapping[service.toLowerCase()] || service,
+      service: payBetaServiceName,
       customerId: customerId.trim()
     };
     
