@@ -1,3 +1,6 @@
+secure/
+firebase-service-account.json
+*.secret.json
 .env
 node_modules/
 secrets/fireblocks_secret.key
