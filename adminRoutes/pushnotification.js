@@ -105,6 +105,32 @@ router.post('/send-all', async (req, res) => {
   }
 });
 
+// GET /notification/stats - Get notification statistics
+router.get('/stats', async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    const usersWithTokens = await User.countDocuments({
+      $or: [
+        { fcmToken: { $ne: null } },
+        { expoPushToken: { $ne: null } }
+      ]
+    });
+    const fcmTokens = await User.countDocuments({ fcmToken: { $ne: null } });
+    const expoTokens = await User.countDocuments({ expoPushToken: { $ne: null } });
+
+    res.json({
+      totalUsers,
+      usersWithTokens,
+      fcmTokens,
+      expoTokens,
+      lastSent: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Error fetching notification stats:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
 // POST /notification/register-fcm-token
 router.post('/register-fcm-token', async (req, res) => {
   try {
