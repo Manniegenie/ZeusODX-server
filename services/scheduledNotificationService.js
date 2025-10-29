@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const CryptoPrice = require('../models/CryptoPrice');
-const { sendPushNotification } = require('./pushNotificationService');
+const { sendPushNotification } = require('./notificationService');
 const User = require('../models/user');
 const logger = require('./logger');
 
