@@ -11,6 +11,8 @@ const cron = require('node-cron');
 
 // Import crypto price job
 const { updateCryptoPrices } = require('./services/cryptoPriceJob');
+// Import scheduled notification service
+const scheduledNotificationService = require('./services/scheduledNotificationService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -256,6 +258,7 @@ const usermanagementRoutes = require("./adminRoutes/usermanagement");
 const analyticsRoutes = require("./adminRoutes/analytics");
 const resendOtpRoutes = require("./routes/resendOtp");
 const Admin2FARoutes = require("./adminRoutes/Admin2FA");
+const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotifications");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -289,6 +292,7 @@ app.use('/admingiftcard', authenticateAdminToken, requireAdmin, admingiftcardRou
 app.use('/notification', Pushnotification);
 // Admin notification management (requires auth)
 app.use('/admin/notification', authenticateAdminToken, requireAdmin, Pushnotification);
+app.use('/admin/scheduled-notifications', authenticateAdminToken, requireAdmin, scheduledNotificationRoutes);
 
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
@@ -385,6 +389,10 @@ const startServer = async () => {
       console.log('📦 Body parser limit: 50MB (for KYC image uploads)');
       console.log('⏰ Crypto price update job scheduled every 15 minutes');
       console.log('🔐 Admin authentication enabled with role-based access control');
+      
+      // Start scheduled notifications
+      scheduledNotificationService.start();
+      console.log('📱 Scheduled price notifications started (6am, 12pm, 6pm, 9pm)');
       
       // Run price update immediately on startup
       setTimeout(async () => {
