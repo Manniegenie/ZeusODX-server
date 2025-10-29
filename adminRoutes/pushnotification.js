@@ -101,6 +101,7 @@ router.post('/send-all', async (req, res) => {
 // POST /notification/register-fcm-token
 router.post('/register-fcm-token', async (req, res) => {
   try {
+    console.log('FCM registration request:', req.body);
     const { fcmToken, deviceId, userId } = req.body;
 
     if (!fcmToken) {
@@ -108,6 +109,7 @@ router.post('/register-fcm-token', async (req, res) => {
     }
 
     if (userId) {
+      console.log('Updating existing user:', userId);
       const user = await User.findById(userId);
       if (!user) return res.status(404).json({ error: 'User not found.' });
       user.fcmToken = fcmToken;
@@ -117,8 +119,12 @@ router.post('/register-fcm-token', async (req, res) => {
     }
 
     if (!deviceId) return res.status(400).json({ error: 'deviceId is required when userId is not provided.' });
+    
+    console.log('Looking for user with deviceId:', deviceId);
     let user = await User.findOne({ deviceId });
+    
     if (!user) {
+      console.log('Creating new user for deviceId:', deviceId);
       // Create a new user with required fields
       user = new User({ 
         deviceId, 
@@ -128,13 +134,17 @@ router.post('/register-fcm-token', async (req, res) => {
         isEmailVerified: false
       });
     } else {
+      console.log('Updating existing user for deviceId:', deviceId);
       user.fcmToken = fcmToken;
     }
+    
+    console.log('Saving user...');
     await user.save();
+    console.log('User saved successfully');
     return res.json({ message: 'FCM token registered for device.' });
   } catch (err) {
     console.error('Error registering FCM token:', err);
-    return res.status(500).json({ error: 'Internal server error.' });
+    return res.status(500).json({ error: 'Internal server error.', details: err.message });
   }
 });
 
