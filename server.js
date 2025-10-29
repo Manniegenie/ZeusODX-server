@@ -30,8 +30,38 @@ app.use(
 // Morgan Logging
 app.use(morgan("combined"));
 
-// Helmet Security
-app.use(helmet());
+// Enhanced Security Headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  }
+}));
+
+// Additional Security Headers
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
 
 // Raw Body Parser for Webhook Routes
 app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
@@ -43,15 +73,32 @@ app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Rate Limiters
+// Enhanced Rate Limiters
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
   message: { success: false, error: "Too many requests, please try again later" },
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use(apiLimiter);
+
+// Stricter rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per 15 minutes
+  message: { success: false, error: "Too many authentication attempts, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Admin endpoints rate limiting
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 50, // 50 requests per 15 minutes for admin
+  message: { success: false, error: "Too many admin requests, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const webhookLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -60,6 +107,94 @@ const webhookLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// Apply general rate limiting
+app.use(apiLimiter);
+
+// Input Sanitization Middleware
+const sanitizeInput = (req, res, next) => {
+  const sanitizeValue = (value) => {
+    if (typeof value === 'string') {
+      // Remove potential XSS attempts
+      return value
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/javascript:/gi, '')
+        .replace(/on\w+\s*=/gi, '')
+        .trim();
+    }
+    if (typeof value === 'object' && value !== null) {
+      const sanitized = {};
+      for (const key in value) {
+        sanitized[key] = sanitizeValue(value[key]);
+      }
+      return sanitized;
+    }
+    return value;
+  };
+
+  if (req.body) {
+    req.body = sanitizeValue(req.body);
+  }
+  if (req.query) {
+    req.query = sanitizeValue(req.query);
+  }
+  if (req.params) {
+    req.params = sanitizeValue(req.params);
+  }
+  
+  next();
+};
+
+// Apply input sanitization
+app.use(sanitizeInput);
+
+// Session Timeout Middleware
+const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+const sessionTimeout = (req, res, next) => {
+  if (req.user && req.user.lastActivity) {
+    const now = Date.now();
+    const lastActivity = req.user.lastActivity;
+    
+    if (now - lastActivity > SESSION_TIMEOUT) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Session expired. Please login again.' 
+      });
+    }
+  }
+  
+  // Update last activity
+  if (req.user) {
+    req.user.lastActivity = Date.now();
+  }
+  
+  next();
+};
+
+// Audit Logging Middleware
+const auditLogger = (req, res, next) => {
+  const originalSend = res.send;
+  
+  res.send = function(data) {
+    // Log admin actions
+    if (req.path.startsWith('/admin') && req.user) {
+      const logger = require('./utils/logger');
+      logger.info('Admin Action', {
+        adminId: req.user.id,
+        adminEmail: req.user.email,
+        action: req.method + ' ' + req.path,
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        timestamp: new Date().toISOString(),
+        statusCode: res.statusCode
+      });
+    }
+    
+    originalSend.call(this, data);
+  };
+  
+  next();
+};
 
 // Passport Init
 app.use(passport.initialize());
@@ -261,7 +396,7 @@ const Admin2FARoutes = require("./adminRoutes/Admin2FA");
 const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotifications");
 
 // Public Routes
-app.use("/signin", signinRoutes);
+app.use("/signin", authLimiter, signinRoutes);
 app.use("/signup", signupRoutes);
 app.use("/refresh-token", refreshtokenRoutes);
 app.use("/verify-otp", verifyotpRoutes);
@@ -269,7 +404,7 @@ app.use("/passwordpin", passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
 app.use("/naira", nairaAccountsRoutes);
 app.use("/accountname", AccountnameRoutes);
-app.use("/adminsignin", adminsigninRoutes);
+app.use("/adminsignin", authLimiter, adminsigninRoutes);
 app.use("/admin-2fa", Admin2FARoutes); // Admin 2FA setup routes (public)
 
 // Webhook Routes
@@ -291,8 +426,8 @@ app.use('/admingiftcard', authenticateAdminToken, requireAdmin, admingiftcardRou
 // Public notification registration for users
 app.use('/notification', Pushnotification);
 // Admin notification management (requires auth)
-app.use('/admin/notification', authenticateAdminToken, requireAdmin, Pushnotification);
-app.use('/admin/scheduled-notifications', authenticateAdminToken, requireAdmin, scheduledNotificationRoutes);
+app.use('/admin/notification', adminLimiter, sessionTimeout, auditLogger, authenticateAdminToken, requireAdmin, Pushnotification);
+app.use('/admin/scheduled-notifications', adminLimiter, sessionTimeout, auditLogger, authenticateAdminToken, requireAdmin, scheduledNotificationRoutes);
 
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
