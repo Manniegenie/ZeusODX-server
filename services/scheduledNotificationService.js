@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const CryptoPrice = require('../models/CryptoPrice');
 const { sendPushNotification } = require('./notificationService');
 const User = require('../models/user');
-const logger = require('./logger');
+const logger = require('../utils/logger');
 
 class ScheduledNotificationService {
   constructor() {

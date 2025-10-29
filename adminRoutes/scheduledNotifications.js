@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const scheduledNotificationService = require('../services/scheduledNotificationService');
-const logger = require('../services/logger');
+const logger = require('../utils/logger');
 
 // GET /scheduled-notifications/status - Get status of scheduled notifications
 router.get('/status', (req, res) => {
