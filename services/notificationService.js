@@ -2,9 +2,13 @@
 const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 const logger = require('../utils/logger');
+const { initFirebase } = require('./fcmAdmin');
 
-// Initialize Expo SDK
+// Initialize Expo SDK (kept for backward compatibility)
 const expo = new Expo();
+const admin = (() => {
+  try { return initFirebase(); } catch { return null; }
+})();
 
 /**
  * Notification templates for different transaction types
@@ -123,40 +127,35 @@ const NOTIFICATION_TEMPLATES = {
  */
 async function getUserPushToken(userId) {
   try {
-    const user = await User.findById(userId).select('expoPushToken deviceId email username');
+    const user = await User.findById(userId).select('expoPushToken fcmToken deviceId email username');
     
     if (!user) {
       logger.warn('User not found for push notification', { userId });
       return { success: false, message: 'User not found' };
     }
 
-    if (!user.expoPushToken) {
-      logger.info('User has no push token registered', { 
-        userId, 
-        email: user.email,
-        username: user.username 
-      });
-      return { success: false, message: 'No push token registered' };
+    // Prefer FCM token when available
+    if (user.fcmToken) {
+      return {
+        success: true,
+        fcmToken: user.fcmToken,
+        deviceId: user.deviceId,
+        userInfo: { email: user.email, username: user.username }
+      };
     }
 
-    // Validate that the token is a valid Expo push token
-    if (!Expo.isExpoPushToken(user.expoPushToken)) {
-      logger.warn('Invalid Expo push token format', { 
-        userId, 
-        token: user.expoPushToken.substring(0, 20) + '...' 
-      });
-      return { success: false, message: 'Invalid push token format' };
+    // Fallback to Expo token
+    if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
+      return {
+        success: true,
+        expoPushToken: user.expoPushToken,
+        deviceId: user.deviceId,
+        userInfo: { email: user.email, username: user.username }
+      };
     }
 
-    return {
-      success: true,
-      expoPushToken: user.expoPushToken,
-      deviceId: user.deviceId,
-      userInfo: {
-        email: user.email,
-        username: user.username
-      }
-    };
+    logger.info('User has no valid push token registered', { userId, email: user.email, username: user.username });
+    return { success: false, message: 'No push token registered' };
   } catch (error) {
     logger.error('Error fetching user push token', { userId, error: error.message });
     return { success: false, message: 'Error fetching push token' };
@@ -189,71 +188,52 @@ async function sendPushNotification(userId, notificationData) {
       };
     }
 
-    const { expoPushToken, deviceId, userInfo } = tokenResult;
+    const { fcmToken, expoPushToken, deviceId, userInfo } = tokenResult;
 
-    // Construct the notification message
-    const message = {
-      to: expoPushToken,
-      sound: sound,
-      title: title,
-      body: body,
-      data: {
-        ...data,
-        userId: userId,
-        timestamp: new Date().toISOString()
-      },
-      priority: priority,
-      channelId: 'transactions', // Android notification channel
-    };
+    // Prefer FCM
+    if (admin && fcmToken) {
+      const message = {
+        token: fcmToken,
+        notification: { title, body },
+        data: Object.fromEntries(Object.entries({ ...data, userId, timestamp: new Date().toISOString() }).map(([k,v]) => [String(k), String(v)])),
+        android: { priority: priority === 'high' ? 'high' : 'normal', notification: { channelId: 'transactions' } },
+        apns: { payload: { aps: { sound } } }
+      };
 
-    logger.info('Sending push notification', {
-      userId,
-      deviceId,
-      title,
-      body: body.substring(0, 50) + (body.length > 50 ? '...' : ''),
-      email: userInfo.email
-    });
+      logger.info('Sending FCM notification', { userId, deviceId, title, email: userInfo?.email });
+      const response = await admin.messaging().send(message);
+      logger.info('FCM notification sent', { userId, responseId: response });
+      return { success: true, id: response, via: 'fcm' };
+    }
 
-    // Send the notification
-    const chunks = expo.chunkPushNotifications([message]);
-    const tickets = [];
+    // Fallback to Expo if available
+    if (expoPushToken) {
+      const message = {
+        to: expoPushToken,
+        sound,
+        title,
+        body,
+        data: { ...data, userId, timestamp: new Date().toISOString() },
+        priority,
+        channelId: 'transactions',
+      };
 
-    for (const chunk of chunks) {
-      try {
-        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-        tickets.push(...ticketChunk);
-      } catch (error) {
-        logger.error('Error sending push notification chunk', {
-          userId,
-          error: error.message
-        });
+      const chunks = expo.chunkPushNotifications([message]);
+      const tickets = [];
+      for (const chunk of chunks) {
+        try {
+          const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+          tickets.push(...ticketChunk);
+        } catch (error) {
+          logger.error('Error sending Expo push chunk', { userId, error: error.message });
+        }
       }
+      const hasErrors = tickets.some(t => t.status === 'error');
+      if (hasErrors) logger.warn('Expo push had errors', { userId, tickets });
+      return { success: true, tickets, hasErrors, via: 'expo' };
     }
 
-    // Check for errors in tickets
-    const hasErrors = tickets.some(ticket => ticket.status === 'error');
-    
-    if (hasErrors) {
-      const errorTickets = tickets.filter(ticket => ticket.status === 'error');
-      logger.warn('Push notification sent with errors', {
-        userId,
-        errors: errorTickets.map(t => t.message)
-      });
-    }
-
-    logger.info('Push notification sent successfully', {
-      userId,
-      deviceId,
-      ticketCount: tickets.length,
-      hasErrors
-    });
-
-    return {
-      success: true,
-      tickets,
-      hasErrors,
-      message: 'Notification sent successfully'
-    };
+    return { success: false, message: 'No valid push token' };
 
   } catch (error) {
     logger.error('Failed to send push notification', {

@@ -3,7 +3,7 @@ const router = express.Router();
 const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 
-// POST /notification/register-token
+// POST /notification/register-token (Expo legacy)
 router.post('/register-token', async (req, res) => {
   try {
     const { expoPushToken, deviceId, userId } = req.body;
@@ -76,6 +76,36 @@ router.post('/send-all', async (req, res) => {
     return res.json({ message: 'Notifications sent to all users.', tickets });
   } catch (err) {
     console.error('Error sending notifications:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// POST /notification/register-fcm-token
+router.post('/register-fcm-token', async (req, res) => {
+  try {
+    const { fcmToken, deviceId, userId } = req.body;
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'fcmToken is required.' });
+    }
+
+    if (userId) {
+      const user = await User.findById(userId);
+      if (!user) return res.status(404).json({ error: 'User not found.' });
+      user.fcmToken = fcmToken;
+      if (deviceId) user.deviceId = deviceId;
+      await user.save();
+      return res.json({ message: 'FCM token registered for user.' });
+    }
+
+    if (!deviceId) return res.status(400).json({ error: 'deviceId is required when userId is not provided.' });
+    let user = await User.findOne({ deviceId });
+    if (!user) user = new User({ deviceId, fcmToken });
+    else user.fcmToken = fcmToken;
+    await user.save();
+    return res.json({ message: 'FCM token registered for device.' });
+  } catch (err) {
+    console.error('Error registering FCM token:', err);
     return res.status(500).json({ error: 'Internal server error.' });
   }
 });
