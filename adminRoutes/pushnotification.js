@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
+const notificationService = require('../services/notificationService');
 
 // Test Firebase connection
 router.get('/test-firebase', async (req, res) => {
@@ -149,3 +150,38 @@ router.post('/register-fcm-token', async (req, res) => {
 });
 
 module.exports = router;
+ 
+// POST /notification/send-fcm (test) - send to userId or deviceId
+router.post('/send-fcm', async (req, res) => {
+  try {
+    const { userId, deviceId, title = 'Test Notification', body = 'Hello from ZeusODX', data = {} } = req.body;
+
+    if (!userId && !deviceId) {
+      return res.status(400).json({ error: 'Provide userId or deviceId' });
+    }
+
+    let targetUserId = userId;
+    if (!targetUserId && deviceId) {
+      const user = await User.findOne({ deviceId }).select('_id');
+      if (!user) return res.status(404).json({ error: 'User with deviceId not found' });
+      targetUserId = user._id.toString();
+    }
+
+    const result = await notificationService.sendCustomNotification(
+      targetUserId,
+      title,
+      body,
+      data,
+      { sound: 'default', priority: 'high' }
+    );
+
+    if (!result.success) {
+      return res.status(500).json({ error: 'Failed to send', details: result.message || result.error });
+    }
+
+    return res.json({ success: true, via: result.via || 'fcm/expo', result });
+  } catch (err) {
+    console.error('Error sending FCM test notification:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
