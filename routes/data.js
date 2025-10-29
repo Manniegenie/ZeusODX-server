@@ -7,6 +7,7 @@ const { vtuAuth } = require('../auth/billauth');
 const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -721,6 +722,36 @@ router.post('/purchase', async (req, res) => {
 
     // Step 11: Return response - ONLY SUCCESS WHEN PAYBETA IS SUCCESSFUL
     if (payBetaStatus === 'successful') {
+      
+      // ✅ SEND SUCCESS NOTIFICATION
+      try {
+        await sendAirtimePurchaseNotification(
+          userId,
+          amount,
+          service_id,
+          phone,
+          'completed',
+          {
+            orderId: payBetaResponse.data.order_id.toString(),
+            requestId: finalRequestId,
+            serviceName: payBetaResponse.data.biller,
+            currency: 'NGNZ',
+            productType: 'DATA'
+          }
+        );
+        
+        logger.info('Data purchase notification sent (completed)', { 
+          userId, 
+          orderId: payBetaResponse.data.order_id 
+        });
+      } catch (notificationError) {
+        logger.error('Failed to send data purchase notification', {
+          userId,
+          orderId: payBetaResponse.data.order_id,
+          error: notificationError.message
+        });
+      }
+      
       return res.status(200).json({
         success: true,
         message: 'Data purchase completed successfully',

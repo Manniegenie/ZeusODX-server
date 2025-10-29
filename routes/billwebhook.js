@@ -22,6 +22,7 @@ const {
   updateUserPortfolioBalance,
   isTokenSupported 
 } = require('../services/portfolio');
+const { sendPaymentNotification, sendAirtimePurchaseNotification } = require('../services/notificationService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -284,6 +285,57 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           // Add error to transaction using schema structure
           addProcessingError(transaction, `Balance completion failed: ${balanceError.message}`, 'webhook_processing');
         }
+        
+        // ✅ SEND COMPLETED NOTIFICATION
+        try {
+          const billType = transaction.billType || 'BILL';
+          const productType = billType.toUpperCase();
+          
+          if (productType === 'AIRTIME' || productType === 'DATA') {
+            await sendAirtimePurchaseNotification(
+              transaction.userId,
+              transaction.amountNGNB || transaction.amountNaira || amount,
+              transaction.metaData?.service_name || transaction.metaData?.service_id || 'UNKNOWN',
+              transaction.metaData?.phone || transaction.metaData?.customerId || 'N/A',
+              'completed',
+              {
+                orderId: webhookData.order_id.toString(),
+                requestId: webhookData.request_id,
+                serviceName: transaction.metaData?.service_name,
+                currency: currency,
+                productType: productType,
+                webhookStatus: 'completed'
+              }
+            );
+          } else {
+            await sendPaymentNotification(
+              transaction.userId,
+              transaction.amountNGNB || transaction.amountNaira || amount,
+              currency,
+              `${productType} payment completed`,
+              {
+                orderId: webhookData.order_id.toString(),
+                requestId: webhookData.request_id,
+                serviceName: transaction.metaData?.service_name,
+                billType: productType,
+                webhookStatus: 'completed'
+              }
+            );
+          }
+          
+          logger.info('Webhook completed notification sent', { 
+            userId: transaction.userId, 
+            orderId: webhookData.order_id,
+            billType: productType
+          });
+        } catch (notificationError) {
+          logger.error('Failed to send webhook completed notification', {
+            userId: transaction.userId,
+            orderId: webhookData.order_id,
+            error: notificationError.message
+          });
+        }
+        
         break;
         
       case 'refunded':
@@ -331,6 +383,59 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           // Add error to transaction using schema structure
           addProcessingError(transaction, `Balance release failed: ${balanceError.message}`, 'webhook_processing');
         }
+        
+        // ✅ SEND REFUNDED NOTIFICATION
+        try {
+          const billType = transaction.billType || 'BILL';
+          const productType = billType.toUpperCase();
+          
+          if (productType === 'AIRTIME' || productType === 'DATA') {
+            await sendAirtimePurchaseNotification(
+              transaction.userId,
+              transaction.amountNGNB || transaction.amountNaira || amount,
+              transaction.metaData?.service_name || transaction.metaData?.service_id || 'UNKNOWN',
+              transaction.metaData?.phone || transaction.metaData?.customerId || 'N/A',
+              'failed',
+              {
+                orderId: webhookData.order_id.toString(),
+                requestId: webhookData.request_id,
+                serviceName: transaction.metaData?.service_name,
+                currency: currency,
+                productType: productType,
+                webhookStatus: 'refunded',
+                reason: 'Transaction refunded by provider'
+              }
+            );
+          } else {
+            await sendPaymentNotification(
+              transaction.userId,
+              transaction.amountNGNB || transaction.amountNaira || amount,
+              currency,
+              `${productType} payment refunded`,
+              {
+                orderId: webhookData.order_id.toString(),
+                requestId: webhookData.request_id,
+                serviceName: transaction.metaData?.service_name,
+                billType: productType,
+                webhookStatus: 'refunded',
+                reason: 'Transaction refunded by provider'
+              }
+            );
+          }
+          
+          logger.info('Webhook refunded notification sent', { 
+            userId: transaction.userId, 
+            orderId: webhookData.order_id,
+            billType: productType
+          });
+        } catch (notificationError) {
+          logger.error('Failed to send webhook refunded notification', {
+            userId: transaction.userId,
+            orderId: webhookData.order_id,
+            error: notificationError.message
+          });
+        }
+        
         break;
         
       case 'failed':
@@ -376,6 +481,61 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
             addProcessingError(transaction, `Balance release failed for failed transaction: ${balanceError.message}`, 'webhook_processing');
           }
         }
+        
+        // ✅ SEND FAILED NOTIFICATION
+        try {
+          const billType = transaction.billType || 'BILL';
+          const productType = billType.toUpperCase();
+          const currency = transaction.paymentCurrency || 'NGNZ';
+          const amount = transaction.amountNGNB || transaction.amountCrypto || transaction.amountNaira;
+          
+          if (productType === 'AIRTIME' || productType === 'DATA') {
+            await sendAirtimePurchaseNotification(
+              transaction.userId,
+              amount,
+              transaction.metaData?.service_name || transaction.metaData?.service_id || 'UNKNOWN',
+              transaction.metaData?.phone || transaction.metaData?.customerId || 'N/A',
+              'failed',
+              {
+                orderId: webhookData.order_id.toString(),
+                requestId: webhookData.request_id,
+                serviceName: transaction.metaData?.service_name,
+                currency: currency,
+                productType: productType,
+                webhookStatus: 'failed',
+                reason: 'Transaction failed'
+              }
+            );
+          } else {
+            await sendPaymentNotification(
+              transaction.userId,
+              amount,
+              currency,
+              `${productType} payment failed`,
+              {
+                orderId: webhookData.order_id.toString(),
+                requestId: webhookData.request_id,
+                serviceName: transaction.metaData?.service_name,
+                billType: productType,
+                webhookStatus: 'failed',
+                reason: 'Transaction failed'
+              }
+            );
+          }
+          
+          logger.info('Webhook failed notification sent', { 
+            userId: transaction.userId, 
+            orderId: webhookData.order_id,
+            billType: productType
+          });
+        } catch (notificationError) {
+          logger.error('Failed to send webhook failed notification', {
+            userId: transaction.userId,
+            orderId: webhookData.order_id,
+            error: notificationError.message
+          });
+        }
+        
         break;
         
       default:

@@ -7,6 +7,7 @@ const { vtuAuth } = require('../auth/billauth');
 const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { sendPaymentNotification } = require('../services/notificationService');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 
@@ -990,6 +991,37 @@ router.post('/purchase', async (req, res) => {
       metaDataToken: finalTransaction?.metaData?.token,
       metaDataUnits: finalTransaction?.metaData?.units
     });
+
+    // ✅ SEND SUCCESS NOTIFICATION
+    try {
+      await sendPaymentNotification(
+        userId,
+        amount,
+        'NGNZ',
+        `Electricity payment for ${customer_id} (${service_id})`,
+        {
+          orderId: ebillsResponse.data.transactionId.toString(),
+          requestId: validatedReference,
+          serviceName: ebillsResponse.data.biller,
+          customerId: customer_id,
+          meterType: variation_id,
+          token: ebillsResponse.data.token,
+          units: ebillsResponse.data.unit,
+          productType: 'ELECTRICITY'
+        }
+      );
+      
+      logger.info('Electricity purchase notification sent (completed)', { 
+        userId, 
+        orderId: ebillsResponse.data.transactionId 
+      });
+    } catch (notificationError) {
+      logger.error('Failed to send electricity purchase notification', {
+        userId,
+        orderId: ebillsResponse.data.transactionId,
+        error: notificationError.message
+      });
+    }
 
     // Step 11: Return response - maintaining PayBeta format for compatibility
     return res.status(200).json({
