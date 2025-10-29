@@ -3,6 +3,24 @@ const router = express.Router();
 const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 
+// Test Firebase connection
+router.get('/test-firebase', async (req, res) => {
+  try {
+    const fcmAdmin = require('../services/fcmAdmin');
+    res.json({ 
+      success: true, 
+      message: 'Firebase Admin SDK initialized successfully',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Firebase test error:', error);
+    res.status(500).json({ 
+      error: 'Firebase initialization failed', 
+      details: error.message 
+    });
+  }
+});
+
 // POST /notification/register-token (Expo legacy)
 router.post('/register-token', async (req, res) => {
   try {
