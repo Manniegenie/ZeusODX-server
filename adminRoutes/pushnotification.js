@@ -49,7 +49,13 @@ router.post('/register-token', async (req, res) => {
     // Fallback: Find or create a user based on deviceId (for unauthenticated users)
     let user = await User.findOne({ deviceId });
     if (!user) {
-      user = new User({ deviceId, expoPushToken });
+      user = new User({ 
+        deviceId, 
+        expoPushToken,
+        email: `device_${deviceId}@temp.com`, // Required field
+        password: 'temp_password', // Required for some operations
+        isEmailVerified: false
+      });
     } else {
       user.expoPushToken = expoPushToken;
     }

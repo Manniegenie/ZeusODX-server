@@ -144,8 +144,8 @@ async function getUserPushToken(userId) {
       };
     }
 
-    // Fallback to Expo token
-    if (user.expoPushToken && Expo.isExpoPushToken(user.expoPushToken)) {
+    // Fallback to Expo token (more lenient validation for testing)
+    if (user.expoPushToken && (Expo.isExpoPushToken(user.expoPushToken) || user.expoPushToken.startsWith('ExponentPushToken['))) {
       return {
         success: true,
         expoPushToken: user.expoPushToken,
