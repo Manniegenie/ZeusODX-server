@@ -118,8 +118,18 @@ router.post('/register-fcm-token', async (req, res) => {
 
     if (!deviceId) return res.status(400).json({ error: 'deviceId is required when userId is not provided.' });
     let user = await User.findOne({ deviceId });
-    if (!user) user = new User({ deviceId, fcmToken });
-    else user.fcmToken = fcmToken;
+    if (!user) {
+      // Create a new user with required fields
+      user = new User({ 
+        deviceId, 
+        fcmToken,
+        email: `device_${deviceId}@temp.com`, // Required field
+        password: 'temp_password', // Required for some operations
+        isEmailVerified: false
+      });
+    } else {
+      user.fcmToken = fcmToken;
+    }
     await user.save();
     return res.json({ message: 'FCM token registered for device.' });
   } catch (err) {
