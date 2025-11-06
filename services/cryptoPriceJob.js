@@ -62,7 +62,7 @@ const SUPPORTED_TOKENS = {
   USDT: { binanceSymbol: null,       isStablecoin: true  }, // treat as 1.0
   USDC: { binanceSymbol: 'USDCUSDT', isStablecoin: true  },
   BNB: { binanceSymbol: 'BNBUSDT',   isStablecoin: false },
-  MATIC:{ binanceSymbol: 'POLUSDT',isStablecoin: false },
+  MATIC:{ binanceSymbol: 'MATICUSDT',isStablecoin: false }, // MATICUSDT still exists on Binance
   TRX: { binanceSymbol: 'TRXUSDT', isStablecoin: false },
 };
 
@@ -115,45 +115,133 @@ async function fetchBinancePrices() {
   for (const base of BINANCE_HOSTS) {
     const url = `${base}/api/v3/ticker/price`;
     try {
+      logger.debug(`Attempting to fetch from Binance host: ${base}`);
       const response = await axios.get(url, {
         timeout: CONFIG.REQUEST_TIMEOUT,
         headers: { 'Accept': 'application/json', 'User-Agent': 'CryptoPriceJob/1.0' }
       });
 
-      if (!Array.isArray(response.data)) throw new Error('Invalid response format from Binance API');
+      // Check if response is successful
+      if (response.status !== 200) {
+        throw new Error(`Binance API returned status ${response.status}: ${response.statusText}`);
+      }
+
+      if (!response.data) {
+        throw new Error('Empty response from Binance API');
+      }
+
+      if (!Array.isArray(response.data)) {
+        logger.error('Invalid response format from Binance API', { 
+          type: typeof response.data,
+          status: response.status,
+          data: response.data?.slice ? response.data.slice(0, 100) : response.data
+        });
+        throw new Error('Invalid response format from Binance API');
+      }
 
       const usedWeight = response.headers?.['x-mbx-used-weight-1m'];
       if (usedWeight) logger.debug('Binance used-weight-1m', { usedWeight, host: base });
 
       const bySymbol = new Map(response.data.map(t => [t.symbol, t.price]));
       const prices = {};
+      const missingSymbols = [];
 
       for (const [token, info] of Object.entries(SUPPORTED_TOKENS)) {
-        if (token === 'USDT') { prices[token] = 1.0; continue; }
-        const raw = bySymbol.get(info.binanceSymbol);
-        if (!raw) { logger.warn(`No price for ${token} (${info.binanceSymbol}) on ${base}`); continue; }
+        if (token === 'USDT') { 
+          prices[token] = 1.0; 
+          continue; 
+        }
+        
+        if (!info.binanceSymbol) {
+          logger.warn(`No binanceSymbol configured for ${token}`);
+          continue;
+        }
+        
+        // Try primary symbol first
+        let raw = bySymbol.get(info.binanceSymbol);
+        
+        // Fallback for MATIC: try POLUSDT if MATICUSDT not found
+        if (!raw && token === 'MATIC' && info.binanceSymbol === 'MATICUSDT') {
+          logger.debug('MATICUSDT not found, trying POLUSDT as fallback');
+          raw = bySymbol.get('POLUSDT');
+          if (raw) {
+            logger.info('Using POLUSDT for MATIC price');
+          }
+        }
+        
+        if (!raw) { 
+          missingSymbols.push(`${token} (${info.binanceSymbol})`);
+          logger.warn(`No price for ${token} (${info.binanceSymbol}) on ${base}`); 
+          continue; 
+        }
+        
         const p = Number(raw);
-        if (!Number.isFinite(p) || p <= 0) { logger.warn(`Invalid price for ${token}`, { raw }); continue; }
+        if (!Number.isFinite(p) || p <= 0) { 
+          logger.warn(`Invalid price for ${token}`, { raw, binanceSymbol: info.binanceSymbol }); 
+          continue; 
+        }
         prices[token] = p;
       }
 
-      logger.info(`Fetched ${Object.keys(prices).length} prices from ${base}`);
+      if (missingSymbols.length > 0) {
+        logger.warn(`Missing symbols on ${base}:`, { missingSymbols });
+      }
+
+      const fetchedCount = Object.keys(prices).length;
+      if (fetchedCount === 0) {
+        throw new Error('No prices extracted from Binance response');
+      }
+
+      logger.info(`Fetched ${fetchedCount} prices from ${base}`, { 
+        tokens: Object.keys(prices),
+        missingSymbols: missingSymbols.length > 0 ? missingSymbols : undefined
+      });
+      
       // annotate originating source (binance vs binance_vision)
       const source = base.includes('binance.vision') ? 'binance_vision' : 'binance';
       return { prices, source };
     } catch (e) {
       lastErr = e;
-      logger.warn('Binance host failed, trying next', {
+      
+      // Determine error type
+      const isNetworkError = e.code === 'ECONNREFUSED' || e.code === 'ETIMEDOUT' || e.code === 'ENOTFOUND' || e.code === 'ECONNRESET';
+      const isHttpError = e.response && e.response.status;
+      const isGeoBlocked = e.response?.status === 451;
+      
+      const errorDetails = {
         hostTried: base,
         status: e.response?.status,
-        msg: e.message
-      });
+        statusText: e.response?.statusText,
+        msg: e.message,
+        code: e.code,
+        errorType: isNetworkError ? 'network' : isHttpError ? 'http' : 'unknown',
+        responseData: e.response?.data ? (typeof e.response.data === 'string' ? e.response.data.substring(0, 200) : JSON.stringify(e.response.data).substring(0, 200)) : undefined
+      };
+      
+      if (isNetworkError) {
+        logger.warn('Binance host network error, trying next', errorDetails);
+      } else if (isGeoBlocked) {
+        logger.warn('Binance host geo-blocked (451), trying next immediately', errorDetails);
+      } else {
+        logger.warn('Binance host failed, trying next', errorDetails);
+      }
+      
       // 451 is geo/legal block; just try next immediately
-      if (e.response?.status !== 451) {
+      // Network errors also try next immediately
+      if (!isGeoBlocked && !isNetworkError) {
         await new Promise(r => setTimeout(r, 500));
       }
     }
   }
+  
+  // Log detailed error information before throwing
+  logger.error('All Binance hosts failed', {
+    lastError: lastErr?.message,
+    lastStatus: lastErr?.response?.status,
+    lastHost: BINANCE_HOSTS[BINANCE_HOSTS.length - 1],
+    allHosts: BINANCE_HOSTS
+  });
+  
   throw lastErr || new Error('All Binance hosts failed');
 }
 
@@ -197,7 +285,22 @@ async function updateCryptoPrices() {
 
     let storedCount = 0;
     try {
+      logger.info('Storing prices to database', { 
+        pricesCount: Object.keys(prices).length,
+        source,
+        prices: Object.keys(prices),
+        lockId
+      });
+      
       storedCount = await PriceChange.storePrices(prices, source); // source is 'binance' or 'binance_vision'
+      
+      logger.info('Price storage completed', { 
+        storedCount,
+        requestedCount: Object.keys(prices).length,
+        source,
+        lockId
+      });
+      
       if (storedCount > 0) {
         const endTime = new Date();
         const duration = endTime - startTime;
@@ -210,14 +313,22 @@ async function updateCryptoPrices() {
         });
         return { success: true, pricesStored: storedCount, duration, symbols: Object.keys(prices), source };
       } else {
-        logger.warn('No prices were stored', { lockId });
+        logger.warn('No prices were stored', { 
+          lockId,
+          pricesCount: Object.keys(prices).length,
+          source,
+          prices: Object.keys(prices)
+        });
         return { success: false, error: 'No prices were stored' };
       }
     } catch (storageError) {
       logger.error('Failed to store prices using PriceChange model', {
         error: storageError.message,
+        stack: storageError.stack,
         pricesCount: Object.keys(prices).length,
-        lockId
+        source,
+        lockId,
+        prices: Object.keys(prices)
       });
       return { success: false, error: `Storage failed: ${storageError.message}` };
     }
