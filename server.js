@@ -19,11 +19,32 @@ const PORT = process.env.PORT || 3000;
 
 // CORS Setup
 app.set("trust proxy", 1);
+
+// Allowed origins for CORS
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  "http://localhost:5173", // Local development
+  "https://www.zeusodx.online", // Admin frontend production
+  "https://zeusodx.online", // Admin frontend (without www)
+  "https://zeusadminxyz.online", // Server domain
+].filter(Boolean); // Remove undefined values
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.warn(`🚫 CORS blocked origin: ${origin}`);
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true, // Allow cookies/auth headers
   })
 );
 
@@ -32,6 +53,143 @@ app.use(morgan("combined"));
 
 // Helmet Security
 app.use(helmet());
+
+// Security: Track failed requests for rate limiting
+const failedRequestTracker = new Map(); // IP -> { count, firstAttempt, lastAttempt }
+
+// Security: Block access to sensitive files and directories
+app.use((req, res, next) => {
+  const path = req.path.toLowerCase();
+  const originalPath = req.path;
+  const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
+  
+  // Attack pattern detection (Cisco ASA exploits, etc.)
+  const attackPatterns = [
+    /\+csco[le]\+/i,  // Cisco ASA exploits (+CSCOL+, +CSCOE+)
+    /\+cscol\+/i,     // Cisco ASA exploit (+CSCOL+)
+    /\+cscoe\+/i,     // Cisco ASA exploit (+CSCOE+)
+    /\+cscot\+/i,     // Cisco ASA exploit (+CSCOT+)
+    /\+cscou\+/i,     // Cisco ASA exploit (+CSCOU+)
+    /\.\./,           // Path traversal attempts
+    /%2e%2e/,         // URL-encoded path traversal
+    /\.\.%2f/,        // URL-encoded path traversal
+    /\/etc\/passwd/i, // System file access attempts
+    /\/proc\/self/i,  // System file access attempts
+    /\/boot\.ini/i,   // Windows system file
+    /\/win\.ini/i,    // Windows system file
+    /\/web\.config/i, // ASP.NET config
+    /\/phpmyadmin/i,  // phpMyAdmin access
+    /\/adminer/i,     // Adminer access
+    /\/wp-login/i,    // WordPress login
+    /\/xmlrpc\.php/i, // WordPress XML-RPC
+  ];
+  
+  // Check for attack patterns
+  const hasAttackPattern = attackPatterns.some(pattern => pattern.test(originalPath));
+  
+  // List of sensitive paths to block
+  const sensitivePaths = [
+    '/.git',
+    '/.env',
+    '/.env.local',
+    '/.env.production',
+    '/.env.development',
+    '/package.json',
+    '/package-lock.json',
+    '/yarn.lock',
+    '/composer.json',
+    '/composer.lock',
+    '/.htaccess',
+    '/.htpasswd',
+    '/web.config',
+    '/.ssh',
+    '/.docker',
+    '/docker-compose.yml',
+    '/.gitignore',
+    '/.gitattributes',
+    '/.git/config',
+    '/.git/HEAD',
+    '/.git/logs',
+    '/.git/objects',
+    '/.git/refs',
+    '/.git/index',
+    '/.git/hooks',
+    '/.git/info',
+    '/.git/description',
+    '/.npmrc',
+    '/.yarnrc',
+    '/.vscode',
+    '/.idea',
+    '/node_modules',
+    '/.DS_Store',
+    '/Thumbs.db',
+    '/backup',
+    '/backups',
+    '/config',
+    '/logs',
+    '/secure',
+    '/private',
+    '/admin/config',
+    '/wp-admin',
+    '/wp-config.php',
+    '/phpinfo.php',
+    '/.php',
+    '/server-status',
+    '/server-info',
+    // Cisco ASA exploit paths
+    '/+cscol+',
+    '/+cscoe+',
+    '/+cscot+',
+    '/+cscou+',
+  ];
+  
+  // Check if the path matches any sensitive path
+  const isSensitive = sensitivePaths.some(sensitivePath => 
+    path === sensitivePath || path.startsWith(sensitivePath + '/')
+  );
+  
+  // Also check for common file extensions that shouldn't be accessed
+  const sensitiveExtensions = ['.env', '.git', '.log', '.sql', '.bak', '.backup', '.old', '.tmp', '.swp', '.swo', '.jar'];
+  const hasSensitiveExtension = sensitiveExtensions.some(ext => path.endsWith(ext));
+  
+  if (isSensitive || hasSensitiveExtension || hasAttackPattern) {
+    // Track failed requests for rate limiting
+    const now = Date.now();
+    const tracker = failedRequestTracker.get(clientIP) || { count: 0, firstAttempt: now, lastAttempt: now };
+    tracker.count++;
+    tracker.lastAttempt = now;
+    failedRequestTracker.set(clientIP, tracker);
+    
+    // Log the attempt for security monitoring
+    const attackType = hasAttackPattern ? 'ATTACK_PATTERN' : isSensitive ? 'SENSITIVE_PATH' : 'SENSITIVE_EXTENSION';
+    console.warn(`🚫 [${attackType}] Blocked access attempt to: ${originalPath} from IP: ${clientIP} (Attempt #${tracker.count})`);
+    
+    // If too many failed attempts from same IP, return 429 (Too Many Requests)
+    if (tracker.count > 10) {
+      console.error(`⚠️  IP ${clientIP} has made ${tracker.count} blocked requests - potential attacker`);
+      return res.status(429).json({ 
+        success: false, 
+        error: 'Too Many Requests' 
+      });
+    }
+    
+    // Return 404 to not reveal that the path exists
+    return res.status(404).json({ 
+      success: false, 
+      error: 'Not Found' 
+    });
+  }
+  
+  // Clean up old tracker entries (older than 1 hour)
+  const oneHourAgo = Date.now() - (60 * 60 * 1000);
+  for (const [ip, tracker] of failedRequestTracker.entries()) {
+    if (tracker.lastAttempt < oneHourAgo) {
+      failedRequestTracker.delete(ip);
+    }
+  }
+  
+  next();
+});
 
 // Raw Body Parser for Webhook Routes
 app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
