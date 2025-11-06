@@ -439,7 +439,7 @@ app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 app.use("/deleteuser", authenticateAdminToken, requireSuperAdmin, deleteuserRoutes);
 app.use("/fund", authenticateAdminToken, requireSuperAdmin, FunduserRoutes);
 app.use("/delete-pin", authenticateAdminToken, requireSuperAdmin, deletepinRoutes);
-app.use("/admin", adminRegisterRoutes);
+app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
 
 // ADMIN LEVEL ROUTES (admin + super_admin)
 app.use("/set-fee", authenticateAdminToken, requireAdmin, SetfeeRoutes);
