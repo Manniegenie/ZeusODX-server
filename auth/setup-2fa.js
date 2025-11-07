@@ -112,9 +112,33 @@ router.get('/2fa-status', async (req, res) => {
 // Disable 2FA
 router.post('/disable-2fa', async (req, res) => {
   try {
+    const { token } = req.body;
+    
+    if (!token || typeof token !== 'string' || token.length !== 6) {
+      return res.status(400).json({ error: 'Valid 6-digit 2FA token is required to disable 2FA' });
+    }
+
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    if (!user.is2FAEnabled || !user.twoFASecret) {
+      return res.status(400).json({ error: '2FA is not enabled for this account' });
+    }
+
+    // Verify the 2FA token before disabling
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFASecret,
+      encoding: 'base32',
+      token,
+      window: 2, // Allow for clock drift
+    });
+
+    if (!verified) {
+      console.log('2FA verification failed for disable request:', user._id);
+      return res.status(401).json({ error: 'Invalid 2FA token. Please enter the correct code from your authenticator app.' });
+    }
+
+    // Disable 2FA after successful verification
     user.is2FAEnabled = false;
     user.is2FAVerified = false;
     user.twoFASecret = null;
@@ -122,7 +146,7 @@ router.post('/disable-2fa', async (req, res) => {
 
     console.log('2FA disabled for user:', user._id);
 
-    res.json({ message: '2FA disabled' });
+    res.json({ message: '2FA disabled successfully' });
   } catch (err) {
     console.error('Error disabling 2FA:', err);
     res.status(500).json({ error: 'Internal server error' });
