@@ -8,6 +8,7 @@ const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
+const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
 
 const router = express.Router();
@@ -617,6 +618,44 @@ router.post('/fund', async (req, res) => {
 
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
     if (finalStatus === 'completed') {
+      // ✅ Send transaction email
+      try {
+        if (user.email) {
+          await sendUtilityTransactionEmail(
+            user.email,
+            user.firstName || user.username || 'User',
+            {
+              utilityType: 'Betting Account Funding',
+              amount,
+              currency,
+              reference: ebillsResponse.data.order_id?.toString() || finalRequestId,
+              status: 'COMPLETED',
+              date: ebillsResponse.data.transaction_date || new Date(),
+              account: customer_id,
+              provider: ebillsResponse.data.service_name || service_id,
+              transactionId: ebillsResponse.data.order_id?.toString(),
+              additionalNote: ebillsResponse.data.customer_name ? `Customer: ${ebillsResponse.data.customer_name}` : ''
+            }
+          );
+
+          logger.info('Betting funding email sent', {
+            userId,
+            email: user.email,
+            orderId: ebillsResponse.data.order_id
+          });
+        } else {
+          logger.warn('Skipping betting funding email - no email on file', {
+            userId
+          });
+        }
+      } catch (emailError) {
+        logger.error('Failed to send betting funding email', {
+          userId,
+          email: user.email,
+          error: emailError.message
+        });
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Betting account funding completed successfully',

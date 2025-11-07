@@ -11,6 +11,7 @@ const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
+const { sendWithdrawalEmail } = require('../services/EmailService');
 
 // Configure Obiex axios instance
 const obiexAxios = axios.create({
@@ -1122,6 +1123,33 @@ router.post('/crypto', async (req, res) => {
       security_validations: 'All passed (2FA + PIN + Balance)',
       balance_update_method: 'internal_direct'
     });
+
+    // Send withdrawal email (non-blocking)
+    if (user.email) {
+      sendWithdrawalEmail(
+        user.email,
+        user.firstname || user.firstName || user.username || 'User',
+        amount,
+        currency,
+        obiexResult.data.reference || transaction._id.toString()
+      ).then(() => {
+        logger.info('Withdrawal email sent', {
+          userId,
+          email: user.email,
+          transactionId: transaction._id
+        });
+      }).catch((emailError) => {
+        logger.error('Failed to send withdrawal email', {
+          userId,
+          email: user.email,
+          error: emailError.message
+        });
+      });
+    } else {
+      logger.warn('Skipping withdrawal email - no email on file', {
+        userId
+      });
+    }
 
     res.status(200).json({
       success: true,

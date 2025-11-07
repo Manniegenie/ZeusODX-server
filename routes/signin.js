@@ -6,6 +6,7 @@ const router = express.Router();
 const User = require("../models/user");
 const config = require("./config");
 const logger = require("../utils/logger");
+const { sendLoginEmail } = require("../services/EmailService");
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
@@ -126,6 +127,42 @@ router.post(
       if (user.refreshTokens.length > 5) user.refreshTokens = user.refreshTokens.slice(-5);
 
       await user.save();
+
+      // Fire-and-forget login email (doesn't block response)
+      if (user.email) {
+        const deviceInfo = req.get('User-Agent') || 'Unknown device';
+        const clientIP = (req.headers['x-forwarded-for']?.split(',')[0]?.trim())
+          || req.ip
+          || req.connection?.remoteAddress
+          || 'Unknown IP';
+        const locationInfo = req.headers['x-app-location'] || clientIP;
+        const loginTime = new Date();
+
+        sendLoginEmail(
+          user.email,
+          user.firstname || user.username || 'User',
+          deviceInfo,
+          locationInfo,
+          loginTime
+        ).then(() => {
+          logger.info('Login notification email sent', {
+            userId: user._id,
+            email: user.email,
+            ip: clientIP
+          });
+        }).catch((emailError) => {
+          logger.error('Failed to send login notification email', {
+            userId: user._id,
+            email: user.email,
+            error: emailError.message
+          });
+        });
+      } else {
+        logger.warn('User has no email on record for login notification', {
+          userId: user._id,
+          phonenumber
+        });
+      }
 
       res.status(200).json({
         success: true,

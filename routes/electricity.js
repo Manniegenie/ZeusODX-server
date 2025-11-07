@@ -8,6 +8,7 @@ const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { sendPaymentNotification } = require('../services/notificationService');
+const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 
@@ -1023,7 +1024,46 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 11: Return response - maintaining PayBeta format for compatibility
+    // Step 11: Email receipt to user
+    try {
+      if (user.email) {
+        await sendUtilityTransactionEmail(
+          user.email,
+          user.firstName || user.username || 'User',
+          {
+            utilityType: 'Electricity Payment',
+            amount,
+            currency,
+            reference: ebillsResponse.data.transactionId?.toString() || validatedReference,
+            status: 'COMPLETED',
+            date: ebillsResponse.data.transactionDate || new Date(),
+            account: customer_id,
+            provider: ebillsResponse.data.biller || service_id,
+            transactionId: ebillsResponse.data.transactionId?.toString(),
+            additionalNote: ebillsResponse.data.token ? `Token: ${ebillsResponse.data.token}` : '',
+            recipientPhone: customer_id
+          }
+        );
+
+        logger.info('Electricity purchase email sent', {
+          userId,
+          email: user.email,
+          transactionId: ebillsResponse.data.transactionId
+        });
+      } else {
+        logger.warn('Skipping electricity purchase email - no email on file', {
+          userId
+        });
+      }
+    } catch (emailError) {
+      logger.error('Failed to send electricity purchase email', {
+        userId,
+        email: user.email,
+        error: emailError.message
+      });
+    }
+
+    // Step 12: Return response - maintaining PayBeta format for compatibility
     return res.status(200).json({
       code: 'success',
       message: 'Electricity purchase successful',

@@ -8,6 +8,7 @@ const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
+const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -749,6 +750,44 @@ router.post('/purchase', async (req, res) => {
           userId,
           orderId: payBetaResponse.data.order_id,
           error: notificationError.message
+        });
+      }
+
+      // ✅ Send transaction email
+      try {
+        if (user.email) {
+          await sendUtilityTransactionEmail(
+            user.email,
+            user.firstName || user.username || 'User',
+            {
+              utilityType: 'Data Purchase',
+              amount,
+              currency,
+              reference: payBetaResponse.data.order_id?.toString() || finalRequestId,
+              status: 'COMPLETED',
+              date: payBetaResponse.data.transactionDate || new Date(),
+              recipientPhone: phone,
+              provider: payBetaResponse.data.biller || service_id.toUpperCase(),
+              transactionId: payBetaResponse.data.order_id?.toString(),
+              account: phone
+            }
+          );
+
+          logger.info('Data purchase email sent', {
+            userId,
+            email: user.email,
+            orderId: payBetaResponse.data.order_id
+          });
+        } else {
+          logger.warn('Skipping data purchase email - no email on file', {
+            userId
+          });
+        }
+      } catch (emailError) {
+        logger.error('Failed to send data purchase email', {
+          userId,
+          email: user.email,
+          error: emailError.message
         });
       }
       

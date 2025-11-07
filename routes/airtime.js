@@ -11,6 +11,7 @@ const logger = require('../utils/logger');
 const { registerCache, clearUserCaches } = require('../utils/cacheManager');
 
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
+const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
 const router = express.Router();
 
@@ -786,6 +787,44 @@ router.post('/purchase', async (req, res) => {
           userId,
           orderId: payBetaResponse.data.order_id,
           error: notificationError.message
+        });
+      }
+
+      // ✅ Send transaction email
+      try {
+        if (user.email) {
+          await sendUtilityTransactionEmail(
+            user.email,
+            user.firstName || user.username || 'User',
+            {
+              utilityType: 'Airtime Purchase',
+              amount,
+              currency,
+              reference: payBetaResponse.data.order_id?.toString() || finalRequestId,
+              status: 'COMPLETED',
+              date: payBetaResponse.data.transactionDate || new Date(),
+              recipientPhone: phone,
+              provider: payBetaResponse.data.biller || service_id.toUpperCase(),
+              transactionId: payBetaResponse.data.order_id?.toString(),
+              account: phone
+            }
+          );
+
+          logger.info('Airtime purchase email sent', {
+            userId,
+            email: user.email,
+            orderId: payBetaResponse.data.order_id
+          });
+        } else {
+          logger.warn('Skipping airtime purchase email - no email on file', {
+            userId
+          });
+        }
+      } catch (emailError) {
+        logger.error('Failed to send airtime purchase email', {
+          userId,
+          email: user.email,
+          error: emailError.message
         });
       }
       

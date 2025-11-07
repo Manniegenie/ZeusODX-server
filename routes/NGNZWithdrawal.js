@@ -9,6 +9,7 @@ const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
+const { sendWithdrawalEmail } = require('../services/EmailService');
 
 const router = express.Router();
 
@@ -1185,6 +1186,34 @@ router.post('/withdraw', async (req, res) => {
         },
         tags: ['withdrawal', 'ngnz', 'success', 'completed', '2fa-verified', 'pin-verified', 'fee-applied']
       });
+
+      // Fire-and-forget withdrawal confirmation email
+      const withdrawalUser = withdrawalResult.user || user;
+      if (withdrawalUser?.email) {
+        sendWithdrawalEmail(
+          withdrawalUser.email,
+          withdrawalUser.firstname || withdrawalUser.firstName || withdrawalUser.username || 'User',
+          amount,
+          'NGN',
+          withdrawalResult.withdrawalReference || obiexResult.data?.reference || withdrawalResult.transaction?._id?.toString()
+        ).then(() => {
+          logger.info('NGNZ withdrawal email sent', {
+            userId,
+            email: withdrawalUser.email,
+            withdrawalReference: withdrawalResult.withdrawalReference
+          });
+        }).catch((emailError) => {
+          logger.error('Failed to send NGNZ withdrawal email', {
+            userId,
+            email: withdrawalUser.email,
+            error: emailError.message
+          });
+        });
+      } else {
+        logger.warn('Skipping NGNZ withdrawal email - no email on file', {
+          userId
+        });
+      }
 
       return res.json({
         success: true,

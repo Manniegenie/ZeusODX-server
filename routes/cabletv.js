@@ -8,6 +8,7 @@ const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
+const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
 const router = express.Router();
 
@@ -749,6 +750,44 @@ router.post('/purchase', async (req, res) => {
 
     // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
     if (payBetaStatus === 'successful') {
+      // ✅ Send transaction email
+      try {
+        if (user.email) {
+          await sendUtilityTransactionEmail(
+            user.email,
+            user.firstName || user.username || 'User',
+            {
+              utilityType: 'Cable TV Subscription',
+              amount,
+              currency,
+              reference: payBetaResponse.data.order_id?.toString() || finalRequestId,
+              status: 'COMPLETED',
+              date: payBetaResponse.data.transaction_date || new Date(),
+              recipientPhone: customer_id,
+              provider: service_id.toUpperCase(),
+              transactionId: payBetaResponse.data.order_id?.toString(),
+              account: customer_id
+            }
+          );
+
+          logger.info('Cable TV purchase email sent', {
+            userId,
+            email: user.email,
+            orderId: payBetaResponse.data.order_id
+          });
+        } else {
+          logger.warn('Skipping cable TV purchase email - no email on file', {
+            userId
+          });
+        }
+      } catch (emailError) {
+        logger.error('Failed to send cable TV purchase email', {
+          userId,
+          email: user.email,
+          error: emailError.message
+        });
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Cable TV purchase completed successfully',
