@@ -46,29 +46,18 @@ class ObiexService {
 
       return response.data?.data || response.data;
     } catch (error) {
-      const errorData = error.response?.data || error.message || '';
-      const errorString = typeof errorData === 'string' ? errorData : JSON.stringify(errorData);
-      
-      // Check if it's a Cloudflare challenge
-      const isCloudflareChallenge = errorString.includes('Just a moment') || 
-                                    errorString.includes('cf-challenge') ||
-                                    errorString.includes('challenge-platform') ||
-                                    (error.response?.status === 403 && errorString.includes('DOCTYPE html'));
-      
-      if (isCloudflareChallenge) {
-        logger.error('❌ Cloudflare is blocking Obiex API request:', {
-          payload,
-          status: error.response?.status,
-          message: 'Cloudflare challenge page detected. The server IP may need to be whitelisted with Obiex.',
-        });
-        throw new Error('Obiex API is currently blocked by Cloudflare protection. Please contact Obiex support to whitelist your server IP address.');
-      }
-      
-      logger.error('Failed to create deposit address:', {
+      const status = error.response?.status;
+      const headers = error.response?.headers;
+      const rawData = error.response?.data;
+      const message = (typeof rawData === 'string') ? rawData : JSON.stringify(rawData, null, 2);
+
+      logger.error('❌ Obiex API request failed', {
+        status,
+        headers,
         payload,
-        error: errorData,
-        status: error.response?.status,
+        body: message
       });
+
       throw error;
     }
   }
