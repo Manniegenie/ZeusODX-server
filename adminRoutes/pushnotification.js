@@ -3,7 +3,68 @@ const router = express.Router();
 const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 const notificationService = require('../services/notificationService');
+async function savePushCredentials({ userId, deviceId, expoPushToken, fcmToken, platform }) {
+  if (!expoPushToken && !fcmToken) {
+    const error = new Error('expoPushToken or fcmToken is required.');
+    error.status = 400;
+    throw error;
+  }
 
+  if (!userId && !deviceId) {
+    const error = new Error('userId or deviceId is required.');
+    error.status = 400;
+    throw error;
+  }
+
+  let user = null;
+
+  if (userId) {
+    user = await User.findById(userId);
+    if (!user) {
+      const error = new Error('User not found.');
+      error.status = 404;
+      throw error;
+    }
+  }
+
+  if (!user && deviceId) {
+    user = await User.findOne({ deviceId });
+  }
+
+  if (!user && deviceId && !userId) {
+    user = new User({
+      deviceId,
+      expoPushToken: expoPushToken || undefined,
+      fcmToken: fcmToken || undefined,
+      email: `device_${deviceId}@temp.com`,
+      password: 'temp_password',
+      isEmailVerified: false,
+    });
+  }
+
+  if (!user) {
+    const error = new Error('User not found.');
+    error.status = 404;
+    throw error;
+  }
+
+  if (deviceId) {
+    user.deviceId = deviceId;
+  }
+  if (expoPushToken) {
+    user.expoPushToken = expoPushToken;
+  }
+  if (fcmToken) {
+    user.fcmToken = fcmToken;
+  }
+  if (platform) {
+    user.pushPlatform = platform;
+  }
+
+  await user.save();
+
+  return user;
+}
 // Test Firebase connection
 router.get('/test-firebase', async (req, res) => {
   try {
@@ -22,49 +83,53 @@ router.get('/test-firebase', async (req, res) => {
   }
 });
 
+// POST /notification/register (recommended)
+router.post('/register', async (req, res) => {
+  try {
+    const { expoPushToken, fcmToken, deviceId, userId, platform } = req.body;
+
+    const user = await savePushCredentials({
+      userId,
+      deviceId,
+      expoPushToken,
+      fcmToken,
+      platform,
+    });
+
+    return res.json({ message: 'Push token(s) registered successfully.', userId: user._id });
+  } catch (error) {
+    console.error('Error registering push tokens:', error);
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
 // POST /notification/register-token (Expo legacy)
 router.post('/register-token', async (req, res) => {
   try {
-    const { expoPushToken, deviceId, userId } = req.body;
+    const { expoPushToken, deviceId, userId, platform, fcmToken } = req.body;
 
-    if (!expoPushToken || !deviceId) {
-      return res.status(400).json({ error: 'expoPushToken and deviceId are required.' });
+    if (!expoPushToken) {
+      return res.status(400).json({ error: 'expoPushToken is required.' });
     }
 
-    // If userId is provided, update that specific user
-    if (userId) {
-      const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found.' });
-      }
-      
-      user.expoPushToken = expoPushToken;
-      user.deviceId = deviceId;
-      await user.save();
-      
-      console.log(`✅ Push token registered for authenticated user: ${user.email || user.username}`);
-      return res.json({ message: 'Push token registered successfully for authenticated user.' });
-    }
+    const user = await savePushCredentials({
+      userId,
+      deviceId,
+      expoPushToken,
+      fcmToken,
+      platform,
+    });
 
-    // Fallback: Find or create a user based on deviceId (for unauthenticated users)
-    let user = await User.findOne({ deviceId });
-    if (!user) {
-      user = new User({ 
-        deviceId, 
-        expoPushToken,
-        email: `device_${deviceId}@temp.com`, // Required field
-        password: 'temp_password', // Required for some operations
-        isEmailVerified: false
-      });
-    } else {
-      user.expoPushToken = expoPushToken;
-    }
-
-    await user.save();
-    console.log(`✅ Push token registered for device: ${deviceId}`);
-    return res.json({ message: 'Push token registered successfully.' });
+    console.log(`✅ Push token registered for user/device: ${user.email || user.username || deviceId}`);
+    return res.json({ message: 'Push token registered successfully.', userId: user._id });
   } catch (err) {
     console.error('Error registering push token:', err);
+    if (err.status) {
+      return res.status(err.status).json({ error: err.message });
+    }
     return res.status(500).json({ error: 'Internal server error.' });
   }
 });
@@ -134,55 +199,63 @@ router.get('/stats', async (req, res) => {
 // POST /notification/register-fcm-token
 router.post('/register-fcm-token', async (req, res) => {
   try {
-    console.log('FCM registration request:', req.body);
-    const { fcmToken, deviceId, userId } = req.body;
+    const { fcmToken, deviceId, userId, platform } = req.body;
 
     if (!fcmToken) {
       return res.status(400).json({ error: 'fcmToken is required.' });
     }
 
-    if (userId) {
-      console.log('Updating existing user:', userId);
-      const user = await User.findById(userId);
-      if (!user) return res.status(404).json({ error: 'User not found.' });
-      user.fcmToken = fcmToken;
-      if (deviceId) user.deviceId = deviceId;
-      await user.save();
-      return res.json({ message: 'FCM token registered for user.' });
-    }
+    const user = await savePushCredentials({
+      userId,
+      deviceId,
+      fcmToken,
+      expoPushToken: null,
+      platform,
+    });
 
-    if (!deviceId) return res.status(400).json({ error: 'deviceId is required when userId is not provided.' });
-    
-    console.log('Looking for user with deviceId:', deviceId);
-    let user = await User.findOne({ deviceId });
-    
-    if (!user) {
-      console.log('Creating new user for deviceId:', deviceId);
-      // Create a new user with required fields
-      user = new User({ 
-        deviceId, 
-        fcmToken,
-        email: `device_${deviceId}@temp.com`, // Required field
-        password: 'temp_password', // Required for some operations
-        isEmailVerified: false
-      });
-    } else {
-      console.log('Updating existing user for deviceId:', deviceId);
-      user.fcmToken = fcmToken;
-    }
-    
-    console.log('Saving user...');
-    await user.save();
-    console.log('User saved successfully');
-    return res.json({ message: 'FCM token registered for device.' });
+    return res.json({ message: 'FCM token registered successfully.', userId: user._id });
   } catch (err) {
     console.error('Error registering FCM token:', err);
+    if (err.status) {
+      return res.status(err.status).json({ error: err.message });
+    }
     return res.status(500).json({ error: 'Internal server error.', details: err.message });
   }
 });
 
-module.exports = router;
- 
+// POST /notification/unregister
+router.post('/unregister', async (req, res) => {
+  try {
+    const { userId, deviceId } = req.body;
+
+    if (!userId && !deviceId) {
+      return res.status(400).json({ error: 'userId or deviceId is required.' });
+    }
+
+    const user = userId
+      ? await User.findById(userId)
+      : await User.findOne({ deviceId });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    user.expoPushToken = null;
+    user.fcmToken = null;
+
+    if (deviceId && user.deviceId && user.deviceId !== deviceId) {
+      console.warn(`⚠️ Device ID mismatch during unregister. Stored=${user.deviceId} Provided=${deviceId}`);
+    }
+
+    await user.save();
+
+    return res.json({ message: 'Push tokens removed successfully.' });
+  } catch (error) {
+    console.error('Error unregistering push tokens:', error);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
 // POST /notification/send-fcm (test) - send to userId or deviceId
 router.post('/send-fcm', async (req, res) => {
   try {
@@ -217,3 +290,5 @@ router.post('/send-fcm', async (req, res) => {
     return res.status(500).json({ error: 'Internal server error.' });
   }
 });
+
+module.exports = router;

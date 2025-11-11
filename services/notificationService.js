@@ -4,6 +4,49 @@ const User = require('../models/user');
 const logger = require('../utils/logger');
 const { initFirebase } = require('./fcmAdmin');
 
+async function clearUserTokens(userId, { expo = false, fcm = false }) {
+  if (!userId || (!expo && !fcm)) return;
+
+  try {
+    const update = {};
+    if (expo) update.expoPushToken = null;
+    if (fcm) update.fcmToken = null;
+    await User.findByIdAndUpdate(userId, update, { new: false }).lean();
+    logger.info('Cleared invalid push token(s) for user', { userId, expo, fcm });
+  } catch (error) {
+    logger.error('Failed to clear invalid push token', { userId, expo, fcm, error: error.message });
+  }
+}
+
+async function handleExpoReceipts(tickets, userId) {
+  const receiptIds = tickets
+    .filter((ticket) => ticket?.status === 'ok' && ticket?.id)
+    .map((ticket) => ticket.id);
+
+  if (!receiptIds.length) return;
+
+  // Expo recommends waiting briefly before fetching receipts
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+
+  try {
+    const chunks = expo.chunkPushNotificationReceiptIds(receiptIds);
+    for (const chunk of chunks) {
+      const receipts = await expo.getPushNotificationReceiptsAsync(chunk);
+      for (const [receiptId, receipt] of Object.entries(receipts)) {
+        if (receipt.status === 'error') {
+          const detailError = receipt.details?.error;
+          logger.warn('Expo receipt error', { userId, receiptId, detailError });
+          if (detailError === 'DeviceNotRegistered' || detailError === 'NotRegistered') {
+            await clearUserTokens(userId, { expo: true });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to fetch Expo push receipts', { userId, error: error.message });
+  }
+}
+
 // Initialize Expo SDK (kept for backward compatibility)
 const expo = new Expo();
 const admin = (() => {
@@ -199,11 +242,19 @@ async function sendPushNotification(userId, notificationData) {
         android: { priority: priority === 'high' ? 'high' : 'normal', notification: { channelId: 'transactions' } },
         apns: { payload: { aps: { sound } } }
       };
-
-      logger.info('Sending FCM notification', { userId, deviceId, title, email: userInfo?.email });
-      const response = await admin.messaging().send(message);
-      logger.info('FCM notification sent', { userId, responseId: response });
-      return { success: true, id: response, via: 'fcm' };
+      try {
+        logger.info('Sending FCM notification', { userId, deviceId, title, email: userInfo?.email });
+        const response = await admin.messaging().send(message);
+        logger.info('FCM notification sent', { userId, responseId: response });
+        return { success: true, id: response, via: 'fcm' };
+      } catch (firebaseError) {
+        logger.error('FCM send failed', { userId, error: firebaseError.code || firebaseError.message });
+        if (firebaseError.code === 'messaging/registration-token-not-registered' || firebaseError.code === 'messaging/invalid-registration-token') {
+          await clearUserTokens(userId, { fcm: true });
+          return { success: false, message: 'FCM token invalid', via: 'fcm' };
+        }
+        throw firebaseError;
+      }
     }
 
     // Fallback to Expo if available
@@ -230,6 +281,7 @@ async function sendPushNotification(userId, notificationData) {
       }
       const hasErrors = tickets.some(t => t.status === 'error');
       if (hasErrors) logger.warn('Expo push had errors', { userId, tickets });
+      handleExpoReceipts(tickets, userId).catch((error) => logger.error('Expo receipt handler failed', { userId, error: error.message }));
       return { success: true, tickets, hasErrors, via: 'expo' };
     }
 
