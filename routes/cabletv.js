@@ -23,7 +23,7 @@ const VALID_SUBSCRIPTION_TYPES = ['change', 'renew'];
 // Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
-  ETH: { name: 'Ethereum' }, 
+  ETH: { name: 'Ethereum' },
   SOL: { name: 'Solana' },
   USDT: { name: 'Tether' },
   USDC: { name: 'USD Coin' },
@@ -36,7 +36,7 @@ const SUPPORTED_TOKENS = {
 // Token field mapping for balance operations (NGNB changed to NGNZ)
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
-  ETH: 'eth', 
+  ETH: 'eth',
   SOL: 'sol',
   USDT: 'usdt',
   USDC: 'usdc',
@@ -52,22 +52,22 @@ const TOKEN_FIELD_MAPPING = {
 async function getCachedUser(userId) {
   const cacheKey = `user_${userId}`;
   const cached = userCache.get(cacheKey);
-  
+
   if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
     return cached.user;
   }
-  
+
   // Include email and name fields so we can send notifications
   const user = await User.findById(userId).select(
     'twoFASecret is2FAEnabled passwordpin ngnzBalance lastBalanceUpdate email firstName username'
   ).lean(); // Use lean() for better performance, only select what we need
-  
+
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
     // Auto-cleanup cache
     setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
   }
-  
+
   return user;
 }
 
@@ -82,46 +82,46 @@ async function updateUserBalance(userId, currency, amount) {
   if (!userId || !currency || typeof amount !== 'number') {
     throw new Error('Invalid parameters for balance update');
   }
-  
+
   try {
     const currencyUpper = currency.toUpperCase();
-    
+
     // Validate currency is supported
     if (!SUPPORTED_TOKENS[currencyUpper]) {
       throw new Error(`Unsupported currency: ${currencyUpper}`);
     }
-    
+
     // Map currency to correct balance field
     const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
     const balanceField = `${currencyLower}Balance`;
-    
+
     // Simple atomic update
     const updateFields = {
       $inc: { [balanceField]: amount },
       $set: { lastBalanceUpdate: new Date() }
     };
-    
+
     const user = await User.findByIdAndUpdate(
-      userId, 
-      updateFields, 
+      userId,
+      updateFields,
       { new: true, runValidators: true }
     );
-    
+
     if (!user) {
       throw new Error(`User not found: ${userId}`);
     }
-    
+
     // Clear cache
     userCache.delete(`user_${userId}`);
-    
+
     logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
-    
+
     return user;
   } catch (error) {
-    logger.error(`Failed to update balance for user ${userId}`, { 
-      currency, 
-      amount, 
-      error: error.message 
+    logger.error(`Failed to update balance for user ${userId}`, {
+      currency,
+      amount,
+      error: error.message
     });
     throw error;
   }
@@ -146,59 +146,78 @@ async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
 function validateCableTVRequest(body) {
   const errors = [];
   const sanitized = {};
-  
+
+  const pickValue = (keys, { trim = true } = {}) => {
+    for (const key of keys) {
+      const raw = body[key];
+      if (raw === undefined || raw === null) continue;
+      if (typeof raw === 'string') {
+        const value = trim ? raw.trim() : raw;
+        if (value.length === 0) continue;
+        return value;
+      }
+      return raw;
+    }
+    return null;
+  };
+
   // Customer ID validation
-  if (!body.customer_id) {
+  const customerId = pickValue(['customer_id', 'customerId', 'smartCardNumber', 'smartcardNumber', 'customer']);
+  if (!customerId) {
     errors.push('Customer ID (smartcard/IUC number) is required');
   } else {
-    sanitized.customer_id = String(body.customer_id).trim();
+    sanitized.customer_id = String(customerId).trim();
     if (sanitized.customer_id.length === 0) {
       errors.push('Customer ID must be a non-empty string');
     }
   }
-  
+
   // Service ID validation
-  if (!body.service_id) {
+  const serviceId = pickValue(['service_id', 'service', 'provider', 'serviceId']);
+  if (!serviceId) {
     errors.push('Service ID is required');
   } else {
-    sanitized.service_id = String(body.service_id).toLowerCase().trim();
+    sanitized.service_id = String(serviceId).toLowerCase().trim();
     if (!CABLE_TV_SERVICES.includes(sanitized.service_id)) {
       errors.push(`Invalid service ID. Must be one of: ${CABLE_TV_SERVICES.join(', ')}`);
     }
   }
-  
+
   // Variation ID validation
-  if (!body.variation_id) {
+  const variationId = pickValue(['variation_id', 'packageCode', 'package_code', 'package']);
+  if (!variationId) {
     errors.push('Variation ID (package/bouquet) is required');
   } else {
-    sanitized.variation_id = String(body.variation_id).trim();
+    sanitized.variation_id = String(variationId).trim();
     if (sanitized.variation_id.length === 0) {
       errors.push('Variation ID must be a non-empty string');
     }
   }
-  
+
   // Subscription type validation
-  if (body.subscription_type) {
-    sanitized.subscription_type = String(body.subscription_type).toLowerCase().trim();
+  const subscriptionType = pickValue(['subscription_type', 'subscriptionType', 'type']);
+  if (subscriptionType) {
+    sanitized.subscription_type = String(subscriptionType).toLowerCase().trim();
     if (!VALID_SUBSCRIPTION_TYPES.includes(sanitized.subscription_type)) {
       errors.push('Subscription type must be "change" or "renew"');
     }
   } else {
     sanitized.subscription_type = 'change';
   }
-  
+
   // Amount validation - UPDATED: References NGNZ
-  if (body.amount === undefined || body.amount === null || body.amount === '') {
+  const amountValue = pickValue(['amount', 'price', 'payment_amount', 'paymentAmount']);
+  if (amountValue === null || amountValue === '') {
     errors.push('Amount is required');
   } else {
-    const rawAmount = Number(body.amount);
+    const rawAmount = Number(amountValue);
     if (!Number.isFinite(rawAmount)) {
       errors.push('Amount must be a valid number');
     } else {
       sanitized.amount = Math.abs(Math.round(rawAmount * 100) / 100);
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
-      
+
       const minAmount = 500; // Minimum for cable TV
       const maxAmount = 50000; // Maximum for cable TV
       if (sanitized.amount < minAmount) {
@@ -209,26 +228,36 @@ function validateCableTVRequest(body) {
       }
     }
   }
-  
+
+  // Optional customer name
+  const customerName = pickValue(['customer_name', 'customerName', 'customer_full_name', 'customerFullName', 'name']);
+  sanitized.customer_name = customerName ? String(customerName).trim() : undefined;
+
+  // Optional client reference
+  const reference = pickValue(['reference', 'referenceId', 'clientReference', 'transactionReference', 'ref']);
+  sanitized.reference = reference ? String(reference).trim() : undefined;
+
   // 2FA validation
-  if (!body.twoFactorCode?.trim()) {
+  const twoFactor = pickValue(['twoFactorCode', 'two_factor_code', 'twoFactor', 'otp', 'twofa']);
+  if (!twoFactor) {
     errors.push('Two-factor authentication code is required');
   } else {
-    sanitized.twoFactorCode = String(body.twoFactorCode).trim();
+    sanitized.twoFactorCode = String(twoFactor).trim();
   }
-  
+
   // Password PIN validation
-  if (!body.passwordpin?.trim()) {
+  const passwordPin = pickValue(['passwordpin', 'passwordPin', 'pin', 'transactionPin']);
+  if (!passwordPin) {
     errors.push('Password PIN is required');
   } else {
-    sanitized.passwordpin = String(body.passwordpin).trim();
+    sanitized.passwordpin = String(passwordPin).trim();
     if (!/^\d{6}$/.test(sanitized.passwordpin)) {
       errors.push('Password PIN must be exactly 6 numbers');
     }
   }
-  
+
   sanitized.payment_currency = 'NGNZ';
-  
+
   return {
     isValid: errors.length === 0,
     errors,
@@ -297,12 +326,12 @@ async function callEBillsAPI({ customer_id, service_id, variation_id, subscripti
 /**
  * Call PayBeta API for cable TV purchase
  */
-async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, request_id, userId, customer_name }) {
+async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, request_id, userId, customer_name, reference }) {
   try {
     // Map service_id to PayBeta format
     const serviceMapping = {
       'dstv': 'dstv',
-      'gotv': 'gotv', 
+      'gotv': 'gotv',
       'startimes': 'startimes',
       'showmax': 'showmax'
     };
@@ -313,21 +342,26 @@ async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, r
     }
 
     // Ensure reference is under 40 characters for PayBeta
-    const payBetaReference = request_id.length > 40 ? 
-      request_id.substring(0, 40) : request_id;
+    const rawReference = reference || request_id;
+    const payBetaReference = String(rawReference || '')
+      .replace(/\s+/g, '')
+      .substring(0, 40) || request_id.substring(0, 40);
+
+    const normalizedAmount = Number(amount);
+    const normalizedCustomerName = (customer_name || 'CUSTOMER').toString().trim() || 'CUSTOMER';
 
     let payload;
     let endpoint;
-    
+
     // Handle Showmax differently as it has its own purchase endpoint
     if (service_id.toLowerCase() === 'showmax') {
       logger.info('Using Showmax-specific purchase endpoint and payload format');
       payload = {
         service: payBetaService,
         smartCardNumber: customer_id.trim(),
-        amount: parseFloat(amount), // Showmax can handle decimal amounts
+        amount: Number.isFinite(normalizedAmount) ? normalizedAmount : parseFloat(amount),
         packageCode: variation_id,
-        customerName: customer_name || 'CUSTOMER',
+        customerName: normalizedCustomerName,
         reference: payBetaReference
       };
       endpoint = '/v2/showmax/purchase';
@@ -335,16 +369,23 @@ async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, r
       payload = {
         service: payBetaService,
         smartCardNumber: customer_id.trim(),
-        amount: Math.round(amount), // Other providers expect integer
+        amount: Number.isFinite(normalizedAmount) ? Math.round(normalizedAmount) : Math.round(Number(amount)),
         packageCode: variation_id,
-        customerName: customer_name || 'CUSTOMER',
+        customerName: normalizedCustomerName,
         reference: payBetaReference
       };
       endpoint = '/v2/cable/purchase';
     }
 
     logger.info('Making PayBeta cable TV purchase request:', {
-      customer_id, service_id, variation_id, amount, request_id, endpoint
+      customer_id,
+      service_id,
+      variation_id,
+      amount,
+      request_id,
+      endpoint,
+      reference: payBetaReference,
+      customer_name: normalizedCustomerName
     });
 
     const response = await payBetaAuth.makeRequest('POST', endpoint, payload, {
@@ -371,11 +412,19 @@ async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, r
         order_id: response.data.transactionId,
         reference: response.data.reference,
         amount: response.data.amount,
+        amount_charged: response.data.chargedAmount,
         chargedAmount: response.data.chargedAmount,
         commission: response.data.commission,
         biller: response.data.biller,
         customerId: response.data.customerId,
-        transactionDate: response.data.transactionDate
+        customer_id: customer_id,
+        customer_name: response.data.customerName || normalizedCustomerName,
+        customerName: response.data.customerName || normalizedCustomerName,
+        transactionDate: response.data.transactionDate,
+        service: payBetaService,
+        service_id: service_id,
+        service_name: response.data.biller || payBetaService?.toUpperCase(),
+        smartCardNumber: customer_id.trim()
       }
     };
 
@@ -411,12 +460,12 @@ router.post('/purchase', async (req, res) => {
   try {
     const requestBody = req.body;
     const userId = req.user.id;
-    
+
     logger.info(`📺 Cable TV purchase request from user ${userId}:`, {
       ...requestBody,
       passwordpin: '[REDACTED]'
     });
-    
+
     // Step 1: Validate request
     validation = validateCableTVRequest(requestBody);
     if (!validation.isValid) {
@@ -426,13 +475,13 @@ router.post('/purchase', async (req, res) => {
         errors: validation.errors
       });
     }
-    
-    const { customer_id, service_id, variation_id, subscription_type, amount, twoFactorCode, passwordpin } = validation.sanitized;
+
+    const { customer_id, service_id, variation_id, subscription_type, amount, twoFactorCode, passwordpin, customer_name, reference } = validation.sanitized;
     const currency = 'NGNZ';
-    
+
     // Step 2: Get user data
     const user = await getCachedUser(userId);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -458,7 +507,7 @@ router.post('/purchase', async (req, res) => {
     }
 
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
-      logger.warn('🚫 2FA validation failed for cable TV purchase', { 
+      logger.warn('🚫 2FA validation failed for cable TV purchase', {
         userId, errorType: 'INVALID_2FA'
       });
       return res.status(401).json({
@@ -480,7 +529,7 @@ router.post('/purchase', async (req, res) => {
 
     const isPasswordPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
     if (!isPasswordPinValid) {
-      logger.warn('🚫 Password PIN validation failed for cable TV purchase', { 
+      logger.warn('🚫 Password PIN validation failed for cable TV purchase', {
         userId, errorType: 'INVALID_PASSWORDPIN'
       });
       return res.status(401).json({
@@ -492,13 +541,13 @@ router.post('/purchase', async (req, res) => {
 
     logger.info('✅ Password PIN validation successful for cable TV purchase', { userId });
 
-    
+
     // Step 5: Generate unique IDs
     const timestamp = Date.now();
     const randomSuffix = Math.random().toString(36).substring(2, 8);
     const finalRequestId = `${userId}_${timestamp}_${randomSuffix}`;
     const uniqueOrderId = `pending_${userId}_${timestamp}`;
-    
+
     // Step 6: REDUNDANT BALANCE CHECK (in case balance changed between cache and now)
     // Re-fetch latest balance from database for final confirmation
     const latestUser = await User.findById(userId).select('ngnzBalance').lean();
@@ -540,7 +589,9 @@ router.post('/purchase', async (req, res) => {
         exchange_rate: 1,
         twofa_validated: true,
         passwordpin_validated: true,
-        is_ngnz_transaction: true
+        is_ngnz_transaction: true,
+        customer_name: customer_name || undefined,
+        reference: reference || finalRequestId
       },
       network: service_id.toUpperCase(),
       customerPhone: customer_id,
@@ -555,22 +606,26 @@ router.post('/purchase', async (req, res) => {
       twoFactorValidated: true,
       passwordPinValidated: true,
     };
-    
+
     pendingTransaction = await BillTransaction.create(initialTransactionData);
     transactionCreated = true;
-    
+
     logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | cable_tv | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
-    
+
     // Step 8: Call PayBeta API
     try {
       payBetaResponse = await callPayBetaAPI({
-        customer_id, service_id, variation_id, amount,
+        customer_id,
+        service_id,
+        variation_id,
+        amount,
         request_id: finalRequestId,
         userId,
-        customer_name: 'CUSTOMER' // You can enhance this to get actual customer name
+        customer_name: customer_name || undefined,
+        reference
       });
     } catch (apiError) {
-      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
         status: 'failed',
         processingErrors: [{
           error: apiError.message,
@@ -578,19 +633,19 @@ router.post('/purchase', async (req, res) => {
           phase: 'api_call'
         }]
       });
-      
+
       return res.status(500).json({
         success: false,
         error: 'PAYBETA_API_ERROR',
         message: apiError.message
       });
     }
-    
+
     // =====================================
     // STEP 9: ONLY DEDUCT BALANCE IF PAYBETA IS SUCCESSFUL
     // =====================================
     const payBetaStatus = payBetaResponse.data.status; // Status is in data object
-    
+
     // Debug: Log PayBeta response structure
     logger.info(`🔍 PayBeta Response Debug:`, {
       payBetaStatus,
@@ -598,17 +653,17 @@ router.post('/purchase', async (req, res) => {
       orderId: payBetaResponse.data.order_id,
       service: payBetaResponse.data.service_name
     });
-    
+
     // Only deduct balance if PayBeta transaction is successful
     if (payBetaStatus === 'successful') {
       logger.info(`✅ PayBeta API succeeded (${payBetaStatus}), deducting balance for ${finalRequestId}`);
-      
+
       try {
         await updateUserBalance(userId, currency, -amount);
         balanceDeducted = true;
-        
+
         logger.info(`✅ Balance deducted immediately: -${amount} ${currency} for user ${userId}`);
-        
+
       } catch (balanceError) {
       logger.error('CRITICAL: Balance deduction failed after successful PayBeta API call:', {
         request_id: finalRequestId,
@@ -616,15 +671,15 @@ router.post('/purchase', async (req, res) => {
         currency,
         amount,
         error: balanceError.message,
-        paybeta_order_id: ebillsResponse.data?.order_id
+        paybeta_order_id: payBetaResponse.data?.order_id
       });
 
       // Check if this is an insufficient balance error during deduction
-      if (balanceError.message.includes('insufficient') || 
+      if (balanceError.message.includes('insufficient') ||
           balanceError.message.includes('balance') ||
           balanceError.message.toLowerCase().includes('ngnz')) {
-        
-        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+
+        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
           status: 'failed',
           processingErrors: [{
         error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
@@ -633,15 +688,15 @@ router.post('/purchase', async (req, res) => {
         paybeta_order_id: payBetaResponse.data?.order_id
           }]
         });
-        
+
         return res.status(400).json({
           success: false,
           error: 'INSUFFICIENT_NGNZ_BALANCE',
           message: 'NGNZ balance insufficient'
         });
       }
-      
-      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
         status: 'failed',
         processingErrors: [{
         error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
@@ -650,7 +705,7 @@ router.post('/purchase', async (req, res) => {
         paybeta_order_id: payBetaResponse.data?.order_id
         }]
       });
-      
+
       return res.status(500).json({
         success: false,
         error: 'BALANCE_UPDATE_FAILED',
@@ -666,8 +721,8 @@ router.post('/purchase', async (req, res) => {
     } else {
       // PayBeta was not successful, don't deduct balance
       logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
-      
-      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
         status: 'failed',
         processingErrors: [{
           error: `PayBeta transaction not successful: ${payBetaStatus}`,
@@ -675,7 +730,7 @@ router.post('/purchase', async (req, res) => {
           phase: 'paybeta_status_check'
         }]
       });
-      
+
       return res.status(200).json({
         success: true,
         message: 'Cable TV purchase not successful',
@@ -694,7 +749,7 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-    
+
     // Step 10: Update transaction with proper status mapping
     const finalStatus = payBetaStatus === 'successful' ? 'completed' : 'failed';
     const updateData = {
@@ -704,10 +759,10 @@ router.post('/purchase', async (req, res) => {
       balanceCompleted: true,
       metaData: {
         ...initialTransactionData.metaData,
-        service_name: payBetaResponse.data.service_name,
-        customer_name: payBetaResponse.data.customer_name,
+        service_name: payBetaResponse.data.service_name || service_id.toUpperCase(),
+        customer_name: payBetaResponse.data.customer_name || payBetaResponse.data.customerName || customer_name || undefined,
         discount: payBetaResponse.data.discount,
-        amount_charged: payBetaResponse.data.amount_charged,
+        amount_charged: payBetaResponse.data.amount_charged || payBetaResponse.data.chargedAmount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
@@ -718,13 +773,13 @@ router.post('/purchase', async (req, res) => {
         paybeta_final_balance: payBetaResponse.data.final_balance
       }
     };
-    
+
     const finalTransaction = await BillTransaction.findByIdAndUpdate(
       pendingTransaction._id,
       updateData,
       { new: true }
     );
-    
+
     // Verify the database update worked
     logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
     logger.info(`📋 Database update verification:`, {
@@ -733,7 +788,7 @@ router.post('/purchase', async (req, res) => {
       orderId: finalTransaction?.orderId,
       balanceCompleted: finalTransaction?.balanceCompleted
     });
-    
+
     // Double-check by querying the database directly
     const verifyTransaction = await BillTransaction.findById(pendingTransaction._id);
     logger.info(`📋 Direct database verification:`, {
@@ -744,9 +799,9 @@ router.post('/purchase', async (req, res) => {
       billType: verifyTransaction?.billType,
       userId: verifyTransaction?.userId
     });
-    
+
     logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
-    
+
 
     // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
     if (payBetaStatus === 'successful') {
@@ -794,11 +849,14 @@ router.post('/purchase', async (req, res) => {
         data: {
           order_id: payBetaResponse.data.order_id,
           status: payBetaResponse.data.status,
-          service_name: service_id.toUpperCase(),
+          service_name: payBetaResponse.data.service_name || service_id.toUpperCase(),
+          service: payBetaResponse.data.service || service_id,
           customer_id: customer_id,
-          customer_name: payBetaResponse.data.customerId,
+          customer_name: payBetaResponse.data.customer_name || payBetaResponse.data.customerName || customer_name,
+          smartCardNumber: payBetaResponse.data.smartCardNumber || customer_id,
           amount: payBetaResponse.data.amount,
-          amount_charged: payBetaResponse.data.chargedAmount,
+          amount_charged: payBetaResponse.data.amount_charged || payBetaResponse.data.chargedAmount,
+          reference: payBetaResponse.data.reference,
           request_id: finalRequestId,
           balance_action: 'deducted_on_success',
           payment_details: {
@@ -815,11 +873,14 @@ router.post('/purchase', async (req, res) => {
         data: {
           order_id: payBetaResponse.data.order_id,
           status: payBetaResponse.data.status,
-          service_name: service_id.toUpperCase(),
+          service_name: payBetaResponse.data.service_name || service_id.toUpperCase(),
+          service: payBetaResponse.data.service || service_id,
           customer_id: customer_id,
-          customer_name: payBetaResponse.data.customerId,
+          customer_name: payBetaResponse.data.customer_name || payBetaResponse.data.customerName || customer_name,
+          smartCardNumber: payBetaResponse.data.smartCardNumber || customer_id,
           amount: payBetaResponse.data.amount,
-          amount_charged: payBetaResponse.data.amount_charged,
+          amount_charged: payBetaResponse.data.amount_charged || payBetaResponse.data.chargedAmount,
+          reference: payBetaResponse.data.reference,
           request_id: finalRequestId,
           balance_action: 'updated_directly', // Changed from 'reserved' since we deduct immediately
           payment_details: {
@@ -846,7 +907,7 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-    
+
   } catch (error) {
     logger.error('Cable TV purchase unexpected error:', {
       userId: req.user?.id,
@@ -856,14 +917,14 @@ router.post('/purchase', async (req, res) => {
     });
 
     // Check if the error is related to insufficient balance
-    if (error.message && 
-        (error.message.toLowerCase().includes('insufficient') || 
+    if (error.message &&
+        (error.message.toLowerCase().includes('insufficient') ||
          error.message.toLowerCase().includes('balance') ||
          error.message.toLowerCase().includes('ngnz'))) {
-      
-      logger.info('Detected balance-related error in catch block', { 
-        userId: req.user?.id, 
-        error: error.message 
+
+      logger.info('Detected balance-related error in catch block', {
+        userId: req.user?.id,
+        error: error.message
       });
 
       return res.status(400).json({
@@ -885,7 +946,7 @@ router.post('/purchase', async (req, res) => {
 
     if (transactionCreated && pendingTransaction) {
       try {
-        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+        await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
           status: 'failed',
           processingErrors: [{
             error: error.message,
@@ -897,7 +958,7 @@ router.post('/purchase', async (req, res) => {
         logger.error('Failed to update transaction status:', updateError);
       }
     }
-    
+
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
@@ -913,7 +974,7 @@ router.post('/purchase', async (req, res) => {
 router.post('/verify', async (req, res) => {
   const startTime = Date.now();
   const requestId = `cable_verify_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  
+
   try {
     logger.info(`📺 Cable TV verification request:`, {
       requestId,
@@ -921,7 +982,22 @@ router.post('/verify', async (req, res) => {
       body: req.body
     });
 
-    const { service_id, customer_id } = req.body;
+    const resolve = (keys) => {
+      for (const key of keys) {
+        const value = req.body[key];
+        if (value === undefined || value === null) continue;
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (trimmed.length === 0) continue;
+          return trimmed;
+        }
+        return value;
+      }
+      return null;
+    };
+
+    const service_id = resolve(['service_id', 'service', 'provider', 'serviceId']);
+    const customer_id = resolve(['customer_id', 'customerId', 'smartCardNumber', 'smartcardNumber', 'cardNumber']);
     
     // Validate required fields
     if (!service_id) {
@@ -937,7 +1013,7 @@ router.post('/verify', async (req, res) => {
         message: 'Customer ID is required'
       });
     }
-    
+
     // Validate service_id
     if (!CABLE_TV_SERVICES.includes(service_id.toLowerCase())) {
       return res.status(400).json({
@@ -945,13 +1021,13 @@ router.post('/verify', async (req, res) => {
         message: `Invalid service ID. Must be one of: ${CABLE_TV_SERVICES.join(', ')}`
       });
     }
-    
+
     logger.info(`🔍 [${requestId}] Verifying cable TV customer via PayBeta:`, {
       requestId,
       service_id,
       customer_id: customer_id?.substring(0, 4) + '***'
     });
-    
+
     // Call PayBeta API for customer verification
     let payBetaResponse;
     try {
@@ -965,22 +1041,22 @@ router.post('/verify', async (req, res) => {
           requestId
         });
       }
-      
+
       // Use PayBeta's customer verification endpoint
       const response = await payBetaAuth.makeRequest('POST', '/v2/cable/verify', {
         service: service_id.toLowerCase(),
         smartCardNumber: customer_id.trim()
       });
-      
+
       payBetaResponse = response;
-      
+
       logger.info(`📡 [${requestId}] PayBeta verification response:`, {
         requestId,
         status: response.status,
         message: response.message,
         hasData: !!response.data
       });
-      
+
     } catch (apiError) {
       logger.error(`❌ [${requestId}] PayBeta verification failed:`, {
         requestId,
@@ -991,9 +1067,9 @@ router.post('/verify', async (req, res) => {
         payBetaError: apiError.response?.data,
         hasApiKey: !!process.env.PAYBETA_API_KEY
       });
-      
+
       // Handle different error types
-      if (apiError.message.includes('API key not configured') || 
+      if (apiError.message.includes('API key not configured') ||
           apiError.message.includes('authentication failed')) {
         return res.status(503).json({
           success: false,
@@ -1002,8 +1078,8 @@ router.post('/verify', async (req, res) => {
           requestId
         });
       }
-      
-      if (apiError.message.includes('Customer not found') || 
+
+      if (apiError.message.includes('Customer not found') ||
           apiError.message.includes('Invalid customer')) {
         return res.status(404).json({
           success: false,
@@ -1016,7 +1092,7 @@ router.post('/verify', async (req, res) => {
           }
         });
       }
-      
+
       if (apiError.message.includes('timeout')) {
         return res.status(504).json({
           success: false,
@@ -1025,7 +1101,7 @@ router.post('/verify', async (req, res) => {
           requestId
         });
       }
-      
+
       return res.status(500).json({
         success: false,
         error: 'VERIFICATION_API_ERROR',
@@ -1033,18 +1109,21 @@ router.post('/verify', async (req, res) => {
         requestId
       });
     }
-    
+
     // Process successful verification response
     if (payBetaResponse.status === 'successful') {
       const customerData = payBetaResponse.data;
-      
+
       const enhancedResponse = {
         success: true,
         message: 'Cable TV customer verification successful',
         data: {
           customer_id: customer_id,
+          smartCardNumber: customer_id,
           service_id: service_id,
+          service: service_id.toLowerCase(),
           customer_name: customerData.customerName || 'N/A',
+          customerName: customerData.customerName || 'N/A',
           current_status: customerData.status || 'Unknown',
           current_bouquet: customerData.currentBouquet || 'N/A',
           renewal_amount: customerData.renewalAmount || 0,
@@ -1054,14 +1133,14 @@ router.post('/verify', async (req, res) => {
           requestId
         }
       };
-      
+
       logger.info(`✅ [${requestId}] Cable TV verification completed successfully`, {
         requestId,
         service_id,
         customer_id: customer_id?.substring(0, 4) + '***',
         processingTime: `${Date.now() - startTime}ms`
       });
-      
+
       return res.status(200).json(enhancedResponse);
     } else {
       return res.status(400).json({
@@ -1075,7 +1154,7 @@ router.post('/verify', async (req, res) => {
         }
       });
     }
-    
+
   } catch (error) {
     logger.error(`💀 [${requestId}] Cable TV verification unexpected error:`, {
       requestId,
@@ -1084,7 +1163,7 @@ router.post('/verify', async (req, res) => {
       stack: error.stack,
       processingTime: `${Date.now() - startTime}ms`
     });
-    
+
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
