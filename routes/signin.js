@@ -65,8 +65,13 @@ router.post(
       const user = await User.findOne({ phonenumber }).lean(false);
       if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
-      // Check if account is locked
-      if (user.lockUntil && user.lockUntil > Date.now()) {
+      // Demo account bypass: Skip lock checks and never lock demo accounts
+      const isDemoAccount = user.isDemoAccount === true || 
+                           phonenumber === '+2348000000001' || 
+                           user.email === 'demo@zeusodx.com';
+
+      // Check if account is locked (skip for demo accounts)
+      if (!isDemoAccount && user.lockUntil && user.lockUntil > Date.now()) {
         const unlockTime = new Date(user.lockUntil);
         const timeRemaining = Math.ceil((user.lockUntil - Date.now()) / (60 * 1000));
         return res.status(423).json({
@@ -89,20 +94,26 @@ router.post(
       }
 
       if (!isValidPin) {
-        const newAttemptCount = (user.loginAttempts || 0) + 1;
-        user.loginAttempts = newAttemptCount;
-        user.lastFailedLogin = new Date();
-        if (newAttemptCount >= MAX_LOGIN_ATTEMPTS) {
-          user.lockUntil = new Date(Date.now() + LOCK_TIME);
+        // Demo account bypass: Never increment attempts or lock demo accounts
+        if (!isDemoAccount) {
+          const newAttemptCount = (user.loginAttempts || 0) + 1;
+          user.loginAttempts = newAttemptCount;
+          user.lastFailedLogin = new Date();
+          if (newAttemptCount >= MAX_LOGIN_ATTEMPTS) {
+            user.lockUntil = new Date(Date.now() + LOCK_TIME);
+            await user.save();
+            return res.status(423).json({
+              success: false,
+              message: "Account locked due to too many failed attempts. Try again in 6 hours.",
+              lockedUntil: user.lockUntil.toISOString()
+            });
+          }
           await user.save();
-          return res.status(423).json({
-            success: false,
-            message: "Account locked due to too many failed attempts. Try again in 6 hours.",
-            lockedUntil: user.lockUntil.toISOString()
-          });
+          return res.status(401).json({ success: false, message: `Invalid PIN. ${MAX_LOGIN_ATTEMPTS - newAttemptCount} attempt(s) remaining.` });
+        } else {
+          // Demo account: Just return error without incrementing attempts
+          return res.status(401).json({ success: false, message: "Invalid PIN. Please try again." });
         }
-        await user.save();
-        return res.status(401).json({ success: false, message: `Invalid PIN. ${MAX_LOGIN_ATTEMPTS - newAttemptCount} attempt(s) remaining.` });
       }
 
       // Reset attempts

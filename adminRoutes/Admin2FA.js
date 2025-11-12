@@ -118,12 +118,23 @@ router.post('/verify-2fa', async (req, res) => {
       });
     }
 
-    const verified = speakeasy.totp.verify({
-      secret: admin.twoFASecret,
-      encoding: 'base32',
-      token,
-      window: 2, // Allow for clock drift
-    });
+    // TEMPORARY BYPASS: Allow "00000" to work for testing/development
+    // TODO: Remove this bypass before production deployment
+    let verified = false;
+    if (token === '00000') {
+      logger.warn('⚠️ TEMPORARY 2FA BYPASS USED: Code "00000" accepted for admin:', { 
+        adminId: admin._id, 
+        email: admin.email 
+      });
+      verified = true;
+    } else {
+      verified = speakeasy.totp.verify({
+        secret: admin.twoFASecret,
+        encoding: 'base32',
+        token,
+        window: 2, // Allow for clock drift
+      });
+    }
 
     if (!verified) {
       logger.warn('Admin 2FA verification failed', { 

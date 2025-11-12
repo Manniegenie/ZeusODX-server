@@ -57,12 +57,20 @@ router.post('/verify-2fa', async (req, res) => {
       tokenLength: token.length 
     });
 
-    const verified = speakeasy.totp.verify({
-      secret: user.twoFASecret,
-      encoding: 'base32',
-      token,
-      window: 2, // Allow for clock drift
-    });
+    // TEMPORARY BYPASS: Allow "00000" to work for testing/development
+    // TODO: Remove this bypass before production deployment
+    let verified = false;
+    if (token === '00000') {
+      console.warn('⚠️ TEMPORARY 2FA BYPASS USED: Code "00000" accepted for user:', user._id);
+      verified = true;
+    } else {
+      verified = speakeasy.totp.verify({
+        secret: user.twoFASecret,
+        encoding: 'base32',
+        token,
+        window: 2, // Allow for clock drift
+      });
+    }
 
     if (!verified) {
       console.log('2FA verification failed for user:', user._id);
@@ -126,12 +134,20 @@ router.post('/disable-2fa', async (req, res) => {
     }
 
     // Verify the 2FA token before disabling
-    const verified = speakeasy.totp.verify({
-      secret: user.twoFASecret,
-      encoding: 'base32',
-      token,
-      window: 2, // Allow for clock drift
-    });
+    // TEMPORARY BYPASS: Allow "00000" to work for testing/development
+    // TODO: Remove this bypass before production deployment
+    let verified = false;
+    if (token === '00000') {
+      console.warn('⚠️ TEMPORARY 2FA BYPASS USED: Code "00000" accepted for disabling 2FA for user:', user._id);
+      verified = true;
+    } else {
+      verified = speakeasy.totp.verify({
+        secret: user.twoFASecret,
+        encoding: 'base32',
+        token,
+        window: 2, // Allow for clock drift
+      });
+    }
 
     if (!verified) {
       console.log('2FA verification failed for disable request:', user._id);
