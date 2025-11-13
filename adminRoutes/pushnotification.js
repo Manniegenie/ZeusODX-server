@@ -137,36 +137,59 @@ router.post('/register-token', async (req, res) => {
 // POST /notification/send-all
 router.post('/send-all', async (req, res) => {
   try {
-    const { message } = req.body;
+    const { title, body, message, data = {} } = req.body;
 
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required.' });
+    // Support both 'message' (legacy) and 'body' (new format)
+    const notificationBody = body || message;
+    const notificationTitle = title || 'ZeusODX Notification';
+
+    if (!notificationBody) {
+      return res.status(400).json({ error: 'Message/body is required.' });
     }
 
-    const users = await User.find({ expoPushToken: { $ne: null } });
+    // Get all users with push tokens
+    const users = await User.find({
+      $or: [
+        { fcmToken: { $ne: null } },
+        { expoPushToken: { $ne: null } }
+      ]
+    }).select('_id fcmToken expoPushToken');
+
     if (!users.length) {
       return res.status(404).json({ error: 'No users with push tokens found.' });
     }
 
-    const expo = new Expo();
-    const notifications = users.map(user => ({
-      to: user.expoPushToken,
-      sound: 'default',
-      body: message,
-    }));
+    // Use notificationService to send to all users
+    const results = await Promise.allSettled(
+      users.map(user => 
+        notificationService.sendCustomNotification(
+          user._id.toString(),
+          notificationTitle,
+          notificationBody,
+          data,
+          { sound: 'default', priority: 'high' }
+        )
+      )
+    );
 
-    const chunks = expo.chunkPushNotifications(notifications);
-    const tickets = [];
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
 
-    for (const chunk of chunks) {
-      const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-      tickets.push(...ticketChunk);
-    }
-
-    return res.json({ message: 'Notifications sent to all users.', tickets });
+    return res.json({ 
+      success: true,
+      message: `Notifications sent to ${successful} out of ${users.length} users.`,
+      total: users.length,
+      successful,
+      failed,
+      results: results.map((r, i) => ({
+        userId: users[i]._id.toString(),
+        success: r.status === 'fulfilled' && r.value.success,
+        error: r.status === 'rejected' ? r.reason?.message : (r.status === 'fulfilled' && !r.value.success ? r.value.message : null)
+      }))
+    });
   } catch (err) {
     console.error('Error sending notifications:', err);
-    return res.status(500).json({ error: 'Internal server error.' });
+    return res.status(500).json({ error: 'Internal server error.', details: err.message });
   }
 });
 

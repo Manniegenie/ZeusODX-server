@@ -9,6 +9,7 @@ const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateCableAccount } = require('../services/paybetaCableValidation');
 const { purchaseCableSubscription } = require('../services/paybetaCablePurchase');
+const { sendPaymentNotification } = require('../services/notificationService');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
@@ -672,6 +673,37 @@ router.post('/purchase', async (req, res) => {
 
     // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
     if (payBetaStatus === 'successful') {
+      // ✅ Send push notification
+      try {
+        await sendPaymentNotification(
+          userId,
+          amount,
+          currency,
+          `Cable TV subscription for ${payBetaResponse.data.biller || service_id.toUpperCase()}`,
+          {
+            type: 'CABLE_TV_PURCHASE',
+            service: service_id,
+            biller: payBetaResponse.data.biller,
+            smartCardNumber: customer_id,
+            customerName: customer_name,
+            transactionId: payBetaResponse.data.transactionId,
+            reference: payBetaResponse.data.reference,
+            chargedAmount: payBetaResponse.data.chargedAmount,
+            commission: payBetaResponse.data.commission
+          }
+        );
+        logger.info('Cable TV purchase push notification sent', {
+          userId,
+          transactionId: payBetaResponse.data.transactionId
+        });
+      } catch (notificationError) {
+        logger.error('Failed to send cable TV purchase push notification', {
+          userId,
+          error: notificationError.message
+        });
+        // Don't fail the request if notification fails
+      }
+
       // ✅ Send transaction email
       try {
         if (user.email) {
