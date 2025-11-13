@@ -8,6 +8,7 @@ const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateCableAccount } = require('../services/paybetaCableValidation');
+const { purchaseCableSubscription } = require('../services/paybetaCablePurchase');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
@@ -183,7 +184,7 @@ function validateCableTVRequest(body) {
       errors.push(`Invalid service ID. Must be one of: ${CABLE_TV_SERVICES.join(', ')}`);
     }
   }
-
+  
   // Variation ID validation
   const variationId = pickValue(['variation_id', 'packageCode', 'package_code', 'package']);
   if (!variationId) {
@@ -321,129 +322,6 @@ async function callEBillsAPI({ customer_id, service_id, variation_id, subscripti
     }
 
     throw new Error(`eBills API error: ${error.message}`);
-  }
-}
-
-/**
- * Call PayBeta API for cable TV purchase
- */
-async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, request_id, userId, customer_name, reference }) {
-  try {
-    // Map service_id to PayBeta format
-    const serviceMapping = {
-      'dstv': 'dstv',
-      'gotv': 'gotv',
-      'startimes': 'startimes',
-      'showmax': 'showmax'
-    };
-
-    const payBetaService = serviceMapping[service_id];
-    if (!payBetaService) {
-      throw new Error(`Unsupported service for PayBeta: ${service_id}`);
-    }
-
-    // Ensure reference is under 40 characters for PayBeta
-    const rawReference = reference || request_id;
-    const payBetaReference = String(rawReference || '')
-      .replace(/\s+/g, '')
-      .substring(0, 40) || request_id.substring(0, 40);
-
-    const normalizedAmount = Number(amount);
-    const normalizedCustomerName = (customer_name || 'CUSTOMER').toString().trim() || 'CUSTOMER';
-
-    let payload;
-    let endpoint;
-
-    // Handle Showmax differently as it has its own purchase endpoint
-    if (service_id.toLowerCase() === 'showmax') {
-      logger.info('Using Showmax-specific purchase endpoint and payload format');
-      payload = {
-        service: payBetaService,
-        smartCardNumber: customer_id.trim(),
-        amount: Number.isFinite(normalizedAmount) ? normalizedAmount : parseFloat(amount),
-        packageCode: variation_id,
-        customerName: normalizedCustomerName,
-        reference: payBetaReference
-      };
-      endpoint = '/v2/showmax/purchase';
-    } else {
-      payload = {
-        service: payBetaService,
-        smartCardNumber: customer_id.trim(),
-        amount: Number.isFinite(normalizedAmount) ? Math.round(normalizedAmount) : Math.round(Number(amount)),
-        packageCode: variation_id,
-        customerName: normalizedCustomerName,
-        reference: payBetaReference
-      };
-      endpoint = '/v2/cable/purchase';
-    }
-
-    logger.info('Making PayBeta cable TV purchase request:', {
-      customer_id,
-      service_id,
-      variation_id,
-      amount,
-      request_id,
-      endpoint,
-      reference: payBetaReference,
-      customer_name: normalizedCustomerName
-    });
-
-    const response = await payBetaAuth.makeRequest('POST', endpoint, payload, {
-      timeout: 25000
-    });
-
-    logger.info(`PayBeta API response for ${request_id}:`, {
-      status: response.status,
-      message: response.message,
-      reference: response.data?.reference,
-      transactionId: response.data?.transactionId
-    });
-
-    if (response.status !== 'successful') {
-      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
-    }
-
-    // Transform PayBeta response to match eBills format for consistency
-    return {
-      code: 'success',
-      message: response.message,
-      data: {
-        status: 'successful',
-        order_id: response.data.transactionId,
-        reference: response.data.reference,
-        amount: response.data.amount,
-        amount_charged: response.data.chargedAmount,
-        chargedAmount: response.data.chargedAmount,
-        commission: response.data.commission,
-        biller: response.data.biller,
-        customerId: response.data.customerId,
-        customer_id: customer_id,
-        customer_name: response.data.customerName || normalizedCustomerName,
-        customerName: response.data.customerName || normalizedCustomerName,
-        transactionDate: response.data.transactionDate,
-        service: payBetaService,
-        service_id: service_id,
-        service_name: response.data.biller || payBetaService?.toUpperCase(),
-        smartCardNumber: customer_id.trim()
-      }
-    };
-
-  } catch (error) {
-    logger.error('❌ PayBeta cable TV purchase failed:', {
-      request_id, userId, error: error.message,
-      status: error.response?.status,
-      payBetaError: error.response?.data
-    });
-
-    if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
-    }
-    if (error.message.includes('validation')) {
-      throw new Error('Invalid request parameters. Please check your input.');
-    }
-
-    throw new Error(`PayBeta API error: ${error.message}`);
   }
 }
 
@@ -613,17 +491,16 @@ router.post('/purchase', async (req, res) => {
 
     logger.info(`📋 Bill transaction ${uniqueOrderId}: initiated-api | cable_tv | ${amount} NGNZ | ✅ 2FA | ✅ PIN`);
 
-    // Step 8: Call PayBeta API
+    // Step 8: Call PayBeta API using the new service
     try {
-      payBetaResponse = await callPayBetaAPI({
-        customer_id,
-        service_id,
-        variation_id,
-        amount,
-        request_id: finalRequestId,
-        userId,
-        customer_name: customer_name || undefined,
-        reference
+      const purchaseReference = reference || finalRequestId;
+      payBetaResponse = await purchaseCableSubscription({
+        service: service_id,
+        smartCardNumber: customer_id,
+        amount: amount,
+        packageCode: variation_id,
+        customerName: customer_name || 'CUSTOMER',
+        reference: purchaseReference
       });
     } catch (apiError) {
       await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
@@ -645,14 +522,14 @@ router.post('/purchase', async (req, res) => {
     // =====================================
     // STEP 9: ONLY DEDUCT BALANCE IF PAYBETA IS SUCCESSFUL
     // =====================================
-    const payBetaStatus = payBetaResponse.data.status; // Status is in data object
+    const payBetaStatus = payBetaResponse.status; // Status is at root level in normalized response
 
     // Debug: Log PayBeta response structure
     logger.info(`🔍 PayBeta Response Debug:`, {
       payBetaStatus,
       fullResponse: payBetaResponse,
-      orderId: payBetaResponse.data.order_id,
-      service: payBetaResponse.data.service_name
+      transactionId: payBetaResponse.data.transactionId,
+      biller: payBetaResponse.data.biller
     });
 
     // Only deduct balance if PayBeta transaction is successful
@@ -672,7 +549,7 @@ router.post('/purchase', async (req, res) => {
         currency,
         amount,
         error: balanceError.message,
-        paybeta_order_id: payBetaResponse.data?.order_id
+        paybeta_transaction_id: payBetaResponse.data?.transactionId
       });
 
       // Check if this is an insufficient balance error during deduction
@@ -686,7 +563,7 @@ router.post('/purchase', async (req, res) => {
         error: `Insufficient NGNZ balance during deduction: ${balanceError.message}`,
         timestamp: new Date(),
         phase: 'balance_deduction',
-        paybeta_order_id: payBetaResponse.data?.order_id
+        paybeta_transaction_id: payBetaResponse.data?.transactionId
           }]
         });
 
@@ -703,7 +580,7 @@ router.post('/purchase', async (req, res) => {
         error: `Balance deduction failed after PayBeta success: ${balanceError.message}`,
         timestamp: new Date(),
         phase: 'balance_deduction',
-        paybeta_order_id: payBetaResponse.data?.order_id
+        paybeta_transaction_id: payBetaResponse.data?.transactionId
         }]
       });
 
@@ -712,8 +589,8 @@ router.post('/purchase', async (req, res) => {
         error: 'BALANCE_UPDATE_FAILED',
         message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
         details: {
-          paybeta_order_id: payBetaResponse.data?.order_id,
-          paybeta_status: payBetaResponse.data?.status,
+          paybeta_transaction_id: payBetaResponse.data?.transactionId,
+          paybeta_status: payBetaResponse.status,
           amount: amount,
           customer_id: customer_id
         }
@@ -733,45 +610,34 @@ router.post('/purchase', async (req, res) => {
       });
 
       return res.status(200).json({
-        success: true,
-        message: 'Cable TV purchase not successful',
-        data: {
-          order_id: payBetaResponse.data.order_id,
-          status: payBetaResponse.data.status,
-          service_name: service_id.toUpperCase(),
-          customer_id: customer_id,
-          request_id: finalRequestId,
-          balance_action: 'not_deducted',
-          payment_details: {
-            currency: currency,
-            ngnz_amount: amount,
-            amount_usd: (amount * (1 / 1554.42)).toFixed(2)
-          }
-        }
+        success: false,
+        status: payBetaResponse.status,
+        message: payBetaResponse.message || 'Cable TV purchase not successful',
+        data: payBetaResponse.data
       });
     }
 
     // Step 10: Update transaction with proper status mapping
     const finalStatus = payBetaStatus === 'successful' ? 'completed' : 'failed';
     const updateData = {
-      orderId: payBetaResponse.data.order_id.toString(),
+      orderId: payBetaResponse.data.transactionId || payBetaResponse.data.reference,
       status: finalStatus,
-      productName: payBetaResponse.data.product_name || 'Cable TV',
+      productName: payBetaResponse.data.biller || 'Cable TV',
       balanceCompleted: true,
       metaData: {
         ...initialTransactionData.metaData,
         service_name: payBetaResponse.data.service_name || service_id.toUpperCase(),
         customer_name: payBetaResponse.data.customer_name || payBetaResponse.data.customerName || customer_name || undefined,
-        discount: payBetaResponse.data.discount,
-        amount_charged: payBetaResponse.data.amount_charged || payBetaResponse.data.chargedAmount,
+        discount: payBetaResponse.data.commission || 0,
+        amount_charged: payBetaResponse.data.chargedAmount,
         balance_action_taken: true,
         balance_action_type: 'immediate_debit',
         balance_action_at: new Date(),
         paybeta_status: payBetaStatus,
-        paybeta_transaction_id: payBetaResponse.data.order_id,
+        paybeta_transaction_id: payBetaResponse.data.transactionId,
         paybeta_reference: payBetaResponse.data.reference,
-        paybeta_initial_balance: payBetaResponse.data.initial_balance,
-        paybeta_final_balance: payBetaResponse.data.final_balance
+        paybeta_initial_balance: undefined,
+        paybeta_final_balance: undefined
       }
     };
 
@@ -782,7 +648,7 @@ router.post('/purchase', async (req, res) => {
     );
 
     // Verify the database update worked
-    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.order_id} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
+    logger.info(`📋 Transaction status updated: ${payBetaResponse.data.transactionId} | ${finalStatus} | PayBeta: ${payBetaStatus} | Balance: immediate_debit`);
     logger.info(`📋 Database update verification:`, {
       transactionId: finalTransaction?._id,
       status: finalTransaction?.status,
@@ -801,7 +667,7 @@ router.post('/purchase', async (req, res) => {
       userId: verifyTransaction?.userId
     });
 
-    logger.info(`📋 Transaction completed: ${payBetaResponse.data.order_id} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
+    logger.info(`📋 Transaction completed: ${payBetaResponse.data.transactionId} | ${payBetaStatus} | Balance: immediate_debit | ${Date.now() - startTime}ms`);
 
 
     // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
@@ -816,12 +682,12 @@ router.post('/purchase', async (req, res) => {
               utilityType: 'Cable TV Subscription',
               amount,
               currency,
-              reference: payBetaResponse.data.order_id?.toString() || finalRequestId,
+              reference: payBetaResponse.data.reference || payBetaResponse.data.transactionId || finalRequestId,
               status: 'COMPLETED',
-              date: payBetaResponse.data.transaction_date || new Date(),
+              date: payBetaResponse.data.transactionDate || new Date(),
               recipientPhone: customer_id,
-              provider: service_id.toUpperCase(),
-              transactionId: payBetaResponse.data.order_id?.toString(),
+              provider: payBetaResponse.data.biller || service_id.toUpperCase(),
+              transactionId: payBetaResponse.data.transactionId?.toString(),
               account: customer_id
             }
           );
@@ -829,7 +695,7 @@ router.post('/purchase', async (req, res) => {
           logger.info('Cable TV purchase email sent', {
             userId,
             email: user.email,
-            orderId: payBetaResponse.data.order_id
+            transactionId: payBetaResponse.data.transactionId
           });
         } else {
           logger.warn('Skipping cable TV purchase email - no email on file', {
@@ -846,18 +712,23 @@ router.post('/purchase', async (req, res) => {
 
       return res.status(200).json({
         success: true,
-        message: 'Cable TV purchase completed successfully',
+        status: payBetaResponse.status,
+        message: payBetaResponse.message || 'Cable TV purchase completed successfully',
         data: {
-          order_id: payBetaResponse.data.order_id,
-          status: payBetaResponse.data.status,
-          service_name: payBetaResponse.data.service_name || service_id.toUpperCase(),
-          service: payBetaResponse.data.service || service_id,
-          customer_id: customer_id,
-          customer_name: payBetaResponse.data.customer_name || payBetaResponse.data.customerName || customer_name,
-          smartCardNumber: payBetaResponse.data.smartCardNumber || customer_id,
-          amount: payBetaResponse.data.amount,
-          amount_charged: payBetaResponse.data.amount_charged || payBetaResponse.data.chargedAmount,
           reference: payBetaResponse.data.reference,
+          amount: payBetaResponse.data.amount,
+          chargedAmount: payBetaResponse.data.chargedAmount,
+          commission: payBetaResponse.data.commission,
+          biller: payBetaResponse.data.biller,
+          customerId: payBetaResponse.data.customerId,
+          token: payBetaResponse.data.token,
+          unit: payBetaResponse.data.unit,
+          bonusToken: payBetaResponse.data.bonusToken,
+          transactionDate: payBetaResponse.data.transactionDate,
+          transactionId: payBetaResponse.data.transactionId,
+          service: service_id,
+          customer_name: customer_name,
+          smartCardNumber: customer_id,
           request_id: finalRequestId,
           balance_action: 'deducted_on_success',
           payment_details: {
@@ -870,20 +741,12 @@ router.post('/purchase', async (req, res) => {
     } else if (['initiated-api', 'processing-api'].includes(payBetaStatus)) {
       return res.status(202).json({
         success: true,
-        message: 'Cable TV purchase is being processed',
+        status: payBetaResponse.status,
+        message: payBetaResponse.message || 'Cable TV purchase is being processed',
         data: {
-          order_id: payBetaResponse.data.order_id,
-          status: payBetaResponse.data.status,
-          service_name: payBetaResponse.data.service_name || service_id.toUpperCase(),
-          service: payBetaResponse.data.service || service_id,
-          customer_id: customer_id,
-          customer_name: payBetaResponse.data.customer_name || payBetaResponse.data.customerName || customer_name,
-          smartCardNumber: payBetaResponse.data.smartCardNumber || customer_id,
-          amount: payBetaResponse.data.amount,
-          amount_charged: payBetaResponse.data.amount_charged || payBetaResponse.data.chargedAmount,
-          reference: payBetaResponse.data.reference,
+          ...payBetaResponse.data,
           request_id: finalRequestId,
-          balance_action: 'updated_directly', // Changed from 'reserved' since we deduct immediately
+          balance_action: 'updated_directly',
           payment_details: {
             currency: currency,
             ngnz_amount: amount,
@@ -895,7 +758,8 @@ router.post('/purchase', async (req, res) => {
     } else {
       return res.status(200).json({
         success: true,
-        message: `Cable TV purchase status: ${payBetaStatus}`,
+        status: payBetaResponse.status,
+        message: payBetaResponse.message || `Cable TV purchase status: ${payBetaStatus}`,
         data: {
           ...payBetaResponse.data,
           request_id: finalRequestId,
