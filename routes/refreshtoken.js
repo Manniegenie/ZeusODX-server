@@ -25,13 +25,16 @@ const generateRefreshToken = (userId) => {
   );
 };
 
-// POST: /refresh-token - Refresh access and refresh tokens
-router.post('/refresh-token', async (req, res) => {
+// POST: /auth/refresh - Refresh access and refresh tokens
+router.post('/refresh', async (req, res) => {
   const { refreshToken } = req.body;
 
   if (!refreshToken) {
     logger.warn('Missing refreshToken during refresh');
-    return res.status(400).json({ message: 'Refresh token is required.' });
+    return res.status(400).json({
+      success: false,
+      message: 'Refresh token is required.'
+    });
   }
 
   try {
@@ -41,7 +44,10 @@ router.post('/refresh-token', async (req, res) => {
       decoded = jwt.verify(refreshToken, process.env.REFRESH_JWT_SECRET);
     } catch (err) {
       logger.warn('Invalid or expired refresh token', { reason: err.message });
-      return res.status(403).json({ message: 'Invalid or expired refresh token.' });
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired refresh token.'
+      });
     }
 
     const userId = decoded.id;
@@ -50,14 +56,20 @@ router.post('/refresh-token', async (req, res) => {
     const user = await User.findById(userId);
     if (!user) {
       logger.warn('User not found during refresh', { userId });
-      return res.status(404).json({ message: 'User not found.' });
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.'
+      });
     }
 
     // Check if refresh token exists in user's stored tokens
     const tokenIndex = user.refreshTokens.findIndex(rt => rt.token === refreshToken);
     if (tokenIndex === -1) {
       logger.warn('Unrecognized refresh token', { userId });
-      return res.status(403).json({ message: 'Refresh token not recognized.' });
+      return res.status(403).json({
+        success: false,
+        message: 'Refresh token not recognized.'
+      });
     }
 
     // Generate new tokens
@@ -74,6 +86,8 @@ router.post('/refresh-token', async (req, res) => {
     logger.info('Tokens refreshed successfully', { userId });
 
     res.status(200).json({
+      success: true,
+      message: 'Tokens refreshed successfully.',
       accessToken: newAccessToken,
       refreshToken: newRefreshToken,
     });
@@ -82,7 +96,10 @@ router.post('/refresh-token', async (req, res) => {
       error: error.message,
       stack: error.stack,
     });
-    res.status(500).json({ message: 'Server error during token refresh.' });
+    res.status(500).json({
+      success: false,
+      message: 'Server error during token refresh.'
+    });
   }
 });
 

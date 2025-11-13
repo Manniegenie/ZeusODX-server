@@ -421,7 +421,7 @@ const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotification
 // Public Routes
 app.use("/signin", signinRoutes);
 app.use("/signup", signupRoutes);
-app.use("/refresh-token", refreshtokenRoutes);
+app.use('/auth', refreshtokenRoutes);
 app.use("/verify-otp", verifyotpRoutes);
 app.use("/passwordpin", passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);

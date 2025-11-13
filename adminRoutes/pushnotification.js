@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 const notificationService = require('../services/notificationService');
 async function savePushCredentials({ userId, deviceId, expoPushToken, fcmToken, platform }) {
