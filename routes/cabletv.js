@@ -7,6 +7,7 @@ const { vtuAuth } = require('../auth/billauth');
 const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { validateCableAccount } = require('../services/paybetaCableValidation');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
@@ -972,203 +973,102 @@ router.post('/purchase', async (req, res) => {
  * POST /verifycabletv/verify
  */
 router.post('/verify', async (req, res) => {
-  const startTime = Date.now();
   const requestId = `cable_verify_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+  const getValue = (keys) => {
+    for (const key of keys) {
+      const value = req.body[key];
+      if (value === undefined || value === null) continue;
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) continue;
+        return trimmed;
+      }
+      return value;
+    }
+    return null;
+  };
+
+  const serviceId = getValue(['service_id', 'service', 'provider', 'serviceId']);
+  const smartCardNumber = getValue(['customer_id', 'customerId', 'smartCardNumber', 'smartcardNumber', 'cardNumber']);
+
+  logger.info('📺 Cable TV validation request received', {
+    requestId,
+    userId: req.user?.id,
+    serviceId,
+    smartCardNumber: smartCardNumber ? `${String(smartCardNumber).slice(0, 4)}***` : undefined
+  });
+
+  if (!serviceId) {
+    return res.status(400).json({
+      status: 'failed',
+      message: 'Service ID is required',
+      data: null
+    });
+  }
+
+  if (!smartCardNumber) {
+    return res.status(400).json({
+      status: 'failed',
+      message: 'Smart card number is required',
+      data: null
+    });
+  }
+
+  if (!CABLE_TV_SERVICES.includes(String(serviceId).toLowerCase())) {
+    return res.status(400).json({
+      status: 'failed',
+      message: `Invalid service ID. Must be one of: ${CABLE_TV_SERVICES.join(', ')}`,
+      data: null
+    });
+  }
+
+  if (!process.env.PAYBETA_API_KEY) {
+    logger.error('❌ Cable validation blocked: PAYBETA_API_KEY missing', { requestId });
+    return res.status(503).json({
+      status: 'failed',
+      message: 'Cable TV validation service is not configured. Please contact support.',
+      data: null
+    });
+  }
+
   try {
-    logger.info(`📺 Cable TV verification request:`, {
-      requestId,
-      userId: req.user?.id,
-      body: req.body
+    const validationResponse = await validateCableAccount({
+      service: serviceId,
+      smartCardNumber
     });
 
-    const resolve = (keys) => {
-      for (const key of keys) {
-        const value = req.body[key];
-        if (value === undefined || value === null) continue;
-        if (typeof value === 'string') {
-          const trimmed = value.trim();
-          if (trimmed.length === 0) continue;
-          return trimmed;
-        }
-        return value;
-      }
-      return null;
-    };
-
-    const service_id = resolve(['service_id', 'service', 'provider', 'serviceId']);
-    const customer_id = resolve(['customer_id', 'customerId', 'smartCardNumber', 'smartcardNumber', 'cardNumber']);
-    
-    // Validate required fields
-    if (!service_id) {
-      return res.status(400).json({
-        success: false,
-        message: 'Service ID is required'
-      });
-    }
-    
-    if (!customer_id) {
-      return res.status(400).json({
-        success: false,
-        message: 'Customer ID is required'
-      });
-    }
-
-    // Validate service_id
-    if (!CABLE_TV_SERVICES.includes(service_id.toLowerCase())) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid service ID. Must be one of: ${CABLE_TV_SERVICES.join(', ')}`
-      });
-    }
-
-    logger.info(`🔍 [${requestId}] Verifying cable TV customer via PayBeta:`, {
+    logger.info('✅ Cable TV validation successful', {
       requestId,
-      service_id,
-      customer_id: customer_id?.substring(0, 4) + '***'
+      service: validationResponse.data.service,
+      smartCardNumber: validationResponse.data.smartCardNumber ? `${String(validationResponse.data.smartCardNumber).slice(0, 4)}***` : undefined
     });
 
-    // Call PayBeta API for customer verification
-    let payBetaResponse;
-    try {
-      // Check if PayBeta API key is configured
-      if (!process.env.PAYBETA_API_KEY) {
-        logger.error(`❌ [${requestId}] PayBeta API key not configured`);
-        return res.status(503).json({
-          success: false,
-          error: 'SERVICE_CONFIGURATION_ERROR',
-          message: 'Cable TV verification service is not properly configured. Please contact support.',
-          requestId
-        });
-      }
-
-      // Use PayBeta's customer verification endpoint
-      const response = await payBetaAuth.makeRequest('POST', '/v2/cable/verify', {
-        service: service_id.toLowerCase(),
-        smartCardNumber: customer_id.trim()
-      });
-
-      payBetaResponse = response;
-
-      logger.info(`📡 [${requestId}] PayBeta verification response:`, {
-        requestId,
-        status: response.status,
-        message: response.message,
-        hasData: !!response.data
-      });
-
-    } catch (apiError) {
-      logger.error(`❌ [${requestId}] PayBeta verification failed:`, {
-        requestId,
-        service_id,
-        customer_id: customer_id?.substring(0, 4) + '***',
-        error: apiError.message,
-        status: apiError.response?.status,
-        payBetaError: apiError.response?.data,
-        hasApiKey: !!process.env.PAYBETA_API_KEY
-      });
-
-      // Handle different error types
-      if (apiError.message.includes('API key not configured') ||
-          apiError.message.includes('authentication failed')) {
-        return res.status(503).json({
-          success: false,
-          error: 'SERVICE_CONFIGURATION_ERROR',
-          message: 'Cable TV verification service is not properly configured. Please contact support.',
-          requestId
-        });
-      }
-
-      if (apiError.message.includes('Customer not found') ||
-          apiError.message.includes('Invalid customer')) {
-        return res.status(404).json({
-          success: false,
-          error: 'CUSTOMER_NOT_FOUND',
-          message: 'Customer not found or invalid customer details',
-          details: {
-            service_id,
-            customer_id: customer_id?.substring(0, 4) + '***',
-            requestId
-          }
-        });
-      }
-
-      if (apiError.message.includes('timeout')) {
-        return res.status(504).json({
-          success: false,
-          error: 'VERIFICATION_TIMEOUT',
-          message: 'Customer verification request timed out. Please try again.',
-          requestId
-        });
-      }
-
-      return res.status(500).json({
-        success: false,
-        error: 'VERIFICATION_API_ERROR',
-        message: 'Customer verification service is temporarily unavailable',
-        requestId
-      });
-    }
-
-    // Process successful verification response
-    if (payBetaResponse.status === 'successful') {
-      const customerData = payBetaResponse.data;
-
-      const enhancedResponse = {
-        success: true,
-        message: 'Cable TV customer verification successful',
-        data: {
-          customer_id: customer_id,
-          smartCardNumber: customer_id,
-          service_id: service_id,
-          service: service_id.toLowerCase(),
-          customer_name: customerData.customerName || 'N/A',
-          customerName: customerData.customerName || 'N/A',
-          current_status: customerData.status || 'Unknown',
-          current_bouquet: customerData.currentBouquet || 'N/A',
-          renewal_amount: customerData.renewalAmount || 0,
-          due_date: customerData.dueDate || null,
-          balance: customerData.balance || 0,
-          verified_at: new Date().toISOString(),
-          requestId
-        }
-      };
-
-      logger.info(`✅ [${requestId}] Cable TV verification completed successfully`, {
-        requestId,
-        service_id,
-        customer_id: customer_id?.substring(0, 4) + '***',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-
-      return res.status(200).json(enhancedResponse);
-    } else {
-      return res.status(400).json({
-        success: false,
-        error: 'VERIFICATION_FAILED',
-        message: payBetaResponse.message || 'Customer verification failed',
-        details: {
-          service_id,
-          customer_id: customer_id?.substring(0, 4) + '***',
-          requestId
-        }
-      });
-    }
-
+    return res.status(200).json(validationResponse);
   } catch (error) {
-    logger.error(`💀 [${requestId}] Cable TV verification unexpected error:`, {
+    logger.error('❌ Cable TV validation failed', {
       requestId,
-      userId: req.user?.id,
+      serviceId,
+      smartCardNumber: smartCardNumber ? `${String(smartCardNumber).slice(0, 4)}***` : undefined,
       error: error.message,
-      stack: error.stack,
-      processingTime: `${Date.now() - startTime}ms`
+      code: error.code,
+      status: error.status,
+      data: error.data
     });
 
-    return res.status(500).json({
-      success: false,
-      error: 'INTERNAL_SERVER_ERROR',
-      message: 'An unexpected error occurred during customer verification',
-      requestId
+    const statusCode = error.code === 'PAYBETA_VALIDATION_FAILED' ? 400
+      : error.code === 'PAYBETA_API_ERROR' ? 502
+      : error.code === 'INVALID_PARAMETERS' ? 400
+      : 500;
+
+    return res.status(statusCode).json({
+      status: error.status || 'failed',
+      message: error.message || 'Cable TV customer validation failed',
+      data: error.data || {
+        customerName: null,
+        smartCardNumber: String(smartCardNumber),
+        service: String(serviceId || '').toUpperCase()
+      }
     });
   }
 });
