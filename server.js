@@ -202,13 +202,34 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Rate Limiters
+// Global rate limiter - increased significantly for production mobile app
+// Production apps need higher limits due to:
+// - Multiple API calls per screen navigation
+// - Auto-refresh features
+// - Background sync operations
+// - Real-time data updates
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: { success: false, error: "Too many requests, please try again later" },
-  standardHeaders: true,
-  legacyHeaders: false,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // 1000 requests per 15 minutes (increased from 100)
+  // This equals ~66 requests per minute, which is reasonable for a production app
+  message: { 
+    success: false, 
+    error: "Too many requests, please try again later",
+    retryAfter: 15 // minutes
+  },
+  standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
+  legacyHeaders: false, // Disable `X-RateLimit-*` headers
+  skip: (req) => {
+    // Skip rate limiting for health checks and static assets
+    return req.path === '/' || req.path.startsWith('/static/');
+  },
+  // Use IP address for tracking (works for both authenticated and unauthenticated)
+  keyGenerator: (req) => {
+    return req.ip || req.connection.remoteAddress || 'unknown';
+  },
 });
+
+// Apply global limiter to all routes
 app.use(apiLimiter);
 
 const webhookLimiter = rateLimit({
