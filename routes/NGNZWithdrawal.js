@@ -10,6 +10,7 @@ const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 const { sendWithdrawalEmail } = require('../services/EmailService');
+const { sendWithdrawalNotification } = require('../services/notificationService');
 
 const router = express.Router();
 
@@ -1212,6 +1213,49 @@ router.post('/withdraw', async (req, res) => {
       } else {
         logger.warn('Skipping NGNZ withdrawal email - no email on file', {
           userId
+        });
+      }
+
+      // Send NGNZ withdrawal success push notification (non-blocking)
+      try {
+        const pushResult = await sendWithdrawalNotification(
+          userId,
+          withdrawalResult.amountToObiex, // Amount sent to bank (after fee)
+          'NGNZ',
+          'completed',
+          {
+            reference: withdrawalResult.withdrawalReference,
+            transactionId: withdrawalResult.transaction._id.toString(),
+            obiexId: obiexResult.data?.id,
+            obiexReference: obiexResult.data?.reference,
+            withdrawalType: 'NGNZ_TO_BANK',
+            bankName: destination.bankName,
+            accountNumber: maskAccountNumber(destination.accountNumber),
+            fee: withdrawalResult.feeAmount,
+            totalAmount: amount
+          }
+        );
+        
+        if (pushResult.success) {
+          logger.info('NGNZ withdrawal completed push notification sent', {
+            userId,
+            amount: withdrawalResult.amountToObiex,
+            totalAmount: amount,
+            fee: withdrawalResult.feeAmount,
+            withdrawalReference: withdrawalResult.withdrawalReference,
+            via: pushResult.via
+          });
+        } else if (!pushResult.skipped) {
+          logger.warn('Failed to send NGNZ withdrawal completed push notification', {
+            userId,
+            error: pushResult.message
+          });
+        }
+      } catch (pushError) {
+        // Log but don't fail the request if notification fails
+        logger.error('Error sending NGNZ withdrawal completed push notification', {
+          userId,
+          error: pushError.message
         });
       }
 

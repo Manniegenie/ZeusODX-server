@@ -317,7 +317,7 @@ router.post('/transaction', webhookAuth, async (req, res) => {
           logger.error(`Failed to send deposit notification email to user ${user._id}:`, emailError);
         }
 
-        // Send deposit push notification
+        // Send deposit push notification (only on CONFIRMED status)
         try {
           const pushResult = await sendDepositNotification(
             user._id.toString(),
@@ -327,18 +327,39 @@ router.post('/transaction', webhookAuth, async (req, res) => {
             {
               reference: reference,
               transactionId: transactionId,
-              hash: hash
+              hash: hash,
+              network: network
             }
           );
           
           if (pushResult.success) {
-            logger.info(`Deposit push notification sent to user ${user._id} for ${amount} ${normalizedCurrency}`);
+            logger.info(`Deposit confirmed push notification sent to user ${user._id} for ${amount} ${normalizedCurrency}`, {
+              userId: user._id,
+              amount: parseFloat(amount),
+              currency: normalizedCurrency,
+              network: network,
+              transactionId: transactionId,
+              via: pushResult.via
+            });
           } else if (!pushResult.skipped) {
-            logger.warn(`Failed to send deposit push notification to user ${user._id}: ${pushResult.message}`);
+            logger.warn(`Failed to send deposit confirmed push notification to user ${user._id}: ${pushResult.message}`, {
+              userId: user._id,
+              amount: parseFloat(amount),
+              currency: normalizedCurrency,
+              error: pushResult.message
+            });
+          } else {
+            logger.info(`Deposit notification skipped for user ${user._id} (no push token registered)`);
           }
         } catch (pushError) {
           // Log push notification error but don't fail the transaction
-          logger.error(`Error sending deposit push notification to user ${user._id}:`, pushError);
+          logger.error(`Error sending deposit confirmed push notification to user ${user._id}:`, {
+            userId: user._id,
+            amount: parseFloat(amount),
+            currency: normalizedCurrency,
+            error: pushError.message,
+            stack: pushError.stack
+          });
         }
       } catch (err) {
         logger.error(`Error crediting balance for confirmed deposit:`, err);

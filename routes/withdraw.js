@@ -1151,6 +1151,9 @@ router.post('/crypto', async (req, res) => {
       });
     }
 
+    // Note: Push notification for crypto withdrawals is sent via webhook when status becomes 'SUCCESSFUL'
+    // See routes/obiexwebhooktrx.js for the success notification implementation
+
     res.status(200).json({
       success: true,
       message: 'Crypto withdrawal initiated successfully',

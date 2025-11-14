@@ -313,4 +313,214 @@ router.post('/send-fcm', async (req, res) => {
   }
 });
 
+/**
+ * POST /notification/mock-test
+ * Comprehensive mock test endpoint for all notification types
+ * Tests: Deposit, Withdrawal, NGNZ Withdrawal, Swap, Payment, etc.
+ */
+router.post('/mock-test', async (req, res) => {
+  try {
+    const { userId, deviceId, testType = 'all' } = req.body;
+
+    if (!userId && !deviceId) {
+      return res.status(400).json({ 
+        error: 'Provide userId or deviceId',
+        example: { userId: 'user_id_here' }
+      });
+    }
+
+    // Resolve userId from deviceId if needed
+    let targetUserId = userId;
+    if (!targetUserId && deviceId) {
+      const user = await User.findOne({ deviceId }).select('_id email username');
+      if (!user) {
+        return res.status(404).json({ error: 'User with deviceId not found' });
+      }
+      targetUserId = user._id.toString();
+    }
+
+    // Verify user exists and has push tokens
+    const user = await User.findById(targetUserId).select('_id email username fcmToken expoPushToken');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.fcmToken && !user.expoPushToken) {
+      return res.status(400).json({ 
+        error: 'User has no push tokens registered',
+        hint: 'Register a push token first using /notification/register'
+      });
+    }
+
+    const results = {};
+    const testTypes = testType === 'all' 
+      ? ['deposit', 'withdrawal', 'ngnz_withdrawal', 'swap', 'payment', 'custom']
+      : [testType.toLowerCase()];
+
+    // Test Deposit Notification
+    if (testTypes.includes('deposit')) {
+      try {
+        const depositResult = await notificationService.sendDepositNotification(
+          targetUserId,
+          0.5,
+          'BTC',
+          'confirmed',
+          { reference: 'MOCK_TEST_REF', transactionId: 'MOCK_TX_ID', hash: 'MOCK_HASH' }
+        );
+        results.deposit = {
+          success: depositResult.success,
+          via: depositResult.via,
+          message: depositResult.message || 'Deposit notification sent'
+        };
+      } catch (err) {
+        results.deposit = { success: false, error: err.message };
+      }
+    }
+
+    // Test Withdrawal Notification
+    if (testTypes.includes('withdrawal')) {
+      try {
+        const withdrawalResult = await notificationService.sendWithdrawalNotification(
+          targetUserId,
+          0.1,
+          'ETH',
+          'completed',
+          { reference: 'MOCK_WD_REF', transactionId: 'MOCK_WD_TX', hash: 'MOCK_WD_HASH', fee: 0.001 }
+        );
+        results.withdrawal = {
+          success: withdrawalResult.success,
+          via: withdrawalResult.via,
+          message: withdrawalResult.message || 'Withdrawal notification sent'
+        };
+      } catch (err) {
+        results.withdrawal = { success: false, error: err.message };
+      }
+    }
+
+    // Test NGNZ Withdrawal Notification
+    if (testTypes.includes('ngnz_withdrawal')) {
+      try {
+        const ngnzWithdrawalResult = await notificationService.sendWithdrawalNotification(
+          targetUserId,
+          5000,
+          'NGNZ',
+          'completed',
+          { 
+            reference: 'MOCK_NGNZ_REF', 
+            transactionId: 'MOCK_NGNZ_TX',
+            withdrawalType: 'NGNZ_TO_BANK',
+            bankName: 'Test Bank',
+            accountNumber: '****1234'
+          }
+        );
+        results.ngnz_withdrawal = {
+          success: ngnzWithdrawalResult.success,
+          via: ngnzWithdrawalResult.via,
+          message: ngnzWithdrawalResult.message || 'NGNZ withdrawal notification sent'
+        };
+      } catch (err) {
+        results.ngnz_withdrawal = { success: false, error: err.message };
+      }
+    }
+
+    // Test Swap Notification
+    if (testTypes.includes('swap')) {
+      try {
+        const swapResult = await notificationService.sendSwapNotification(
+          targetUserId,
+          1,
+          'BTC',
+          50000,
+          'NGNZ',
+          { reference: 'MOCK_SWAP_REF', transactionId: 'MOCK_SWAP_TX' }
+        );
+        results.swap = {
+          success: swapResult.success,
+          via: swapResult.via,
+          message: swapResult.message || 'Swap notification sent'
+        };
+      } catch (err) {
+        results.swap = { success: false, error: err.message };
+      }
+    }
+
+    // Test Payment Notification
+    if (testTypes.includes('payment')) {
+      try {
+        const paymentResult = await notificationService.sendPaymentNotification(
+          targetUserId,
+          1000,
+          'NGNZ',
+          'Cable TV Subscription',
+          { reference: 'MOCK_PAYMENT_REF', transactionId: 'MOCK_PAYMENT_TX' }
+        );
+        results.payment = {
+          success: paymentResult.success,
+          via: paymentResult.via,
+          message: paymentResult.message || 'Payment notification sent'
+        };
+      } catch (err) {
+        results.payment = { success: false, error: err.message };
+      }
+    }
+
+    // Test Custom Notification
+    if (testTypes.includes('custom')) {
+      try {
+        const customResult = await notificationService.sendCustomNotification(
+          targetUserId,
+          '🧪 Mock Test Notification',
+          'This is a test notification from ZeusODX notification system',
+          { testType: 'mock', timestamp: new Date().toISOString() },
+          { sound: 'default', priority: 'high' }
+        );
+        results.custom = {
+          success: customResult.success,
+          via: customResult.via,
+          message: customResult.message || 'Custom notification sent'
+        };
+      } catch (err) {
+        results.custom = { success: false, error: err.message };
+      }
+    }
+
+    // Calculate summary
+    const totalTests = Object.keys(results).length;
+    const successfulTests = Object.values(results).filter(r => r.success).length;
+    const failedTests = totalTests - successfulTests;
+
+    return res.json({
+      success: true,
+      message: `Mock test completed: ${successfulTests}/${totalTests} notifications sent successfully`,
+      userId: targetUserId,
+      userEmail: user.email,
+      userUsername: user.username,
+      hasFcmToken: !!user.fcmToken,
+      hasExpoToken: !!user.expoPushToken,
+      testType,
+      summary: {
+        total: totalTests,
+        successful: successfulTests,
+        failed: failedTests
+      },
+      results,
+      usage: {
+        endpoint: 'POST /notification/mock-test',
+        body: {
+          userId: 'user_id (required if deviceId not provided)',
+          deviceId: 'device_id (required if userId not provided)',
+          testType: 'all | deposit | withdrawal | ngnz_withdrawal | swap | payment | custom'
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Error in mock test:', err);
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      details: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
 module.exports = router;
