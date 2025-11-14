@@ -3,6 +3,7 @@ const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 const logger = require('../utils/logger');
 const { initFirebase } = require('./fcmAdmin');
+const { saveNotification } = require('./notificationStorageService');
 
 async function clearUserTokens(userId, { expo = false, fcm = false }) {
   if (!userId || (!expo && !fcm)) return;
@@ -232,6 +233,8 @@ async function sendPushNotification(userId, notificationData) {
     }
 
     const { fcmToken, expoPushToken, deviceId, userInfo } = tokenResult;
+    let pushResult = null;
+    let pushVia = null;
 
     // Prefer FCM
     if (admin && fcmToken) {
@@ -246,19 +249,21 @@ async function sendPushNotification(userId, notificationData) {
         logger.info('Sending FCM notification', { userId, deviceId, title, email: userInfo?.email });
         const response = await admin.messaging().send(message);
         logger.info('FCM notification sent', { userId, responseId: response });
-        return { success: true, id: response, via: 'fcm' };
+        pushResult = { success: true, id: response, via: 'fcm' };
+        pushVia = 'fcm';
       } catch (firebaseError) {
         logger.error('FCM send failed', { userId, error: firebaseError.code || firebaseError.message });
         if (firebaseError.code === 'messaging/registration-token-not-registered' || firebaseError.code === 'messaging/invalid-registration-token') {
           await clearUserTokens(userId, { fcm: true });
-          return { success: false, message: 'FCM token invalid', via: 'fcm' };
+          pushResult = { success: false, message: 'FCM token invalid', via: 'fcm' };
+        } else {
+          throw firebaseError;
         }
-        throw firebaseError;
       }
     }
 
     // Fallback to Expo if available
-    if (expoPushToken) {
+    if (!pushResult && expoPushToken) {
       const message = {
         to: expoPushToken,
         sound,
@@ -282,10 +287,33 @@ async function sendPushNotification(userId, notificationData) {
       const hasErrors = tickets.some(t => t.status === 'error');
       if (hasErrors) logger.warn('Expo push had errors', { userId, tickets });
       handleExpoReceipts(tickets, userId).catch((error) => logger.error('Expo receipt handler failed', { userId, error: error.message }));
-      return { success: true, tickets, hasErrors, via: 'expo' };
+      pushResult = { success: true, tickets, hasErrors, via: 'expo' };
+      pushVia = 'expo';
     }
 
-    return { success: false, message: 'No valid push token' };
+    if (!pushResult) {
+      pushResult = { success: false, message: 'No valid push token' };
+    }
+
+    // Save notification to database (fire-and-forget, don't block response)
+    const notificationType = data.type || 'CUSTOM';
+    saveNotification(userId, {
+      title,
+      message: body,
+      subtitle: data.subtitle || null,
+      type: notificationType,
+      data: data,
+      pushSent: pushResult.success,
+      pushVia: pushVia
+    }).catch((saveError) => {
+      // Log but don't fail the push notification
+      logger.error('Failed to save notification to database', {
+        userId,
+        error: saveError.message
+      });
+    });
+
+    return pushResult;
 
   } catch (error) {
     logger.error('Failed to send push notification', {
