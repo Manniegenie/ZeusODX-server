@@ -15,8 +15,10 @@ const router = express.Router();
 // Cache management
 const quoteCache = new Map();
 const userCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
 const QUOTE_TTL = 30000; // 30 seconds for quotes
+const { registerCache } = require('../utils/cacheManager');
+registerCache('swap_userCache', userCache);
 
 // Supported tokens
 const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'Polygon', 'TRX']);

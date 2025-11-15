@@ -15,7 +15,9 @@ const router = express.Router();
 
 // Cache for user data to avoid repeated DB queries
 const userCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
+const { registerCache } = require('../utils/cacheManager');
+registerCache('betting_userCache', userCache);
 
 /**
  * Normalize service ID to match network enum format
@@ -618,6 +620,35 @@ router.post('/fund', async (req, res) => {
 
     // Step 11: Return response based on status - MAINTAINING ORIGINAL RESPONSE STRUCTURE
     if (finalStatus === 'completed') {
+      // ✅ Send push notification
+      try {
+        const { sendUtilityPaymentNotification } = require('../services/notificationService');
+        await sendUtilityPaymentNotification(
+          userId,
+          'BETTING',
+          amount,
+          ebillsResponse.data.service_name || service_id,
+          customer_id,
+          {
+            orderId: ebillsResponse.data.order_id?.toString(),
+            requestId: finalRequestId,
+            currency: 'NGNZ',
+            transactionId: ebillsResponse.data.order_id?.toString(),
+            customerName: ebillsResponse.data.customer_name
+          }
+        );
+        logger.info('Betting funding notification sent', { 
+          userId, 
+          orderId: ebillsResponse.data.order_id 
+        });
+      } catch (notificationError) {
+        logger.error('Failed to send betting funding notification', {
+          userId,
+          orderId: ebillsResponse.data.order_id,
+          error: notificationError.message
+        });
+      }
+
       // ✅ Send transaction email
       try {
         if (user.email) {

@@ -16,7 +16,9 @@ const router = express.Router();
 
 // Cache for user balance optimization
 const userCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
+const { registerCache } = require('../utils/cacheManager');
+registerCache('ngnz_withdrawal_userCache', userCache);
 
 // NGNZ withdrawal fees
 // NOTE: OPERATIONAL FEE (30 NGN) vs RECORDED FEE (100 NGN)

@@ -16,7 +16,9 @@ const router = express.Router();
 
 // Cache for user data to avoid repeated DB queries
 const userCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
+const { registerCache } = require('../utils/cacheManager');
+registerCache('electricity_userCache', userCache);
 
 const ELECTRICITY_SERVICES = [
   'ikeja-electric','eko-electric','kano-electric','portharcourt-electric',
@@ -995,20 +997,20 @@ router.post('/purchase', async (req, res) => {
 
     // ✅ SEND SUCCESS NOTIFICATION
     try {
-      await sendPaymentNotification(
+      const { sendUtilityPaymentNotification } = require('../services/notificationService');
+      await sendUtilityPaymentNotification(
         userId,
+        'ELECTRICITY',
         amount,
-        'NGNZ',
-        `Electricity payment for ${customer_id} (${service_id})`,
+        ebillsResponse.data.biller || service_id,
+        customer_id,
         {
           orderId: ebillsResponse.data.transactionId.toString(),
           requestId: validatedReference,
-          serviceName: ebillsResponse.data.biller,
-          customerId: customer_id,
           meterType: variation_id,
           token: ebillsResponse.data.token,
           units: ebillsResponse.data.unit,
-          productType: 'ELECTRICITY'
+          transactionId: ebillsResponse.data.transactionId.toString()
         }
       );
       

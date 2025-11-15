@@ -3,8 +3,98 @@ const router = express.Router();
 const User = require('../models/user');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
+const { clearUserCaches } = require('../utils/cacheManager');
 
-// GET: /api/user/profile - Get user profile information
+// GET: /api/user/profile/complete - Consolidated profile endpoint (returns all profile data in one call)
+// This prevents concurrent API calls that can cause issues on real devices
+router.get('/profile/complete', async (req, res) => {
+  const startTime = Date.now();
+  let userId = null;
+
+  try {
+    userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'INVALID_TOKEN',
+        message: 'Invalid token payload' 
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'INVALID_USER_ID',
+        message: 'Invalid user ID format' 
+      });
+    }
+
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        success: false,
+        error: 'DATABASE_ERROR',
+        message: 'Database connection unavailable. Please try again.' 
+      });
+    }
+
+    // Clear caches to ensure fresh data
+    clearUserCaches(userId);
+
+    // Fetch all profile data in one query
+    const user = await User.findById(userId)
+      .select('username firstname lastname email phonenumber is2FAEnabled avatarUrl avatarLastUpdated')
+      .lean({ virtuals: false })
+      .maxTimeMS(5000);
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: 'User not found' 
+      });
+    }
+
+    const fullName = [user.firstname, user.lastname].filter(Boolean).join(' ').trim() || null;
+
+    const processingTime = Date.now() - startTime;
+    logger.info('Complete profile fetched successfully', { userId, processingTime });
+
+    // Return all profile data in one response
+    res.json({
+      success: true,
+      data: {
+        profile: {
+          username: user.username || null,
+          fullName: fullName,
+          email: user.email || null,
+          phoneNumber: user.phonenumber || null,
+          is2FAEnabled: Boolean(user.is2FAEnabled),
+          avatar: {
+            url: user.avatarUrl || null,
+            lastUpdated: user.avatarLastUpdated || null
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error('Error fetching complete profile', { 
+      error: error.message, 
+      userId,
+      processingTime
+    });
+    
+    res.status(500).json({ 
+      success: false,
+      error: 'SERVER_ERROR',
+      message: 'An error occurred while fetching your profile. Please try again.' 
+    });
+  }
+});
+
+// GET: /api/user/profile - Get user profile information (backward compatibility)
 router.get('/profile', async (req, res) => {
   const startTime = Date.now();
   let userId = null;
@@ -49,11 +139,17 @@ router.get('/profile', async (req, res) => {
       });
     }
 
+    // Clear any cached user data to ensure fresh profile data
+    // This prevents stale data from other routes' caches (airtime, data, cabletv, etc.)
+    clearUserCaches(userId);
+
     // Fetch user from database with required fields
-    // Use lean() for better performance and add timeout
+    // Use lean() for better performance (returns plain JS object, not Mongoose document)
+    // This ensures we get fresh data from the database, not from Mongoose's internal cache
+    // The lean() method bypasses Mongoose document caching
     const user = await User.findById(userId)
       .select('username firstname lastname email phonenumber is2FAEnabled avatarUrl avatarLastUpdated')
-      .lean()
+      .lean({ virtuals: false }) // Explicitly disable virtuals to ensure consistency
       .maxTimeMS(5000); // 5 second timeout
 
     if (!user) {

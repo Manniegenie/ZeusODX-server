@@ -50,6 +50,10 @@ router.post('/update-username', async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
+    // Clear all user caches to ensure profile data is fresh
+    const { clearUserCaches } = require('../utils/cacheManager');
+    clearUserCaches(userId);
+
     logger.info('Username updated successfully', { userId, newUsername: username });
     res.status(200).json({ message: "Username updated successfully.", user: updatedUser });
   } catch (error) {

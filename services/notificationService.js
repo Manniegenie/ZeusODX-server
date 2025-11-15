@@ -54,43 +54,43 @@ const expo = new Expo();
 const NOTIFICATION_TEMPLATES = {
   DEPOSIT: {
     title: '💰 Deposit Received',
-    getMessage: (amount, currency) => `Your deposit of ${amount} ${currency} has been received and is being processed.`,
+    getMessage: (amount, currency) => `Deposit of ${amount} ${currency} received. Processing...`,
     sound: 'default',
     priority: 'high',
   },
   DEPOSIT_CONFIRMED: {
     title: '✅ Deposit Confirmed',
-    getMessage: (amount, currency) => `Your deposit of ${amount} ${currency} has been confirmed and added to your balance.`,
+    getMessage: (amount, currency) => `Deposit of ${amount} ${currency} confirmed. Balance updated.`,
     sound: 'default',
     priority: 'high',
   },
   WITHDRAWAL: {
     title: '📤 Withdrawal Initiated',
-    getMessage: (amount, currency) => `Your withdrawal of ${amount} ${currency} has been initiated and is being processed.`,
+    getMessage: (amount, currency) => `Withdrawal of ${amount} ${currency} initiated. Processing...`,
     sound: 'default',
     priority: 'high',
   },
   WITHDRAWAL_COMPLETED: {
     title: '✅ Withdrawal Completed',
-    getMessage: (amount, currency) => `Your withdrawal of ${amount} ${currency} has been completed successfully.`,
+    getMessage: (amount, currency) => `Withdrawal of ${amount} ${currency} completed successfully.`,
     sound: 'default',
     priority: 'high',
   },
   WITHDRAWAL_FAILED: {
     title: '❌ Withdrawal Failed',
-    getMessage: (amount, currency) => `Your withdrawal of ${amount} ${currency} has failed. Please contact support.`,
+    getMessage: (amount, currency) => `Withdrawal of ${amount} ${currency} failed. Contact support.`,
     sound: 'default',
     priority: 'high',
   },
   TRANSFER_SENT: {
     title: '📨 Transfer Sent',
-    getMessage: (amount, currency, recipient) => `You sent ${amount} ${currency}${recipient ? ` to ${recipient}` : ''}.`,
+    getMessage: (amount, currency, recipient) => `Sent ${amount} ${currency}${recipient ? ` to ${recipient}` : ''}.`,
     sound: 'default',
     priority: 'default',
   },
   TRANSFER_RECEIVED: {
     title: '📬 Transfer Received',
-    getMessage: (amount, currency, sender) => `You received ${amount} ${currency}${sender ? ` from ${sender}` : ''}.`,
+    getMessage: (amount, currency, sender) => `Received ${amount} ${currency}${sender ? ` from ${sender}` : ''}.`,
     sound: 'default',
     priority: 'high',
   },
@@ -104,7 +104,7 @@ const NOTIFICATION_TEMPLATES = {
   PAYMENT_COMPLETED: {
     title: '💳 Payment Successful',
     getMessage: (amount, currency, description) => 
-      `Payment of ${amount} ${currency}${description ? ` for ${description}` : ''} was successful.`,
+      `Payment of ${amount} ${currency}${description ? ` for ${description}` : ''} completed.`,
     sound: 'default',
     priority: 'default',
   },
@@ -117,7 +117,7 @@ const NOTIFICATION_TEMPLATES = {
   AIRTIME_PURCHASE: {
     title: '📱 Airtime Purchase Successful',
     getMessage: (amount, network, phone) => 
-      `Your ${network} airtime purchase of ₦${amount} to ${phone} was successful.`,
+      `${network} airtime ₦${amount} to ${phone} completed.`,
     sound: 'default',
     priority: 'default',
   },
@@ -145,14 +145,35 @@ const NOTIFICATION_TEMPLATES = {
   SWAP_COMPLETED: {
     title: '💱 Swap Completed',
     getMessage: (fromAmount, fromCurrency, toAmount, toCurrency) => 
-      `Successfully swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
+      `Swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
     sound: 'default',
     priority: 'default',
   },
   NGNZ_SWAP_COMPLETED: {
     title: '💱 NGNZ Swap Completed',
     getMessage: (fromAmount, fromCurrency, toAmount, toCurrency) => 
-      `Successfully swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
+      `Swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
+    sound: 'default',
+    priority: 'default',
+  },
+  CABLE_TV_COMPLETED: {
+    title: '📺 Cable TV Payment',
+    getMessage: (amount, provider, account) => 
+      `₦${amount} paid for ${provider}${account ? ` (${account})` : ''}.`,
+    sound: 'default',
+    priority: 'default',
+  },
+  BETTING_FUNDING_COMPLETED: {
+    title: '🎲 Betting Funding',
+    getMessage: (amount, provider, account) => 
+      `₦${amount} funded to ${provider}${account ? ` (${account})` : ''}.`,
+    sound: 'default',
+    priority: 'default',
+  },
+  ELECTRICITY_PAYMENT_COMPLETED: {
+    title: '⚡ Electricity Payment',
+    getMessage: (amount, provider, account) => 
+      `₦${amount} paid for ${provider}${account ? ` (${account})` : ''}.`,
     sound: 'default',
     priority: 'default',
   },
@@ -707,6 +728,68 @@ async function sendSwapCompletionNotification(userId, fromAmount, fromCurrency, 
   }
 }
 
+/**
+ * Send utility payment notification (Cable TV, Betting, Electricity)
+ * @param {string} userId - User ID
+ * @param {string} utilityType - Type of utility ('CABLE_TV', 'BETTING', 'ELECTRICITY')
+ * @param {number} amount - Payment amount
+ * @param {string} provider - Service provider name
+ * @param {string} account - Account number/ID
+ * @param {Object} additionalData - Additional data to include
+ * @returns {Promise<Object>} Notification result
+ */
+async function sendUtilityPaymentNotification(userId, utilityType, amount, provider, account = '', additionalData = {}) {
+  try {
+    let template;
+    let notificationType;
+    
+    switch (utilityType.toUpperCase()) {
+      case 'CABLE_TV':
+        template = NOTIFICATION_TEMPLATES.CABLE_TV_COMPLETED;
+        notificationType = 'PAYMENT';
+        break;
+      case 'BETTING':
+        template = NOTIFICATION_TEMPLATES.BETTING_FUNDING_COMPLETED;
+        notificationType = 'PAYMENT';
+        break;
+      case 'ELECTRICITY':
+        template = NOTIFICATION_TEMPLATES.ELECTRICITY_PAYMENT_COMPLETED;
+        notificationType = 'PAYMENT';
+        break;
+      default:
+        template = NOTIFICATION_TEMPLATES.PAYMENT_COMPLETED;
+        notificationType = 'PAYMENT';
+    }
+    
+    const notificationData = {
+      title: template.title,
+      body: template.getMessage(amount, provider, account),
+      sound: template.sound,
+      priority: template.priority,
+      data: {
+        type: notificationType,
+        utilityType: utilityType.toUpperCase(),
+        amount,
+        provider,
+        account,
+        currency: 'NGNZ',
+        ...additionalData
+      }
+    };
+
+    return await sendPushNotification(userId, notificationData);
+  } catch (error) {
+    logger.error('Error sending utility payment notification', { 
+      userId, 
+      utilityType, 
+      amount, 
+      provider, 
+      error: error.message 
+    });
+    return { success: false, message: 'Failed to send utility payment notification' };
+  }
+}
+
 module.exports = {
   sendPushNotification,
   sendDepositNotification,
@@ -721,5 +804,6 @@ module.exports = {
   getUserPushToken,
   sendKycCompletionNotification,
   sendSwapCompletionNotification,
+  sendUtilityPaymentNotification,
   NOTIFICATION_TEMPLATES
 };

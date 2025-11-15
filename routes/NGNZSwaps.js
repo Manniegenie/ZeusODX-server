@@ -16,8 +16,10 @@ const router = express.Router();
 const ngnzQuoteCache = new Map();
 const userCache = new Map();
 const priceCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
 const PRICE_CACHE_TTL = 5000; // 5 seconds for prices
+const { registerCache } = require('../utils/cacheManager');
+registerCache('ngnz_swaps_userCache', userCache);
 
 /**
  * Map frontend currency to Obiex currency

@@ -14,7 +14,9 @@ const router = express.Router();
 
 // Cache for user data to avoid repeated DB queries
 const userCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
+const { registerCache } = require('../utils/cacheManager');
+registerCache('cabletv_userCache', userCache);
 
 // Valid cable TV service providers
 const CABLE_TV_SERVICES = ['dstv', 'gotv', 'startimes', 'showmax'];
@@ -750,6 +752,34 @@ router.post('/purchase', async (req, res) => {
 
     // Step 11: Return response - ONLY SUCCESS NOTIFICATION WHEN SUCCESSFUL
     if (payBetaStatus === 'successful') {
+      // ✅ Send push notification
+      try {
+        const { sendUtilityPaymentNotification } = require('../services/notificationService');
+        await sendUtilityPaymentNotification(
+          userId,
+          'CABLE_TV',
+          amount,
+          service_id.toUpperCase(),
+          customer_id,
+          {
+            orderId: payBetaResponse.data.order_id?.toString(),
+            requestId: finalRequestId,
+            currency: 'NGNZ',
+            transactionId: payBetaResponse.data.order_id?.toString()
+          }
+        );
+        logger.info('Cable TV purchase notification sent', { 
+          userId, 
+          orderId: payBetaResponse.data.order_id 
+        });
+      } catch (notificationError) {
+        logger.error('Failed to send cable TV purchase notification', {
+          userId,
+          orderId: payBetaResponse.data.order_id,
+          error: notificationError.message
+        });
+      }
+
       // ✅ Send transaction email
       try {
         if (user.email) {

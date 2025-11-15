@@ -15,7 +15,9 @@ const router = express.Router();
 
 // Cache for user data to avoid repeated DB queries
 const userCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
+const { registerCache } = require('../utils/cacheManager');
+registerCache('data_userCache', userCache);
 
 // Valid data service providers
 const DATA_SERVICES = ['mtn', 'glo', 'airtel', '9mobile'];
