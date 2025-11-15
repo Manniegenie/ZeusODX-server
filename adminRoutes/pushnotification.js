@@ -3,8 +3,9 @@ const router = express.Router();
 const User = require('../models/user');
 const notificationService = require('../services/notificationService');
 async function savePushCredentials({ userId, deviceId, expoPushToken, fcmToken, platform }) {
-  if (!expoPushToken && !fcmToken) {
-    const error = new Error('expoPushToken or fcmToken is required.');
+  // Expo-only: fcmToken is ignored but kept for backward compatibility
+  if (!expoPushToken) {
+    const error = new Error('expoPushToken is required.');
     error.status = 400;
     throw error;
   }
@@ -53,9 +54,8 @@ async function savePushCredentials({ userId, deviceId, expoPushToken, fcmToken, 
   if (expoPushToken) {
     user.expoPushToken = expoPushToken;
   }
-  if (fcmToken) {
-    user.fcmToken = fcmToken;
-  }
+  // FCM removed - clear any existing FCM token
+  user.fcmToken = null;
   if (platform) {
     user.pushPlatform = platform;
   }
@@ -64,22 +64,14 @@ async function savePushCredentials({ userId, deviceId, expoPushToken, fcmToken, 
 
   return user;
 }
-// Test Firebase connection
+// Test Expo notification service (Firebase/FCM removed)
 router.get('/test-firebase', async (req, res) => {
-  try {
-    const fcmAdmin = require('../services/fcmAdmin');
-    res.json({ 
-      success: true, 
-      message: 'Firebase Admin SDK initialized successfully',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Firebase test error:', error);
-    res.status(500).json({ 
-      error: 'Firebase initialization failed', 
-      details: error.message 
-    });
-  }
+  // Expo service is always available, no Firebase needed
+  res.json({ 
+    success: true, 
+    message: 'Expo notification service is ready',
+    timestamp: new Date().toISOString()
+  });
 });
 
 // POST /notification/register (recommended)
@@ -146,13 +138,10 @@ router.post('/send-all', async (req, res) => {
       return res.status(400).json({ error: 'Message/body is required.' });
     }
 
-    // Get all users with push tokens
+    // Get all users with Expo push tokens
     const users = await User.find({
-      $or: [
-        { fcmToken: { $ne: null } },
-        { expoPushToken: { $ne: null } }
-      ]
-    }).select('_id fcmToken expoPushToken');
+      expoPushToken: { $ne: null }
+    }).select('_id expoPushToken');
 
     if (!users.length) {
       return res.status(404).json({ error: 'No users with push tokens found.' });
@@ -197,18 +186,13 @@ router.get('/stats', async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
     const usersWithTokens = await User.countDocuments({
-      $or: [
-        { fcmToken: { $ne: null } },
-        { expoPushToken: { $ne: null } }
-      ]
+      expoPushToken: { $ne: null }
     });
-    const fcmTokens = await User.countDocuments({ fcmToken: { $ne: null } });
     const expoTokens = await User.countDocuments({ expoPushToken: { $ne: null } });
 
     res.json({
       totalUsers,
       usersWithTokens,
-      fcmTokens,
       expoTokens,
       lastSent: new Date().toISOString()
     });
@@ -218,31 +202,13 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// POST /notification/register-fcm-token
+// POST /notification/register-fcm-token (DEPRECATED - FCM removed, use Expo only)
 router.post('/register-fcm-token', async (req, res) => {
-  try {
-    const { fcmToken, deviceId, userId, platform } = req.body;
-
-    if (!fcmToken) {
-      return res.status(400).json({ error: 'fcmToken is required.' });
-    }
-
-    const user = await savePushCredentials({
-      userId,
-      deviceId,
-      fcmToken,
-      expoPushToken: null,
-      platform,
-    });
-
-    return res.json({ message: 'FCM token registered successfully.', userId: user._id });
-  } catch (err) {
-    console.error('Error registering FCM token:', err);
-    if (err.status) {
-      return res.status(err.status).json({ error: err.message });
-    }
-    return res.status(500).json({ error: 'Internal server error.', details: err.message });
-  }
+  return res.status(410).json({ 
+    error: 'FCM is no longer supported. Please use Expo push tokens instead.',
+    deprecated: true,
+    alternative: 'Use /notification/register-token with expoPushToken'
+  });
 });
 
 // POST /notification/unregister
@@ -339,16 +305,16 @@ router.post('/mock-test', async (req, res) => {
       targetUserId = user._id.toString();
     }
 
-    // Verify user exists and has push tokens
-    const user = await User.findById(targetUserId).select('_id email username fcmToken expoPushToken');
+    // Verify user exists and has Expo push token
+    const user = await User.findById(targetUserId).select('_id email username expoPushToken');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    if (!user.fcmToken && !user.expoPushToken) {
+    if (!user.expoPushToken) {
       return res.status(400).json({ 
-        error: 'User has no push tokens registered',
-        hint: 'Register a push token first using /notification/register'
+        error: 'User has no Expo push token registered',
+        hint: 'Register an Expo push token first using /notification/register-token'
       });
     }
 
@@ -495,7 +461,6 @@ router.post('/mock-test', async (req, res) => {
       userId: targetUserId,
       userEmail: user.email,
       userUsername: user.username,
-      hasFcmToken: !!user.fcmToken,
       hasExpoToken: !!user.expoPushToken,
       testType,
       summary: {

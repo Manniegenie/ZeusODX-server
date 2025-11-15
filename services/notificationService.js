@@ -1,21 +1,18 @@
-// services/pushNotificationService.js
+// services/notificationService.js
+// Expo-only notification service (FCM removed to avoid conflicts)
 const { Expo } = require('expo-server-sdk');
 const User = require('../models/user');
 const logger = require('../utils/logger');
-const { initFirebase } = require('./fcmAdmin');
 const { saveNotification } = require('./notificationStorageService');
 
-async function clearUserTokens(userId, { expo = false, fcm = false }) {
-  if (!userId || (!expo && !fcm)) return;
+async function clearUserTokens(userId) {
+  if (!userId) return;
 
   try {
-    const update = {};
-    if (expo) update.expoPushToken = null;
-    if (fcm) update.fcmToken = null;
-    await User.findByIdAndUpdate(userId, update, { new: false }).lean();
-    logger.info('Cleared invalid push token(s) for user', { userId, expo, fcm });
+    await User.findByIdAndUpdate(userId, { expoPushToken: null }, { new: false }).lean();
+    logger.info('Cleared invalid Expo push token for user', { userId });
   } catch (error) {
-    logger.error('Failed to clear invalid push token', { userId, expo, fcm, error: error.message });
+    logger.error('Failed to clear invalid push token', { userId, error: error.message });
   }
 }
 
@@ -38,7 +35,7 @@ async function handleExpoReceipts(tickets, userId) {
           const detailError = receipt.details?.error;
           logger.warn('Expo receipt error', { userId, receiptId, detailError });
           if (detailError === 'DeviceNotRegistered' || detailError === 'NotRegistered') {
-            await clearUserTokens(userId, { expo: true });
+            await clearUserTokens(userId);
           }
         }
       }
@@ -48,11 +45,8 @@ async function handleExpoReceipts(tickets, userId) {
   }
 }
 
-// Initialize Expo SDK (kept for backward compatibility)
+// Initialize Expo SDK
 const expo = new Expo();
-const admin = (() => {
-  try { return initFirebase(); } catch { return null; }
-})();
 
 /**
  * Notification templates for different transaction types
@@ -171,24 +165,14 @@ const NOTIFICATION_TEMPLATES = {
  */
 async function getUserPushToken(userId) {
   try {
-    const user = await User.findById(userId).select('expoPushToken fcmToken deviceId email username');
+    const user = await User.findById(userId).select('expoPushToken deviceId email username');
     
     if (!user) {
       logger.warn('User not found for push notification', { userId });
       return { success: false, message: 'User not found' };
     }
 
-    // Prefer FCM token when available
-    if (user.fcmToken) {
-      return {
-        success: true,
-        fcmToken: user.fcmToken,
-        deviceId: user.deviceId,
-        userInfo: { email: user.email, username: user.username }
-      };
-    }
-
-    // Fallback to Expo token (more lenient validation for testing)
+    // Use Expo token only (more lenient validation for testing/simulators)
     if (user.expoPushToken && (Expo.isExpoPushToken(user.expoPushToken) || user.expoPushToken.startsWith('ExponentPushToken['))) {
       return {
         success: true,
@@ -198,8 +182,8 @@ async function getUserPushToken(userId) {
       };
     }
 
-    logger.info('User has no valid push token registered', { userId, email: user.email, username: user.username });
-    return { success: false, message: 'No push token registered' };
+    logger.info('User has no valid Expo push token registered', { userId, email: user.email, username: user.username });
+    return { success: false, message: 'No Expo push token registered' };
   } catch (error) {
     logger.error('Error fetching user push token', { userId, error: error.message });
     return { success: false, message: 'Error fetching push token' };
@@ -232,38 +216,12 @@ async function sendPushNotification(userId, notificationData) {
       };
     }
 
-    const { fcmToken, expoPushToken, deviceId, userInfo } = tokenResult;
+    const { expoPushToken, deviceId, userInfo } = tokenResult;
     let pushResult = null;
     let pushVia = null;
 
-    // Prefer FCM
-    if (admin && fcmToken) {
-      const message = {
-        token: fcmToken,
-        notification: { title, body },
-        data: Object.fromEntries(Object.entries({ ...data, userId, timestamp: new Date().toISOString() }).map(([k,v]) => [String(k), String(v)])),
-        android: { priority: priority === 'high' ? 'high' : 'normal', notification: { channelId: 'transactions' } },
-        apns: { payload: { aps: { sound } } }
-      };
-      try {
-        logger.info('Sending FCM notification', { userId, deviceId, title, email: userInfo?.email });
-        const response = await admin.messaging().send(message);
-        logger.info('FCM notification sent', { userId, responseId: response });
-        pushResult = { success: true, id: response, via: 'fcm' };
-        pushVia = 'fcm';
-      } catch (firebaseError) {
-        logger.error('FCM send failed', { userId, error: firebaseError.code || firebaseError.message });
-        if (firebaseError.code === 'messaging/registration-token-not-registered' || firebaseError.code === 'messaging/invalid-registration-token') {
-          await clearUserTokens(userId, { fcm: true });
-          pushResult = { success: false, message: 'FCM token invalid', via: 'fcm' };
-        } else {
-          throw firebaseError;
-        }
-      }
-    }
-
-    // Fallback to Expo if available
-    if (!pushResult && expoPushToken) {
+    // Use Expo only
+    if (expoPushToken) {
       const message = {
         to: expoPushToken,
         sound,
@@ -289,10 +247,8 @@ async function sendPushNotification(userId, notificationData) {
       handleExpoReceipts(tickets, userId).catch((error) => logger.error('Expo receipt handler failed', { userId, error: error.message }));
       pushResult = { success: true, tickets, hasErrors, via: 'expo' };
       pushVia = 'expo';
-    }
-
-    if (!pushResult) {
-      pushResult = { success: false, message: 'No valid push token' };
+    } else {
+      pushResult = { success: false, message: 'No valid Expo push token' };
     }
 
     // Save notification to database (fire-and-forget, don't block response)
