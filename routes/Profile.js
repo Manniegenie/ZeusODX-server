@@ -10,7 +10,7 @@ const { clearUserCaches } = require('../utils/cacheManager');
  * Consolidated profile endpoint - returns all profile data in a single call
  * This prevents concurrent API calls that can cause issues on real devices
  */
-router.get('/profile/complete', async (req, res) => {
+router.get('/complete', async (req, res) => {
   const startTime = Date.now();
   let userId = null;
 
@@ -157,7 +157,7 @@ router.get('/profile/complete', async (req, res) => {
  * Legacy endpoint for backward compatibility
  * @deprecated Use /profile/complete instead
  */
-router.get('/profile', async (req, res) => {
+router.get('/', async (req, res) => {
   const startTime = Date.now();
   let userId = null;
 
