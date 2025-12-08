@@ -5,15 +5,12 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 const CONCURRENCY_LIMIT = 3;
 
+// MAINNET ONLY - All testnet/devnet assets removed
+// This file may not be actively used - main wallet generation is in generatewallets.js (Obiex)
+// If Fireblocks is used, only mainnet assets should be configured here
 const assetIdsToCreate = [
-  'BTC_TEST', // Bitcoin Testnet
-  'ETH_TEST3', // Ethereum Goerli
-  'SOL_TEST', // Solana Testnet
-  'USDT_ERC20_TEST', // USDT on Ethereum Goerli
-  'USDT_TRX_TEST', // USDT on Tron Testnet
-  'USDT_BSC_TEST', // USDT on Binance Smart Chain Testnet
-  'USDC_ERC20_TEST', // USDC on Ethereum Goerli
-  'USDC_BSC_TEST', // USDC on Binance Smart Chain Testnet
+  // NOTE: All testnet assets have been removed
+  // Only mainnet assets should be added here if Fireblocks is used
 ];
 
 // ... rest of the file unchanged ...

@@ -102,8 +102,24 @@ router.post('/register-token', async (req, res) => {
   try {
     const { expoPushToken, deviceId, userId, platform, fcmToken } = req.body;
 
+    console.log('📱 Token registration request received:', {
+      platform: platform || 'unknown',
+      hasExpoToken: !!expoPushToken,
+      expoTokenPrefix: expoPushToken ? expoPushToken.substring(0, 20) + '...' : 'none',
+      hasDeviceId: !!deviceId,
+      deviceId: deviceId || 'none',
+      hasUserId: !!userId,
+      userId: userId || 'none',
+    });
+
     if (!expoPushToken) {
+      console.error('❌ Token registration failed: expoPushToken is required');
       return res.status(400).json({ error: 'expoPushToken is required.' });
+    }
+
+    // Validate Expo token format
+    if (!expoPushToken.startsWith('ExponentPushToken[') && !expoPushToken.startsWith('ExpoPushToken[')) {
+      console.warn('⚠️ Unexpected token format:', expoPushToken.substring(0, 50));
     }
 
     const user = await savePushCredentials({
@@ -114,10 +130,28 @@ router.post('/register-token', async (req, res) => {
       platform,
     });
 
-    console.log(`✅ Push token registered for user/device: ${user.email || user.username || deviceId}`);
-    return res.json({ message: 'Push token registered successfully.', userId: user._id });
+    console.log(`✅ Push token registered successfully for:`, {
+      platform: platform || 'unknown',
+      user: user.email || user.username || deviceId || 'unknown',
+      userId: user._id,
+      hasExpoToken: !!user.expoPushToken,
+      pushPlatform: user.pushPlatform || 'unknown',
+    });
+
+    return res.json({ 
+      message: 'Push token registered successfully.', 
+      userId: user._id,
+      platform: platform || 'unknown',
+    });
   } catch (err) {
-    console.error('Error registering push token:', err);
+    console.error('❌ Error registering push token:', {
+      error: err.message,
+      stack: err.stack,
+      platform: req.body?.platform || 'unknown',
+      hasExpoToken: !!req.body?.expoPushToken,
+      hasDeviceId: !!req.body?.deviceId,
+      hasUserId: !!req.body?.userId,
+    });
     if (err.status) {
       return res.status(err.status).json({ error: err.message });
     }
