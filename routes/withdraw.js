@@ -8,6 +8,7 @@ const Transaction = require('../models/transaction');
 const CryptoFeeMarkup = require('../models/cryptofee');
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { validateTransactionLimit } = require('../services/kyccheckservice');
 const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
@@ -809,7 +810,9 @@ async function createWithdrawalTransaction(transactionData) {
     obiexTransactionId,
     obiexReference,
     narration,
-    user
+    user,
+    kycValidated = false,
+    kycLevel = undefined
   } = transactionData;
 
   try {
@@ -831,12 +834,12 @@ async function createWithdrawalTransaction(transactionData) {
         expectedConfirmations: WITHDRAWAL_CONFIG.MIN_CONFIRMATION_BLOCKS[currency.toUpperCase()] || 1,
         twofa_validated: true,
         passwordpin_validated: true,
-        kyc_validated: false,
-        kyc_level: user?.kycLevel,
+        kyc_validated: kycValidated,
+        kyc_level: kycLevel ?? user?.kycLevel,
         security_validations: {
           twofa: true,
           passwordpin: true,
-          kyc: false,
+          kyc: kycValidated,
           duplicate_check: true
         },
         balance_updated_directly: true
@@ -908,6 +911,24 @@ router.post('/crypto', async (req, res) => {
       network,
       address: address.substring(0, 10) + '...'
     });
+
+    // KYC/limit validation
+    const kycCheck = await validateTransactionLimit(userId, amount, currency, 'WITHDRAWAL');
+    logger.info('KYC check for crypto withdrawal', {
+      userId,
+      allowed: kycCheck.allowed,
+      code: kycCheck.code,
+      message: kycCheck.message,
+      data: kycCheck.data
+    });
+    if (!kycCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        error: kycCheck.code || 'KYC_VALIDATION_FAILED',
+        message: kycCheck.message,
+        data: kycCheck.data
+      });
+    }
 
     // Validate user and 2FA
     const user = await User.findById(userId);
@@ -1089,7 +1110,9 @@ router.post('/crypto', async (req, res) => {
       obiexTransactionId: obiexResult.data.transactionId,
       obiexReference: obiexResult.data.reference,
       narration,
-      user
+      user,
+      kycValidated: true,
+      kycLevel: kycCheck?.data?.kycLevel ?? user.kycLevel
     });
     transactionCreated = true;
 

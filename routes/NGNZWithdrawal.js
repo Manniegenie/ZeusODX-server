@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const { debitNaira } = require('../services/nairaWithdrawal');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateUserBalance: validateBalance, getUserAvailableBalance, isTokenSupported } = require('../services/balance');
+const { validateTransactionLimit } = require('../services/kyccheckservice');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
@@ -922,6 +923,24 @@ router.post('/withdraw', async (req, res) => {
           currency: 'NGN',
           description: 'Withdrawal processing fee'
         }
+      });
+    }
+
+    // KYC/limit validation before further processing
+    const kycCheck = await validateTransactionLimit(userId, amount, 'NGNZ', 'NGNZ');
+    logger.info('KYC check for NGNZ withdrawal', {
+      userId,
+      allowed: kycCheck.allowed,
+      code: kycCheck.code,
+      message: kycCheck.message,
+      data: kycCheck.data
+    });
+    if (!kycCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        error: kycCheck.code || 'KYC_VALIDATION_FAILED',
+        message: kycCheck.message,
+        data: kycCheck.data
       });
     }
 

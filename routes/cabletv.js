@@ -7,6 +7,7 @@ const { vtuAuth } = require('../auth/billauth');
 const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
@@ -432,6 +433,24 @@ router.post('/purchase', async (req, res) => {
     const { customer_id, service_id, variation_id, subscription_type, amount, twoFactorCode, passwordpin } = validation.sanitized;
     const currency = 'NGNZ';
     
+    // Step 1.1: KYC/limit validation
+    const kycCheck = await validateTransactionLimit(userId, amount, currency, 'BILL_PAYMENT');
+    logger.info('KYC check for cable TV purchase', {
+      userId,
+      allowed: kycCheck.allowed,
+      code: kycCheck.code,
+      message: kycCheck.message,
+      data: kycCheck.data
+    });
+    if (!kycCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        error: kycCheck.code || 'KYC_VALIDATION_FAILED',
+        message: kycCheck.message,
+        data: kycCheck.data
+      });
+    }
+
     // Step 2: Get user data
     const user = await getCachedUser(userId);
     

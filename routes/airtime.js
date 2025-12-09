@@ -7,6 +7,7 @@ const { vtuAuth } = require('../auth/billauth');
 const { payBetaAuth } = require('../auth/paybetaAuth');
 const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
+const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const { registerCache, clearUserCaches } = require('../utils/cacheManager');
 
@@ -412,6 +413,24 @@ router.post('/purchase', async (req, res) => {
     
     const { phone, service_id, amount, twoFactorCode, passwordpin } = validation.sanitized;
     const currency = 'NGNZ';
+    
+    // Step 1.1: KYC/limit validation
+    const kycCheck = await validateTransactionLimit(userId, amount, currency, 'AIRTIME');
+    logger.info('KYC check for airtime purchase', {
+      userId,
+      allowed: kycCheck.allowed,
+      code: kycCheck.code,
+      message: kycCheck.message,
+      data: kycCheck.data
+    });
+    if (!kycCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        error: kycCheck.code || 'KYC_VALIDATION_FAILED',
+        message: kycCheck.message,
+        data: kycCheck.data
+      });
+    }
     
     // Step 2: Get user data
     const user = await getCachedUser(userId);
