@@ -97,6 +97,51 @@ router.post('/register', async (req, res) => {
   }
 });
 
+// GET /notification/check-token - Check if device has a token in DB (no auth required)
+router.get('/check-token', async (req, res) => {
+  try {
+    // Get deviceId from query parameters (no auth required)
+    const { deviceId } = req.query;
+    
+    if (!deviceId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'deviceId is required' 
+      });
+    }
+
+    // Find user by deviceId
+    const user = await User.findOne({ deviceId }).select('expoPushToken deviceId');
+    
+    if (!user) {
+      // Device not found - no token registered
+      return res.json({ 
+        success: true,
+        hasToken: false,
+        message: 'Device does not have a push token registered'
+      });
+    }
+
+    // Check if device has a token
+    const hasToken = !!(user.expoPushToken && user.expoPushToken.trim().length > 0);
+
+    return res.json({ 
+      success: true,
+      hasToken,
+      message: hasToken ? 'Device has a push token registered' : 'Device does not have a push token'
+    });
+  } catch (err) {
+    console.error('❌ Error checking push token:', {
+      error: err.message,
+      stack: err.stack,
+    });
+    return res.status(500).json({ 
+      success: false,
+      error: 'Internal server error.' 
+    });
+  }
+});
+
 // POST /notification/register-token (Expo legacy)
 router.post('/register-token', async (req, res) => {
   try {

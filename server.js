@@ -197,9 +197,9 @@ app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) 
   next();
 });
 
-// JSON Body Parser for Other Routes - INCREASED TO 50MB FOR IMAGE UPLOADS
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// JSON Body Parser for Other Routes - INCREASED TO 100MB FOR IMAGE UPLOADS (KYC documents, driver's license, etc.)
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 // Rate Limiters
 // Global rate limiter - increased significantly for production mobile app
@@ -567,7 +567,7 @@ const startServer = async () => {
     
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
-      console.log('📦 Body parser limit: 50MB (for KYC image uploads)');
+      console.log('📦 Body parser limit: 100MB (for KYC image uploads, driver\'s license, etc.)');
       console.log('⏰ Crypto price update job scheduled every 15 minutes');
       console.log('🔐 Admin authentication enabled with role-based access control');
       
