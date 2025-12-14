@@ -150,11 +150,13 @@ router.post('/register-token', async (req, res) => {
     console.log('📱 Token registration request received:', {
       platform: platform || 'unknown',
       hasExpoToken: !!expoPushToken,
-      expoTokenPrefix: expoPushToken ? expoPushToken.substring(0, 20) + '...' : 'none',
+      expoTokenPrefix: expoPushToken ? expoPushToken.substring(0, 30) + '...' : 'none',
+      fullToken: expoPushToken || 'MISSING',
       hasDeviceId: !!deviceId,
       deviceId: deviceId || 'none',
       hasUserId: !!userId,
       userId: userId || 'none',
+      timestamp: new Date().toISOString()
     });
 
     if (!expoPushToken) {
@@ -167,21 +169,40 @@ router.post('/register-token', async (req, res) => {
       console.warn('⚠️ Unexpected token format:', expoPushToken.substring(0, 50));
     }
 
-    const user = await savePushCredentials({
-      userId,
-      deviceId,
-      expoPushToken,
-      fcmToken,
-      platform,
-    });
+    let user;
+    try {
+      user = await savePushCredentials({
+        userId,
+        deviceId,
+        expoPushToken,
+        fcmToken,
+        platform,
+      });
 
-    console.log(`✅ Push token registered successfully for:`, {
-      platform: platform || 'unknown',
-      user: user.email || user.username || deviceId || 'unknown',
-      userId: user._id,
-      hasExpoToken: !!user.expoPushToken,
-      pushPlatform: user.pushPlatform || 'unknown',
-    });
+      console.log(`✅ Push token registered successfully for:`, {
+        platform: platform || 'unknown',
+        user: user.email || user.username || deviceId || 'unknown',
+        userId: user._id.toString(),
+        deviceId: user.deviceId || 'none',
+        hasExpoToken: !!user.expoPushToken,
+        tokenPrefix: user.expoPushToken ? user.expoPushToken.substring(0, 30) + '...' : 'none',
+        pushPlatform: user.pushPlatform || 'unknown',
+        timestamp: new Date().toISOString()
+      });
+    } catch (saveError) {
+      console.error('❌ CRITICAL: Failed to save push credentials:', {
+        error: saveError.message,
+        stack: saveError.stack,
+        userId,
+        deviceId,
+        hasExpoToken: !!expoPushToken,
+        platform
+      });
+      return res.status(500).json({
+        error: 'Failed to save push token to database',
+        details: saveError.message
+      });
+    }
 
     return res.json({ 
       message: 'Push token registered successfully.', 

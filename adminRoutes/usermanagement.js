@@ -274,4 +274,113 @@ router.get('/users/summary', async (req, res) => {
   }
 });
 
+/**
+ * GET /summary
+ * Return complete user summary with user info, wallets, and balances
+ * Query params: email (required)
+ */
+router.get('/summary', async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Email parameter is required' 
+      });
+    }
+
+    // Find user by email
+    const user = await User.findOne({ email: String(email) }).lean();
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+
+    // Extract wallet information
+    const wallets = {};
+    if (user.wallets) {
+      Object.entries(user.wallets).forEach(([key, wallet]) => {
+        if (wallet && wallet.address) {
+          wallets[key] = {
+            address: wallet.address,
+            network: wallet.network || '',
+            walletReferenceId: wallet.walletReferenceId || ''
+          };
+        }
+      });
+    }
+
+    // Extract balances
+    const balances = {
+      btcBalance: user.btcBalance || 0,
+      btcPendingBalance: user.btcPendingBalance || 0,
+      ethBalance: user.ethBalance || 0,
+      ethPendingBalance: user.ethPendingBalance || 0,
+      solBalance: user.solBalance || 0,
+      solPendingBalance: user.solPendingBalance || 0,
+      usdtBalance: user.usdtBalance || 0,
+      usdtPendingBalance: user.usdtPendingBalance || 0,
+      usdcBalance: user.usdcBalance || 0,
+      usdcPendingBalance: user.usdcPendingBalance || 0,
+      bnbBalance: user.bnbBalance || 0,
+      bnbPendingBalance: user.bnbPendingBalance || 0,
+      maticBalance: user.maticBalance || 0,
+      maticPendingBalance: user.maticPendingBalance || 0,
+      trxBalance: user.trxBalance || 0,
+      trxPendingBalance: user.trxPendingBalance || 0,
+      ngnzBalance: user.ngnzBalance || 0,
+      ngnzPendingBalance: user.ngnzPendingBalance || 0
+    };
+
+    // Calculate total portfolio value (sum of all balances)
+    const totalPortfolioBalance = Object.entries(balances)
+      .filter(([key]) => !key.includes('Pending'))
+      .reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+
+    // Prepare user info (exclude sensitive fields)
+    const userInfo = {
+      _id: user._id,
+      email: user.email,
+      username: user.username,
+      firstname: user.firstname,
+      lastname: user.lastname,
+      phonenumber: user.phonenumber,
+      avatarUrl: user.avatarUrl,
+      kycLevel: user.kycLevel,
+      kycStatus: user.kycStatus,
+      emailVerified: user.emailVerified,
+      chatbotTransactionVerified: user.chatbotTransactionVerified,
+      is2FAEnabled: user.is2FAEnabled,
+      is2FAVerified: user.is2FAVerified,
+      bvnVerified: user.bvnVerified,
+      bankAccounts: user.bankAccounts || [],
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      lastBalanceUpdate: user.lastBalanceUpdate,
+      portfolioLastUpdated: user.portfolioLastUpdated,
+      kyc: user.kyc
+    };
+
+    res.json({
+      success: true,
+      data: {
+        user: userInfo,
+        wallets,
+        balances: {
+          ...balances,
+          totalPortfolioBalance
+        },
+        lastUpdated: user.lastBalanceUpdate || user.updatedAt || new Date()
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching complete user summary:', err);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 module.exports = router;
