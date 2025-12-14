@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user'); // adjust path to your model
+const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 
 // Helper to escape user input for regex
 function escapeRegex(text = '') {
@@ -336,10 +337,44 @@ router.get('/summary', async (req, res) => {
       ngnzPendingBalance: user.ngnzPendingBalance || 0
     };
 
-    // Calculate total portfolio value (sum of all balances)
-    const totalPortfolioBalance = Object.entries(balances)
-      .filter(([key]) => !key.includes('Pending'))
-      .reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+    // Calculate USD balances using the same logic as the balance route
+    let totalPortfolioBalance = 0;
+    const usdBalances = {};
+    
+    try {
+      // Get all supported tokens from portfolio service
+      const tokens = Object.keys(SUPPORTED_TOKENS);
+      
+      // Get current prices with automatic markdown application from portfolio service
+      const prices = await getPricesWithCache(tokens);
+      
+      // Calculate USD values for each token
+      for (const token of tokens) {
+        const tokenLower = token.toLowerCase();
+        const balanceField = `${tokenLower}Balance`;
+        const usdBalanceField = `${tokenLower}BalanceUSD`;
+        
+        // Get token amount from user
+        const tokenAmount = user[balanceField] || 0;
+        const tokenPrice = prices[token] || 0;
+        
+        // Calculate USD value (prices already include markdown from portfolio service)
+        const usdValue = tokenAmount * tokenPrice;
+        
+        // Store calculated USD balance
+        usdBalances[usdBalanceField] = parseFloat(usdValue.toFixed(2));
+        
+        // Add to total portfolio
+        totalPortfolioBalance += usdValue;
+      }
+      
+      // Round total portfolio balance
+      totalPortfolioBalance = parseFloat(totalPortfolioBalance.toFixed(2));
+    } catch (error) {
+      console.error('Error calculating USD balances:', error);
+      // If calculation fails, set total to 0 and USD balances to empty
+      totalPortfolioBalance = 0;
+    }
 
     // Prepare user info (exclude sensitive fields)
     const userInfo = {
@@ -372,6 +407,7 @@ router.get('/summary', async (req, res) => {
         wallets,
         balances: {
           ...balances,
+          ...usdBalances, // Include USD balances for each token
           totalPortfolioBalance
         },
         lastUpdated: user.lastBalanceUpdate || user.updatedAt || new Date()
