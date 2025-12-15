@@ -344,6 +344,62 @@ router.post('/unregister', async (req, res) => {
   }
 });
 
+/**
+ * POST /notification/clear-all
+ * Clears push tokens for ALL users
+ */
+router.post('/clear-all', async (req, res) => {
+  try {
+    const result = await User.updateMany(
+      { $or: [{ expoPushToken: { $ne: null } }, { fcmToken: { $ne: null } }] },
+      { $set: { expoPushToken: null, fcmToken: null, pushPlatform: null } }
+    );
+
+    return res.json({
+      success: true,
+      message: 'All push tokens cleared',
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Error clearing all push tokens:', error);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+/**
+ * POST /notification/clear-by-phone
+ * Clears push tokens for a specific user by phone number
+ * Body: { phonenumber: string }
+ */
+router.post('/clear-by-phone', async (req, res) => {
+  try {
+    const { phonenumber } = req.body;
+
+    if (!phonenumber) {
+      return res.status(400).json({ error: 'phonenumber is required.' });
+    }
+
+    const user = await User.findOne({ phonenumber });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found for the provided phone number.' });
+    }
+
+    user.expoPushToken = null;
+    user.fcmToken = null;
+    user.pushPlatform = null;
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: 'Push tokens cleared for user.',
+      userId: user._id
+    });
+  } catch (error) {
+    console.error('Error clearing push tokens by phone number:', error);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
 // POST /notification/send-fcm (test) - send to userId or deviceId
 router.post('/send-fcm', async (req, res) => {
   try {
