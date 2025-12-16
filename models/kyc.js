@@ -8,13 +8,14 @@ const KYCSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
-    provider: { type: String, default: 'smile-id', index: true },
+    provider: { type: String, default: 'youverify', index: true },
     environment: { type: String, enum: ['sandbox', 'production', 'development', 'unknown'], default: 'unknown' },
 
     partnerJobId: { type: String, index: true },
     jobType: { type: Number, default: 1 }, // 1 = Biometric KYC
 
-    smileJobId: { type: String },
+    youverifyId: { type: String },
+    smileJobId: { type: String }, // Kept for backward compatibility
 
     jobComplete: { type: Boolean },
     jobSuccess: { type: Boolean },
@@ -23,11 +24,20 @@ const KYCSchema = new Schema(
     resultCode: { type: String, index: true },
     resultText: { type: String },
 
+    // Youverify-specific fields
+    passed: { type: Boolean },
+    allValidationPassed: { type: Boolean },
+    method: { type: String }, // e.g., 'liveness', 'documentCapture', 'vForm'
+    components: [{ type: String }], // e.g., ['liveness', 'id_capture']
+    businessId: { type: String },
+    requestedById: { type: String },
+    parentId: { type: String },
+
     actions: { type: Schema.Types.Mixed },
 
     // Document Information (populated when approved)
     country: { type: String, default: 'NG' },
-    idType: { type: String }, // SmileID type (BVN, NIN_V2, etc.)
+    idType: { type: String }, // Youverify type (passport, nin, drivers-license, etc.)
     frontendIdType: { type: String }, // Our frontend type (bvn, national_id, etc.)
     idNumber: { type: String, index: true, sparse: true },
 
@@ -35,12 +45,15 @@ const KYCSchema = new Schema(
     fullName: { type: String },
     firstName: { type: String }, // Parsed from fullName if available
     lastName: { type: String },  // Parsed from fullName if available
+    middleName: { type: String },
     dateOfBirth: { type: String }, // YYYY-MM-DD format
     gender: { type: String, enum: ['Male', 'Female', 'M', 'F', null], default: null },
     documentExpiryDate: { type: String }, // Document expiration date
+    documentIssueDate: { type: String },
+    address: { type: String },
 
     // Verification Metadata
-    confidenceValue: { type: String }, // SmileID confidence score
+    confidenceValue: { type: String }, // Confidence score (if available)
     verificationDate: { type: Date, default: Date.now },
     lastUpdated: { type: Date, default: Date.now },
 
@@ -50,7 +63,12 @@ const KYCSchema = new Schema(
         selfie_image: { type: String },
         liveness_images: [{ type: String }],
         document_image: { type: String },
-        cropped_image: { type: String }
+        cropped_image: { type: String },
+        // Youverify-specific image fields
+        faceImage: { type: String },
+        fullDocumentFrontImage: { type: String },
+        fullDocumentBackImage: { type: String },
+        signatureImage: { type: String }
       },
       default: null
     },
@@ -61,7 +79,7 @@ const KYCSchema = new Schema(
     signatureValid: { type: Boolean, default: false },
     providerTimestamp: { type: Date },
 
-    // Raw payload from SmileID (for debugging)
+    // Raw payload from provider (for debugging)
     payload: { type: Schema.Types.Mixed },
 
     // Reasons for non-approved statuses
@@ -91,8 +109,12 @@ const KYCSchema = new Schema(
 
 // Indexes for performance and uniqueness
 KYCSchema.index(
+  { youverifyId: 1 },
+  { unique: true, sparse: true, partialFilterExpression: { youverifyId: { $exists: true, $type: 'string' } } }
+);
+KYCSchema.index(
   { smileJobId: 1 },
-  { unique: true, partialFilterExpression: { smileJobId: { $exists: true, $type: 'string' } } }
+  { unique: true, sparse: true, partialFilterExpression: { smileJobId: { $exists: true, $type: 'string' } } }
 );
 
 KYCSchema.index(
