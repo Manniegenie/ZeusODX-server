@@ -337,46 +337,46 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
       return res.status(200).json({ success: true, ignored: 'unable_to_associate_user' });
     }
 
-  // Fetch user
-  let user;
-  try {
-    user = await User.findById(userId);
-    if (!user) {
-      logger.warn('Youverify callback: user not found', { requestId, userId });
-      return res.status(200).json({ success: true, ignored: 'user_not_found' });
+    // Fetch user
+    let user;
+    try {
+      user = await User.findById(userId);
+      if (!user) {
+        logger.warn('Youverify callback: user not found', { requestId, userId });
+        return res.status(200).json({ success: true, ignored: 'user_not_found' });
+      }
+    } catch (e) {
+      logger.error('Youverify callback: error fetching user', { 
+        requestId, 
+        userId, 
+        error: e.message 
+      });
+      return res.status(500).json({ success: false, error: 'user_fetch_error' });
     }
-  } catch (e) {
-    logger.error('Youverify callback: error fetching user', { 
-      requestId, 
-      userId, 
-      error: e.message 
+
+    // Classify outcome
+    const status = classifyOutcome({
+      status: norm.status,
+      allValidationPassed: norm.allValidationPassed,
     });
-    return res.status(500).json({ success: false, error: 'user_fetch_error' });
-  }
 
-  // Classify outcome
-  const status = classifyOutcome({
-    status: norm.status,
-    allValidationPassed: norm.allValidationPassed,
-  });
+    logger.info('Youverify webhook outcome classified', {
+      requestId,
+      userId,
+      youverifyId: norm.youverifyId,
+      status: norm.status,
+      allValidationPassed: norm.allValidationPassed,
+      classifiedStatus: status,
+      idType: norm.idType,
+      currentKycLevel: user.kycLevel
+    });
 
-  logger.info('Youverify webhook outcome classified', {
-    requestId,
-    userId,
-    youverifyId: norm.youverifyId,
-    status: norm.status,
-    allValidationPassed: norm.allValidationPassed,
-    classifiedStatus: status,
-    idType: norm.idType,
-    currentKycLevel: user.kycLevel
-  });
+    const isValidDocument = isValidKycDocument(norm.idType);
+    const frontendIdType = ID_TYPE_MAPPING[norm.idType] || norm.idType?.toLowerCase();
+    const isBvnVerification = frontendIdType === 'bvn';
 
-  const isValidDocument = isValidKycDocument(norm.idType);
-  const frontendIdType = ID_TYPE_MAPPING[norm.idType] || norm.idType?.toLowerCase();
-  const isBvnVerification = frontendIdType === 'bvn';
-
-  // Upsert into KYC collection
-  try {
+    // Upsert into KYC collection
+    try {
     let kycDoc;
     
     // First, try to find existing document
@@ -460,6 +460,15 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
         partnerJobId,
         youverifyId: norm.youverifyId
       });
+    }
+    } catch (kycError) {
+      logger.error('Error upserting KYC document', {
+        requestId,
+        userId,
+        error: kycError.message,
+        stack: kycError.stack
+      });
+      throw kycError; // Re-throw to be caught by outer catch
     }
 
     // Update User based on verification type (BVN vs Document KYC)
@@ -619,11 +628,11 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
             }
           });
 
-        logger.info('Cleared BVN verification after rejection - user can submit again', {
-          requestId,
-          userId,
-          rejectionReason: norm.status
-        });
+          logger.info('Cleared BVN verification after rejection - user can submit again', {
+            requestId,
+            userId,
+            rejectionReason: norm.status
+          });
         } else {
           await User.findByIdAndUpdate(userId, {
             $set: {
@@ -703,7 +712,7 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
       kycLevel: updatedUser.kycLevel,
       bvnVerified: isBvnVerification ? updatedUser.bvnVerified : undefined,
       allValidationPassed: norm.allValidationPassed,
-      status: norm.status,
+      youverifyStatus: norm.status,
       documentInfo: status === 'APPROVED' && !isBvnVerification ? kycDoc.getDocumentInfo() : null,
       processingTime: Date.now() - startTime
     });
