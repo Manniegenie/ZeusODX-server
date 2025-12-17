@@ -1,8 +1,8 @@
-// routes/smileid.webhook.js
+// routes/youverify.webhook.js
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const smileIdentityCore = require('smile-identity-core');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const router = express.Router();
 
 const User = require('../models/user');
@@ -11,157 +11,155 @@ const config = require('./config');
 const logger = require('../utils/logger');
 const { sendKycCompletionNotification } = require('../services/notificationService');
 
-// Initialize Smile Identity WebAPI
-const WebApi = smileIdentityCore.WebApi;
-
-// Smile ID Configuration
-const SMILE_ID_CONFIG = {
-  partner_id: process.env.SMILE_ID_PARTNER_ID || config.smileId?.partnerId,
-  api_key: process.env.SMILE_ID_API_KEY || config.smileId?.apiKey,
-  sid_server: process.env.SMILE_ID_SERVER || config.smileId?.server || '0',
-  callback_url: process.env.SMILE_ID_CALLBACK_URL || config.smileId?.callbackUrl || 'https://your-domain.com/api/smile-id/callback'
+// Youverify Configuration
+const YOUVERIFY_CONFIG = {
+  publicMerchantKey: process.env.YOUVERIFY_PUBLIC_MERCHANT_KEY || config.youverify?.publicMerchantKey,
+  secretKey: process.env.YOUVERIFY_SECRET_KEY || config.youverify?.secretKey,
+  callback_url: process.env.YOUVERIFY_CALLBACK_URL || config.youverify?.callbackUrl || 'https://your-domain.com/api/youverify/callback'
 };
 
-// Optional: verify Smile signature
-let Signature;
-try {
-  Signature = require('smile-identity-core').Signature;
-} catch (_) {
-  Signature = null;
+/**
+ * Verify Youverify webhook signature using HMAC SHA256
+ * @param {string} payload - Raw JSON payload as string
+ * @param {string} signature - x-youverify-signature header value
+ * @param {string} secretKey - Youverify secret key
+ * @returns {boolean} - True if signature is valid
+ */
+function verifyYouverifySignature(payload, signature, secretKey) {
+  if (!signature || !secretKey) {
+    return false;
+  }
+
+  try {
+    const expectedSignature = crypto
+      .createHmac('sha256', secretKey)
+      .update(payload, 'utf8')
+      .digest('hex');
+
+    // Use timing-safe comparison to prevent timing attacks
+    return crypto.timingSafeEqual(
+      Buffer.from(expectedSignature, 'hex'),
+      Buffer.from(signature, 'hex')
+    );
+  } catch (error) {
+    logger.error('Youverify signature verification error:', error);
+    return false;
+  }
 }
 
-// Result codes
-const APPROVED_CODES = new Set([
-  '0810', '0820', '0830', '0840',
-  '1012', '1020', '1021',
-  '1210', '1220', '1230', '1240',
-  '2302'
-]);
+// Youverify result classification - based on 'passed' field and status
 
-const PROVISIONAL_CODES = new Set([
-  '0812', '0814', '0815', '0816', '0817',
-  '0822', '0824', '0825',
-  '1212', '1213', '1214', '1215',
-  '1222', '1223', '1224', '1225'
-]);
-
-const REJECTED_CODES = new Set([
-  '0813', '0826', '0827',
-  '1011', '1013', '1014', '1015', '1016',
-  '1216', '1217', '1218', '1226', '1227', '1228'
-]);
-
-// ID type mappings
+// ID type mappings for Youverify
 const ID_TYPE_MAPPING = {
-  'BVN': 'bvn',
-  'NIN_V2': 'national_id',
-  'NIN': 'national_id',
-  'NIN_SLIP': 'nin_slip',
-  'PASSPORT': 'passport',
-  'DRIVERS_LICENSE': 'drivers_license',
-  'VOTER_ID': 'voter_id'
+  'passport': 'passport',
+  'nin': 'national_id',
+  'drivers-license': 'drivers_license',
+  'drivers_license': 'drivers_license',
+  'bvn': 'bvn',
+  'pvc': 'voter_id'
 };
 
-function classifyOutcome({ job_success, code, text, actions }) {
-  if (typeof job_success === 'boolean') {
-    return job_success ? 'APPROVED' : 'REJECTED';
-  }
-  
-  const codeStr = String(code || '');
-  if (APPROVED_CODES.has(codeStr)) return 'APPROVED';
-  if (REJECTED_CODES.has(codeStr)) return 'REJECTED';
-  if (PROVISIONAL_CODES.has(codeStr)) return 'PROVISIONAL';
+function classifyOutcome({ status, allValidationPassed }) {
+  // Youverify webhook format
+  // status: "found" means successful verification
+  // allValidationPassed: true/false indicates if all validations passed
+  const statusStr = String(status || '').toLowerCase();
 
-  const t = (text || '').toLowerCase();
-  
-  if (/(fail|rejected|no.?match|unable|unsupported|error|invalid|not.?found|not.?enabled|cannot|declined)/.test(t)) {
-    return 'REJECTED';
-  }
-  
-  if (/(provisional|pending|awaiting|under.?review|partial.?match)/.test(t)) {
+  if (statusStr === 'pending') {
     return 'PROVISIONAL';
   }
-  
-  if (/(pass|approved|verified|valid|exact.?match|enroll.?user|id.?validated|success)/.test(t)) {
+
+  if (statusStr === 'found' && allValidationPassed === true) {
     return 'APPROVED';
   }
 
-  if (actions && typeof actions === 'object') {
-    const vals = Object.values(actions).map(v => String(v).toLowerCase());
-    const criticalActions = ['verify_id_number', 'selfie_to_id_authority_compare', 'human_review_compare'];
-    
-    const criticalFailed = criticalActions.some(action => {
-      const actionValue = actions[action] || actions[action.replace(/_/g, '_')];
-      return actionValue && /(fail|rejected|unable|not.applicable)/.test(String(actionValue).toLowerCase());
-    });
-    
-    if (criticalFailed) return 'REJECTED';
-    
-    const anyFail = vals.some(v => /(fail|rejected|unable)/.test(v));
-    const mostPass = vals.filter(v => /(pass|approved|verified|returned|completed)/.test(v)).length > vals.length / 2;
-    
-    if (anyFail && !mostPass) return 'REJECTED';
-    if (mostPass) return 'APPROVED';
+  if (statusStr === 'found' && allValidationPassed === false) {
+    return 'REJECTED';
   }
-  
-  logger.warn('Unknown verification outcome - defaulting to REJECTED', {
-    code: codeStr,
-    text: t,
-    job_success
+
+  // If status is not "found", treat as rejected
+  if (statusStr !== 'found' && statusStr !== 'pending') {
+    return 'REJECTED';
+  }
+
+  logger.warn('Unknown Youverify verification outcome - defaulting to REJECTED', {
+    status: statusStr,
+    allValidationPassed
   });
   return 'REJECTED';
 }
 
-function normalize(body) {
-  const {
-    job_complete,
-    job_success,
-    code,
-    result,
-    history,
-    image_links,
-    Actions,
-    Country,
-    DOB,
-    Document,
-    ExpirationDate,
-    FullName,
-    Gender,
-    IDNumber,
-    IDType,
-    ResultCode,
-    ResultText,
-    SmileJobID,
-    PartnerParams = {},
-    ConfidenceValue,
-    timestamp,
-    signature,
-    environment,
-  } = body || {};
+function normalize(webhookBody) {
+  // Youverify webhook format: { event, apiVersion, data }
+  const { event, apiVersion, data } = webhookBody || {};
 
-  const node = result && typeof result === 'object' ? result : body || {};
-  
+  if (!data) {
+    return null;
+  }
+
+  // Extract address information
+  const addressData = data.address || {};
+  const addressString = addressData.addressLine
+    ? `${addressData.addressLine}, ${addressData.lga || ''}, ${addressData.state || ''}`.trim()
+    : null;
+
+  // Extract validation data
+  const validations = data.validations?.data || {};
+
+  // Determine full name from firstName and lastName
+  const fullName = data.firstName && data.lastName
+    ? `${data.firstName} ${data.middleName || ''} ${data.lastName}`.trim().replace(/\s+/g, ' ')
+    : null;
+
   return {
-    jobComplete: typeof job_complete === 'boolean' ? job_complete : true,
-    jobSuccess: typeof job_success === 'boolean' ? job_success : undefined,
-    actions: node.Actions || Actions || null,
-    country: node.Country || Country || 'NG',
-    dob: node.DOB || DOB || null,
-    expiresAt: node.ExpirationDate || ExpirationDate || null,
-    fullName: node.FullName || FullName || null,
-    gender: node.Gender || Gender || null,
-    idNumber: node.IDNumber || IDNumber || null,
-    idType: node.IDType || IDType || null,
-    resultCode: node.ResultCode || ResultCode || code || null,
-    resultText: node.ResultText || ResultText || null,
-    confidenceValue: node.ConfidenceValue || ConfidenceValue || null,
-    smileJobId: SmileJobID || body.SmileJobID || null,
-    partnerParams: PartnerParams || {},
-    providerTimestamp: timestamp ? new Date(timestamp) : new Date(),
-    signature: signature || null,
-    imageLinks: image_links || null,
-    history: history || null,
-    environment: environment || process.env.NODE_ENV || 'development',
+    jobComplete: true,
+    jobSuccess: data.status === 'found' && data.allValidationPassed === true,
+    status: data.status, // "found", "pending", etc.
+    allValidationPassed: data.allValidationPassed,
+    country: data.country || 'NG',
+    dob: data.dateOfBirth || null,
+    fullName: fullName,
+    firstName: data.firstName || null,
+    lastName: data.lastName || null,
+    middleName: data.middleName || null,
+    gender: data.gender === 'f' ? 'Female' : data.gender === 'm' ? 'Male' : data.gender || null,
+    idNumber: data.idNumber || null,
+    idType: data.type || null, // "nin", "passport", etc.
+    address: addressString,
+    addressDetails: addressData,
+    youverifyId: data._id || null,
+    businessId: data.businessId || null,
+    requestedById: data.requestedById || null,
+    parentId: data.parentId || null,
+    providerTimestamp: data.createdAt ? new Date(data.createdAt) : new Date(),
+    requestedAt: data.requestedAt ? new Date(data.requestedAt) : null,
+    lastModifiedAt: data.lastModifiedAt ? new Date(data.lastModifiedAt) : null,
+    imageLinks: {
+      image: data.image || null, // Base64 image from Youverify
+    },
+    validations: {
+      firstName: validations.firstName || null,
+      lastName: validations.lastName || null,
+      dateOfBirth: validations.dateOfBirth || null,
+      validationMessages: data.validations?.validationMessages || null,
+    },
+    additionalData: {
+      email: data.email || null,
+      mobile: data.mobile || null,
+      birthState: data.birthState || null,
+      birthLGA: data.birthLGA || null,
+      birthCountry: data.birthCountry || null,
+      religion: data.religion || null,
+      nokState: data.nokState || null,
+      dataValidation: data.dataValidation,
+      selfieValidation: data.selfieValidation,
+      isConsent: data.isConsent,
+      adverseMediaReport: data.adverseMediaReport,
+    },
+    reason: data.reason || null,
+    environment: process.env.NODE_ENV || 'development',
+    event: event,
+    apiVersion: apiVersion,
   };
 }
 
@@ -173,11 +171,11 @@ function isValidKycDocument(idType) {
 
 function parseFullName(fullName) {
   if (!fullName) return { firstName: null, lastName: null };
-  
+
   const nameParts = fullName.trim().split(' ').filter(part => part.length > 0);
   if (nameParts.length === 0) return { firstName: null, lastName: null };
   if (nameParts.length === 1) return { firstName: nameParts[0], lastName: null };
-  
+
   return {
     firstName: nameParts[0],
     lastName: nameParts.slice(1).join(' ')
@@ -186,212 +184,291 @@ function parseFullName(fullName) {
 
 function extractDocumentMetadata(norm) {
   const metadata = {};
-  
-  if (norm.actions) {
-    metadata.faceMatch = !!(norm.actions.Selfie_To_ID_Authority_Compare === 'Completed' || 
-                           norm.actions.Human_Review_Compare === 'Passed');
-    metadata.livenessCheck = !!(norm.actions.Liveness_Check === 'Passed' || 
-                               norm.actions.Human_Review_Liveness_Check === 'Passed');
-    metadata.documentAuthenticity = !!(norm.actions.Verify_ID_Number === 'Verified');
+
+  // Extract validation information from Youverify webhook
+  if (norm.validations) {
+    metadata.firstNameValidated = norm.validations.firstName?.validated || false;
+    metadata.lastNameValidated = norm.validations.lastName?.validated || false;
+    metadata.dateOfBirthValidated = norm.validations.dateOfBirth?.validated || false;
   }
-  
+
+  if (norm.additionalData) {
+    metadata.dataValidation = norm.additionalData.dataValidation || false;
+    metadata.selfieValidation = norm.additionalData.selfieValidation || false;
+  }
+
   return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 // ---------------- Webhook Handler ----------------
-router.post('/callback', async (req, res) => {
-  const body = req.body || {};
-  const norm = normalize(body);
-  
-  const requestId = `${norm.smileJobId || 'unknown'}_${Date.now()}`;
+// Use express.raw middleware to get raw body for signature verification
+router.post('/callback', express.raw({ type: 'application/json' }), async (req, res) => {
+  const startTime = Date.now();
+  let webhookData;
 
-  logger.info('SmileID webhook received', {
-    requestId,
-    smileJobId: norm.smileJobId,
-    userId: norm.partnerParams?.user_id,
-    resultCode: norm.resultCode,
-    resultText: norm.resultText,
-    idType: norm.idType,
-    hasSignature: !!body.signature,
-    hasTimestamp: !!body.timestamp,
-    confidenceValue: norm.confidenceValue
-  });
-
-  // Signature verification
-  let signatureValid = false;
   try {
-    if (Signature && SMILE_ID_CONFIG.partner_id && SMILE_ID_CONFIG.api_key && body.timestamp && body.signature) {
-      const sig = new Signature(SMILE_ID_CONFIG.partner_id, SMILE_ID_CONFIG.api_key);
-      signatureValid = sig.confirm_signature(body.timestamp, body.signature);
-      
-      if (!signatureValid) {
-        logger.warn('SmileID webhook: signature INVALID', {
+    // Get raw payload for signature verification
+    const rawPayload = req.body.toString('utf8');
+    const signature = req.headers['x-youverify-signature'];
+
+    // Parse JSON payload
+    try {
+      webhookData = JSON.parse(rawPayload);
+    } catch (parseError) {
+      logger.error('Invalid JSON in Youverify webhook:', parseError);
+      return res.status(400).json({
+        success: false,
+        error: 'invalid_json',
+        message: 'Invalid JSON payload'
+      });
+    }
+
+    // Verify webhook signature if secret key is configured
+    if (YOUVERIFY_CONFIG.secretKey) {
+      if (!signature) {
+        logger.warn('Youverify webhook received without signature');
+        return res.status(400).json({
+          success: false,
+          error: 'missing_signature',
+          message: 'x-youverify-signature header required'
+        });
+      }
+
+      if (!verifyYouverifySignature(rawPayload, signature, YOUVERIFY_CONFIG.secretKey)) {
+        logger.error('Invalid Youverify webhook signature', {
+          signatureReceived: signature.substring(0, 16) + '...'
+        });
+        return res.status(401).json({
+          success: false,
+          error: 'invalid_signature',
+          message: 'Invalid webhook signature'
+        });
+      }
+      logger.info('Youverify webhook signature verified successfully');
+    } else {
+      logger.warn('Youverify webhook signature verification skipped - secret key not configured');
+    }
+
+    // Normalize webhook data
+    const norm = normalize(webhookData);
+    if (!norm) {
+      logger.warn('Youverify webhook missing data field');
+      return res.status(400).json({
+        success: false,
+        error: 'missing_data',
+        message: 'Webhook missing required data field'
+      });
+    }
+
+    const requestId = `${norm.youverifyId || norm.idNumber || 'unknown'}_${Date.now()}`;
+
+    logger.info('Youverify webhook received', {
+      requestId,
+      event: norm.event,
+      apiVersion: norm.apiVersion,
+      youverifyId: norm.youverifyId,
+      status: norm.status,
+      allValidationPassed: norm.allValidationPassed,
+      idType: norm.idType,
+      idNumber: norm.idNumber ? norm.idNumber.slice(0, 4) + '****' : null,
+      businessId: norm.businessId,
+      requestedById: norm.requestedById
+    });
+
+    // User association - try multiple methods
+    // Method 1: Check if userId was passed in metadata (from frontend SDK)
+    // Method 2: Find user by idNumber if available
+    // Method 3: Use requestedById if it's a user ID
+    let userId = null;
+    let partnerJobId = norm.youverifyId;
+
+    // Try to find user by idNumber if we have it
+    if (norm.idNumber) {
+      try {
+        const kycDoc = await KYC.findOne({
+          idNumber: norm.idNumber,
+          status: 'PENDING'
+        }).sort({ createdAt: -1 });
+
+        if (kycDoc) {
+          userId = kycDoc.userId.toString();
+          partnerJobId = kycDoc.partnerJobId || norm.youverifyId;
+          logger.info('Found user from pending KYC document', {
+            requestId,
+            userId,
+            kycId: kycDoc._id,
+            partnerJobId
+          });
+        }
+      } catch (findError) {
+        logger.warn('Error finding user by idNumber', {
           requestId,
-          partnerId: SMILE_ID_CONFIG.partner_id,
-          timestampAge: Date.now() - new Date(body.timestamp).getTime()
+          error: findError.message
+        });
+      }
+    }
+
+    // If still no userId, check requestedById (might be user ID in some cases)
+    if (!userId && norm.requestedById) {
+      // This might be a user ID, but we can't be sure without checking
+      // For now, we'll try to find by pending KYC with this as partnerJobId
+      try {
+        const kycDoc = await KYC.findOne({
+          partnerJobId: norm.requestedById,
+          status: 'PENDING'
+        }).sort({ createdAt: -1 });
+
+        if (kycDoc) {
+          userId = kycDoc.userId.toString();
+          partnerJobId = kycDoc.partnerJobId;
+        }
+      } catch (findError) {
+        // Ignore
+      }
+    }
+
+    if (!userId) {
+      logger.warn('Youverify callback: unable to associate with user; acknowledging without processing', {
+        requestId,
+        idNumber: norm.idNumber ? norm.idNumber.slice(0, 4) + '****' : null,
+        youverifyId: norm.youverifyId,
+        requestedById: norm.requestedById
+      });
+      return res.status(200).json({ success: true, ignored: 'unable_to_associate_user' });
+    }
+
+    // Fetch user
+    let user;
+    try {
+      user = await User.findById(userId);
+      if (!user) {
+        logger.warn('Youverify callback: user not found', { requestId, userId });
+        return res.status(200).json({ success: true, ignored: 'user_not_found' });
+      }
+    } catch (e) {
+      logger.error('Youverify callback: error fetching user', {
+        requestId,
+        userId,
+        error: e.message
+      });
+      return res.status(500).json({ success: false, error: 'user_fetch_error' });
+    }
+
+    // Classify outcome
+    const status = classifyOutcome({
+      status: norm.status,
+      allValidationPassed: norm.allValidationPassed,
+    });
+
+    logger.info('Youverify webhook outcome classified', {
+      requestId,
+      userId,
+      youverifyId: norm.youverifyId,
+      status: norm.status,
+      allValidationPassed: norm.allValidationPassed,
+      classifiedStatus: status,
+      idType: norm.idType,
+      currentKycLevel: user.kycLevel
+    });
+
+    const isValidDocument = isValidKycDocument(norm.idType);
+    const frontendIdType = ID_TYPE_MAPPING[norm.idType] || norm.idType?.toLowerCase();
+    const isBvnVerification = frontendIdType === 'bvn';
+
+    // Upsert into KYC collection
+    try {
+      let kycDoc;
+
+      // First, try to find existing document
+      const existingDoc = await KYC.findOne({
+        $or: [
+          { userId, partnerJobId },
+          ...(norm.youverifyId ? [{ youverifyId: norm.youverifyId }] : [])
+        ]
+      });
+
+      const { firstName, lastName } = parseFullName(norm.fullName);
+      const documentMetadata = extractDocumentMetadata(norm);
+
+      const updateData = {
+        environment: norm.environment,
+        partnerJobId,
+        jobType: 1,
+        youverifyId: norm.youverifyId,
+        jobComplete: norm.jobComplete,
+        jobSuccess: norm.jobSuccess,
+        status: status === 'PROVISIONAL' ? 'PENDING' : status,
+        resultCode: norm.status,
+        resultText: norm.status === 'found' ? (norm.allValidationPassed ? 'Verified' : 'Validation failed') : norm.status || norm.reason || 'Unknown',
+        allValidationPassed: norm.allValidationPassed,
+        country: norm.country,
+        idType: norm.idType,
+        frontendIdType,
+        idNumber: norm.idNumber,
+        ...(status === 'APPROVED' && {
+          fullName: norm.fullName,
+          firstName: norm.firstName || firstName,
+          lastName: norm.lastName || lastName,
+          middleName: norm.middleName || null,
+          dateOfBirth: norm.dob,
+          gender: norm.gender,
+          address: norm.address,
+          verificationDate: new Date()
+        }),
+        imageLinks: norm.imageLinks,
+        businessId: norm.businessId,
+        requestedById: norm.requestedById,
+        parentId: norm.parentId,
+        providerTimestamp: norm.providerTimestamp,
+        requestedAt: norm.requestedAt,
+        lastModifiedAt: norm.lastModifiedAt,
+        lastUpdated: new Date(),
+        payload: webhookData,
+        errorReason: status === 'REJECTED' ? (norm.reason || norm.resultText || 'Verification failed') : null,
+        provisionalReason: status === 'PROVISIONAL' ? (norm.reason || 'Under review') : null,
+        ...(status === 'APPROVED' && documentMetadata && { documentMetadata })
+      };
+
+      if (existingDoc) {
+        // Update existing document by _id to avoid duplicate key error
+        kycDoc = await KYC.findByIdAndUpdate(
+          existingDoc._id,
+          { $set: updateData },
+          { new: true, runValidators: true }
+        );
+
+        logger.info('Updated existing KYC document', {
+          requestId,
+          kycId: kycDoc._id,
+          userId,
+          partnerJobId,
+          youverifyId: norm.youverifyId
         });
       } else {
-        logger.info('SmileID webhook: signature verified successfully', { requestId });
+        // Create new document
+        kycDoc = await KYC.create({
+          userId,
+          provider: 'youverify',
+          createdAt: new Date(),
+          ...updateData
+        });
+
+        logger.info('Created new KYC document', {
+          requestId,
+          kycId: kycDoc._id,
+          userId,
+          partnerJobId,
+          youverifyId: norm.youverifyId
+        });
       }
-    } else {
-      const missing = [];
-      if (!Signature) missing.push('Signature SDK');
-      if (!SMILE_ID_CONFIG.partner_id) missing.push('SMILE_ID_PARTNER_ID');
-      if (!SMILE_ID_CONFIG.api_key) missing.push('SMILE_ID_API_KEY');
-      if (!body.timestamp) missing.push('timestamp');
-      if (!body.signature) missing.push('signature');
-      
-      logger.warn('SmileID webhook: signature verification skipped', {
+    } catch (kycError) {
+      logger.error('Error upserting KYC document', {
         requestId,
-        missing,
-        reason: 'Missing required components'
-      });
-    }
-  } catch (e) {
-    logger.error('SmileID signature verification error', { 
-      requestId,
-      error: e.message,
-      partnerId: SMILE_ID_CONFIG.partner_id,
-      hasApiKey: !!SMILE_ID_CONFIG.api_key
-    });
-  }
-
-  // User association
-  const { user_id: userId, job_id: partnerJobId, job_type: jobType } = norm.partnerParams || {};
-  if (!userId) {
-    logger.warn('SmileID callback missing user_id; acknowledging without processing', {
-      requestId,
-      partnerParams: norm.partnerParams,
-      smileJobId: norm.smileJobId
-    });
-    return res.status(200).json({ success: true, ignored: 'missing_user_id' });
-  }
-
-  // Fetch user
-  let user;
-  try {
-    user = await User.findById(userId);
-    if (!user) {
-      logger.warn('SmileID callback: user not found', { requestId, userId });
-      return res.status(200).json({ success: true, ignored: 'user_not_found' });
-    }
-  } catch (e) {
-    logger.error('SmileID callback: error fetching user', { 
-      requestId, 
-      userId, 
-      error: e.message 
-    });
-    return res.status(500).json({ success: false, error: 'user_fetch_error' });
-  }
-
-  // Classify outcome
-  const status = classifyOutcome({
-    job_success: norm.jobSuccess,
-    code: norm.resultCode,
-    text: norm.resultText,
-    actions: norm.actions,
-  });
-
-  logger.info('SmileID webhook outcome classified', {
-    requestId,
-    userId,
-    smileJobId: norm.smileJobId,
-    resultCode: norm.resultCode,
-    resultText: norm.resultText,
-    idType: norm.idType,
-    status,
-    jobSuccess: norm.jobSuccess,
-    confidenceValue: norm.confidenceValue,
-    currentKycLevel: user.kycLevel
-  });
-
-  const isValidDocument = isValidKycDocument(norm.idType);
-  const frontendIdType = ID_TYPE_MAPPING[norm.idType] || norm.idType?.toLowerCase();
-  const isBvnVerification = frontendIdType === 'bvn';
-
-  // Upsert into KYC collection
-  try {
-    let kycDoc;
-    
-    // First, try to find existing document
-    const existingDoc = await KYC.findOne({
-      $or: [
-        { userId, partnerJobId },
-        ...(norm.smileJobId ? [{ smileJobId: norm.smileJobId }] : [])
-      ]
-    });
-
-    const { firstName, lastName } = parseFullName(norm.fullName);
-    const documentMetadata = extractDocumentMetadata(norm);
-
-    const updateData = {
-      environment: norm.environment,
-      partnerJobId,
-      jobType: parseInt(jobType) || 1,
-      smileJobId: norm.smileJobId,
-      jobComplete: norm.jobComplete,
-      jobSuccess: norm.jobSuccess,
-      status: status === 'PROVISIONAL' ? 'PENDING' : status,
-      resultCode: norm.resultCode,
-      resultText: norm.resultText,
-      actions: norm.actions,
-      country: norm.country,
-      idType: norm.idType,
-      frontendIdType,
-      idNumber: norm.idNumber,
-      ...(status === 'APPROVED' && {
-        fullName: norm.fullName,
-        firstName,
-        lastName,
-        dateOfBirth: norm.dob,
-        gender: norm.gender,
-        documentExpiryDate: norm.expiresAt,
-        verificationDate: new Date()
-      }),
-      confidenceValue: norm.confidenceValue,
-      imageLinks: norm.imageLinks,
-      history: norm.history,
-      signature: norm.signature,
-      signatureValid,
-      providerTimestamp: norm.providerTimestamp,
-      lastUpdated: new Date(),
-      payload: body,
-      errorReason: status === 'REJECTED' ? norm.resultText : null,
-      provisionalReason: status === 'PROVISIONAL' ? (norm.resultText || 'Under review') : null,
-      ...(status === 'APPROVED' && documentMetadata && { documentMetadata })
-    };
-
-    if (existingDoc) {
-      // Update existing document by _id to avoid duplicate key error
-      kycDoc = await KYC.findByIdAndUpdate(
-        existingDoc._id,
-        { $set: updateData },
-        { new: true, runValidators: true }
-      );
-      
-      logger.info('Updated existing KYC document', {
-        requestId,
-        kycId: kycDoc._id,
         userId,
-        partnerJobId,
-        smileJobId: norm.smileJobId
+        error: kycError.message,
+        stack: kycError.stack
       });
-    } else {
-      // Create new document
-      kycDoc = await KYC.create({
-        userId,
-        provider: 'smile-id',
-        createdAt: new Date(),
-        ...updateData
-      });
-      
-      logger.info('Created new KYC document', {
-        requestId,
-        kycId: kycDoc._id,
-        userId,
-        partnerJobId,
-        smileJobId: norm.smileJobId
-      });
+      throw kycError; // Re-throw to be caught by outer catch
     }
 
     // Update User based on verification type (BVN vs Document KYC)
@@ -407,39 +484,39 @@ router.post('/callback', async (req, res) => {
       if (status === 'APPROVED') {
         userUpdate.$set['bvn'] = norm.idNumber;
         userUpdate.$set['bvnVerified'] = true;
-        
+
         logger.info('BVN verification approved', {
           requestId,
           userId,
           bvn: norm.idNumber?.slice(0, 3) + '********',
-          confidenceValue: norm.confidenceValue
+          allValidationPassed: norm.allValidationPassed
         });
       } else if (status === 'PROVISIONAL') {
         userUpdate.$set['bvn'] = norm.idNumber;
         userUpdate.$set['bvnVerified'] = false;
-        
+
         logger.info('BVN verification provisional/pending', {
           requestId,
           userId,
-          resultText: norm.resultText
+          status: norm.status
         });
       } else if (status === 'REJECTED') {
         userUpdate.$set['bvn'] = null;
         userUpdate.$set['bvnVerified'] = false;
-        
+
         logger.info('BVN verification rejected', {
           requestId,
           userId,
-          resultText: norm.resultText
+          status: norm.status
         });
       }
     } else if (isValidDocument) {
       // Document KYC verification (NIN, Passport, Driver's License, etc.)
-      userUpdate.$set['kyc.provider'] = 'smile-id';
+      userUpdate.$set['kyc.provider'] = 'youverify';
       userUpdate.$set['kyc.status'] = status === 'PROVISIONAL' ? 'pending' : status.toLowerCase();
       userUpdate.$set['kyc.resultCode'] = kycDoc.resultCode;
       userUpdate.$set['kyc.resultText'] = kycDoc.resultText;
-      
+
       if (status === 'APPROVED') {
         userUpdate.$set['kyc.level2.status'] = 'approved';
         userUpdate.$set['kyc.level2.documentSubmitted'] = true;
@@ -448,14 +525,14 @@ router.post('/callback', async (req, res) => {
         userUpdate.$set['kyc.level2.approvedAt'] = new Date();
         userUpdate.$set['kyc.level2.rejectionReason'] = null;
         userUpdate.$set['kyc.inProgress'] = false;
-        
+
         logger.info('Document verification approved', {
           requestId,
           userId,
           idType: frontendIdType,
           idNumber: norm.idNumber?.slice(0, 4) + '****',
           fullName: norm.fullName,
-          confidenceValue: norm.confidenceValue
+          allValidationPassed: norm.allValidationPassed
         });
       } else if (status === 'PROVISIONAL') {
         userUpdate.$set['kyc.level2.status'] = 'pending';
@@ -463,7 +540,7 @@ router.post('/callback', async (req, res) => {
         userUpdate.$set['kyc.level2.documentType'] = frontendIdType;
         userUpdate.$set['kyc.level2.documentNumber'] = norm.idNumber;
         userUpdate.$set['kyc.level2.submittedAt'] = new Date();
-        userUpdate.$set['kyc.level2.rejectionReason'] = `Pending verification: ${norm.resultText}`;
+        userUpdate.$set['kyc.level2.rejectionReason'] = `Pending verification: ${norm.status || 'Under review'}`;
         userUpdate.$set['kycStatus'] = 'pending';
         userUpdate.$set['kyc.inProgress'] = true;
       } else if (status === 'REJECTED') {
@@ -472,7 +549,7 @@ router.post('/callback', async (req, res) => {
         userUpdate.$set['kyc.level2.documentType'] = frontendIdType;
         userUpdate.$set['kyc.level2.documentNumber'] = norm.idNumber;
         userUpdate.$set['kyc.level2.rejectedAt'] = new Date();
-        userUpdate.$set['kyc.level2.rejectionReason'] = norm.resultText || 'ID verification failed';
+        userUpdate.$set['kyc.level2.rejectionReason'] = norm.status || 'ID verification failed';
         userUpdate.$set['kycStatus'] = 'rejected';
         userUpdate.$set['kyc.inProgress'] = false;
       }
@@ -518,7 +595,7 @@ router.post('/callback', async (req, res) => {
           pendingFilter.frontendIdType = { $in: ['national_id', 'passport', 'drivers_license', 'nin', 'nin_slip', 'voter_id'] };
         }
 
-        const pendingDocs = await KYC.find(pendingFilter).select('_id partnerJobId smileJobId createdAt status frontendIdType');
+        const pendingDocs = await KYC.find(pendingFilter).select('_id partnerJobId youverifyId createdAt status frontendIdType');
 
         if (pendingDocs && pendingDocs.length > 0) {
           const now = new Date();
@@ -554,7 +631,7 @@ router.post('/callback', async (req, res) => {
           logger.info('Cleared BVN verification after rejection - user can submit again', {
             requestId,
             userId,
-            rejectionReason: norm.resultText
+            rejectionReason: norm.status
           });
         } else {
           await User.findByIdAndUpdate(userId, {
@@ -565,7 +642,7 @@ router.post('/callback', async (req, res) => {
               'kyc.latestKycId': kycDoc._id,
               'kyc.level2.status': 'rejected',
               'kyc.level2.rejectedAt': new Date(),
-              'kyc.level2.rejectionReason': norm.resultText || 'ID verification failed',
+              'kyc.level2.rejectionReason': norm.status || 'ID verification failed',
               'kycStatus': 'rejected'
             }
           });
@@ -573,7 +650,7 @@ router.post('/callback', async (req, res) => {
           logger.info('Cleared in-progress KYC state after rejection - user can submit again', {
             requestId,
             userId,
-            rejectionReason: norm.resultText
+            rejectionReason: norm.status
           });
         }
 
@@ -587,7 +664,7 @@ router.post('/callback', async (req, res) => {
       }
     }
 
-    logger.info('SmileID webhook: User status updated successfully', {
+    logger.info('Youverify webhook: User status updated successfully', {
       requestId,
       userId,
       verificationType: isBvnVerification ? 'BVN' : 'Document',
@@ -609,14 +686,14 @@ router.post('/callback', async (req, res) => {
             kycId: kycDoc._id.toString(),
             verificationType: isBvnVerification ? 'bvn' : 'document',
             documentType: frontendIdType,
-            resultText: norm.resultText,
-            confidenceValue: norm.confidenceValue
+            status: norm.status,
+            allValidationPassed: norm.allValidationPassed
           }
         );
-        logger.info('KYC completion notification sent', { 
-          userId, 
-          status, 
-          type: isBvnVerification ? 'BVN' : 'Document KYC' 
+        logger.info('KYC completion notification sent', {
+          userId,
+          status,
+          type: isBvnVerification ? 'BVN' : 'Document KYC'
         });
       } catch (notificationError) {
         logger.error('Failed to send KYC completion notification', {
@@ -627,33 +704,34 @@ router.post('/callback', async (req, res) => {
       }
     }
 
-    return res.status(200).json({ 
-      success: true, 
-      kycId: kycDoc._id, 
+    return res.status(200).json({
+      success: true,
+      kycId: kycDoc._id,
       status: kycDoc.status,
       verificationType: isBvnVerification ? 'bvn' : 'document',
       kycLevel: updatedUser.kycLevel,
       bvnVerified: isBvnVerification ? updatedUser.bvnVerified : undefined,
-      signatureValid,
-      confidenceValue: norm.confidenceValue,
-      documentInfo: status === 'APPROVED' && !isBvnVerification ? kycDoc.getDocumentInfo() : null
+      allValidationPassed: norm.allValidationPassed,
+      youverifyStatus: norm.status,
+      documentInfo: status === 'APPROVED' && !isBvnVerification ? kycDoc.getDocumentInfo() : null,
+      processingTime: Date.now() - startTime
     });
 
   } catch (e) {
-    logger.error('SmileID webhook database error', { 
+    logger.error('Youverify webhook database error', {
       requestId,
       error: e.message,
       stack: e.stack,
       userId,
-      smileJobId: norm.smileJobId,
+      youverifyId: norm.youverifyId,
       partnerJobId
     });
-    
-    return res.status(200).json({ 
-      success: false, 
-      retriable: true, 
+
+    return res.status(200).json({
+      success: false,
+      retriable: true,
       error: e.message,
-      requestId 
+      requestId
     });
   }
 });
