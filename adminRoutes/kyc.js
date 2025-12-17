@@ -492,6 +492,110 @@ router.get('/details/:kycId', async (req, res) => {
   }
 });
 
+// POST: Manually approve BVN for a user
+router.post('/approve-bvn', async (req, res) => {
+  const { phoneNumber, bvn } = req.body;
+
+  if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
+    logger.warn('Invalid or missing phone number in approve BVN request', { phoneNumber });
+    return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
+  }
+
+  if (!bvn) {
+    logger.warn('Missing BVN in approve BVN request', { phoneNumber });
+    return res.status(400).json({ success: false, error: 'BVN is required.' });
+  }
+
+  try {
+    const user = await User.findOne({ phonenumber: phoneNumber });
+    if (!user) {
+      logger.warn(`User not found: ${phoneNumber}`);
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    const now = new Date();
+
+    // Update user BVN and set bvnVerified to true
+    await User.findByIdAndUpdate(user._id, {
+      $set: {
+        bvn: bvn,
+        bvnVerified: true
+      }
+    });
+
+    // Create or update KYC record for BVN
+    const existingBvnKyc = await KYC.findOne({
+      userId: user._id,
+      frontendIdType: 'bvn'
+    }).sort({ createdAt: -1 });
+
+    let bvnKycDoc;
+    if (existingBvnKyc) {
+      bvnKycDoc = await KYC.findByIdAndUpdate(
+        existingBvnKyc._id,
+        {
+          $set: {
+            status: 'APPROVED',
+            jobSuccess: true,
+            resultCode: '1012',
+            resultText: 'Manually approved by admin',
+            idNumber: bvn,
+            verificationDate: now,
+            lastUpdated: now
+          }
+        },
+        { new: true }
+      );
+    } else {
+      bvnKycDoc = await KYC.create({
+        userId: user._id,
+        provider: 'manual-admin',
+        environment: process.env.NODE_ENV || 'production',
+        partnerJobId: `manual_bvn_${user._id}_${Date.now()}`,
+        jobType: 1,
+        status: 'APPROVED',
+        jobSuccess: true,
+        resultCode: '1012',
+        resultText: 'Manually approved by admin',
+        idType: 'BVN',
+        frontendIdType: 'bvn',
+        idNumber: bvn,
+        country: 'NG',
+        verificationDate: now,
+        lastUpdated: now,
+        createdAt: now
+      });
+    }
+
+    const updatedUser = await User.findById(user._id);
+
+    logger.info(`BVN manually approved for user: ${phoneNumber}`, {
+      userId: user._id,
+      kycId: bvnKycDoc._id,
+      bvn: bvn.slice(0, 3) + '****'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'BVN approved successfully.',
+      data: {
+        userId: user._id,
+        phoneNumber,
+        kycId: bvnKycDoc._id,
+        bvnVerified: updatedUser.bvnVerified
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error approving BVN', {
+      error: error.message,
+      stack: error.stack,
+      phoneNumber
+    });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
 // POST: Manually upgrade user KYC level
 router.post('/upgrade', async (req, res) => {
   const { phoneNumber, kycLevel, reason } = req.body;
