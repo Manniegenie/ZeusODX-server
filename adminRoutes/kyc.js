@@ -5,12 +5,12 @@ const KYC = require('../models/kyc');
 const validator = require('validator');
 const logger = require('../utils/logger');
 
-// POST: Cancel user's KYC by phone number
+// POST: Disable user's KYC by phone number (permanent admin override)
 router.post('/cancel', async (req, res) => {
   const { phoneNumber, reason } = req.body;
 
   if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
-    logger.warn('Invalid or missing phone number in cancel KYC request', { phoneNumber });
+    logger.warn('Invalid or missing phone number in disable KYC request', { phoneNumber });
     return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
   }
 
@@ -21,24 +21,12 @@ router.post('/cancel', async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found.' });
     }
 
-    const pendingKycs = await KYC.find({
-      userId: user._id,
-      status: 'PENDING'
-    });
-
-    if (pendingKycs.length === 0) {
-      logger.warn(`No pending KYC found for user: ${phoneNumber}`);
-      return res.status(400).json({ 
-        success: false, 
-        error: 'No pending KYC documents found for this user.' 
-      });
-    }
-
     const now = new Date();
-    const cancellationReason = reason || 'Manually cancelled by admin';
+    const cancellationReason = reason || 'KYC disabled by admin (permanent override)';
 
+    // Cancel ALL KYC records (not just pending) - permanent admin override
     const cancelResult = await KYC.updateMany(
-      { userId: user._id, status: 'PENDING' },
+      { userId: user._id, status: { $ne: 'CANCELLED' } },
       {
         $set: {
           status: 'CANCELLED',
@@ -49,18 +37,19 @@ router.post('/cancel', async (req, res) => {
       }
     );
 
-    // Use valid enum value 'rejected' instead of 'cancelled'
+    // Permanently update user KYC status to rejected - admin override
     await User.findByIdAndUpdate(user._id, {
       $set: {
         'kyc.status': 'rejected',
         'kyc.updatedAt': now,
         'kyc.inProgress': false,
         'kyc.level2.status': 'rejected',
-        'kyc.level2.rejectionReason': cancellationReason
+        'kyc.level2.rejectionReason': cancellationReason,
+        'kycStatus': 'rejected'
       }
     });
 
-    logger.info(`KYC cancelled for user: ${phoneNumber}`, {
+    logger.info(`KYC permanently disabled for user: ${phoneNumber}`, {
       userId: user._id,
       cancelledCount: cancelResult.modifiedCount,
       reason: cancellationReason
@@ -68,7 +57,7 @@ router.post('/cancel', async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: 'KYC cancelled successfully.',
+      message: 'KYC disabled successfully (permanent admin override).',
       data: {
         userId: user._id,
         phoneNumber,
@@ -78,7 +67,7 @@ router.post('/cancel', async (req, res) => {
     });
 
   } catch (error) {
-    logger.error('Error cancelling KYC', {
+    logger.error('Error disabling KYC', {
       error: error.message,
       stack: error.stack,
       phoneNumber
@@ -588,6 +577,178 @@ router.post('/approve-bvn', async (req, res) => {
 
   } catch (error) {
     logger.error('Error approving BVN', {
+      error: error.message,
+      stack: error.stack,
+      phoneNumber
+    });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST: Manually verify BVN for a user (permanent admin override)
+router.post('/verify-bvn', async (req, res) => {
+  const { phoneNumber, bvn } = req.body;
+
+  if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
+    logger.warn('Invalid or missing phone number in verify BVN request', { phoneNumber });
+    return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
+  }
+
+  try {
+    const user = await User.findOne({ phonenumber: phoneNumber });
+    if (!user) {
+      logger.warn(`User not found: ${phoneNumber}`);
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    // Use provided BVN or existing user BVN
+    const bvnToUse = bvn || user.bvn;
+    if (!bvnToUse || !/^\d{11}$/.test(bvnToUse)) {
+      logger.warn('Invalid or missing BVN in verify BVN request', { phoneNumber, hasUserBvn: !!user.bvn });
+      return res.status(400).json({ success: false, error: 'Valid 11-digit BVN is required. Provide BVN or ensure user has BVN on record.' });
+    }
+
+    const now = new Date();
+
+    // Update user BVN and set bvnVerified to true (permanent admin override)
+    await User.findByIdAndUpdate(user._id, {
+      $set: {
+        bvn: bvnToUse,
+        bvnVerified: true
+      }
+    });
+
+    // Create or update KYC record for BVN with APPROVED status
+    const existingBvnKyc = await KYC.findOne({
+      userId: user._id,
+      frontendIdType: 'bvn'
+    }).sort({ createdAt: -1 });
+
+    let bvnKycDoc;
+    if (existingBvnKyc) {
+      bvnKycDoc = await KYC.findByIdAndUpdate(
+        existingBvnKyc._id,
+        {
+          $set: {
+            status: 'APPROVED',
+            jobSuccess: true,
+            resultCode: '1012',
+            resultText: 'Manually verified by admin',
+            idNumber: bvnToUse,
+            verificationDate: now,
+            lastUpdated: now
+          }
+        },
+        { new: true }
+      );
+    } else {
+      bvnKycDoc = await KYC.create({
+        userId: user._id,
+        provider: 'manual-admin',
+        environment: process.env.NODE_ENV || 'production',
+        partnerJobId: `admin_verify_bvn_${user._id}_${Date.now()}`,
+        jobType: 1,
+        status: 'APPROVED',
+        jobSuccess: true,
+        resultCode: '1012',
+        resultText: 'Manually verified by admin',
+        idType: 'BVN',
+        frontendIdType: 'bvn',
+        idNumber: bvnToUse,
+        country: 'NG',
+        verificationDate: now,
+        lastUpdated: now,
+        createdAt: now
+      });
+    }
+
+    const updatedUser = await User.findById(user._id);
+
+    logger.info(`BVN manually verified for user: ${phoneNumber}`, {
+      userId: user._id,
+      kycId: bvnKycDoc._id,
+      bvn: bvnToUse.slice(0, 3) + '****'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'BVN verified successfully.',
+      data: {
+        userId: user._id,
+        phoneNumber,
+        kycId: bvnKycDoc._id,
+        bvnVerified: updatedUser.bvnVerified
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error verifying BVN', {
+      error: error.message,
+      stack: error.stack,
+      phoneNumber
+    });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST: Manually disable/clear BVN for a user
+router.post('/disable-bvn', async (req, res) => {
+  const { phoneNumber } = req.body;
+
+  if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
+    logger.warn('Invalid or missing phone number in disable BVN request', { phoneNumber });
+    return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
+  }
+
+  try {
+    const user = await User.findOne({ phonenumber: phoneNumber });
+    if (!user) {
+      logger.warn(`User not found: ${phoneNumber}`);
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    const now = new Date();
+
+    // Clear BVN and set bvnVerified to false
+    await User.findByIdAndUpdate(user._id, {
+      $set: {
+        bvn: null,
+        bvnVerified: false
+      }
+    });
+
+    // Cancel ALL BVN KYC records (permanent admin override)
+    await KYC.updateMany(
+      { userId: user._id, frontendIdType: 'bvn', status: { $ne: 'CANCELLED' } },
+      {
+        $set: {
+          status: 'CANCELLED',
+          cancelledAt: now,
+          cancelledReason: 'BVN disabled by admin (permanent override)',
+          lastUpdated: now
+        }
+      }
+    );
+
+    const updatedUser = await User.findById(user._id);
+
+    logger.info(`BVN disabled for user: ${phoneNumber}`, {
+      userId: user._id,
+      bvnVerified: updatedUser.bvnVerified
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'BVN disabled successfully.',
+      data: {
+        userId: user._id,
+        phoneNumber,
+        bvnVerified: updatedUser.bvnVerified
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error disabling BVN', {
       error: error.message,
       stack: error.stack,
       phoneNumber
