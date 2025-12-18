@@ -36,11 +36,17 @@ function verifyYouverifySignature(payload, signature, secretKey) {
       .update(payload, 'utf8')
       .digest('hex');
 
+    // Normalize signatures to lowercase for comparison (HMAC hex is case-insensitive)
+    const expectedSigBuffer = Buffer.from(expectedSignature.toLowerCase(), 'hex');
+    const receivedSigBuffer = Buffer.from(signature.toLowerCase(), 'hex');
+
+    // Ensure both buffers are the same length
+    if (expectedSigBuffer.length !== receivedSigBuffer.length) {
+      return false;
+    }
+
     // Use timing-safe comparison to prevent timing attacks
-    return crypto.timingSafeEqual(
-      Buffer.from(expectedSignature, 'hex'),
-      Buffer.from(signature, 'hex')
-    );
+    return crypto.timingSafeEqual(expectedSigBuffer, receivedSigBuffer);
   } catch (error) {
     logger.error('Youverify signature verification error:', error);
     return false;
@@ -135,7 +141,15 @@ function normalize(webhookBody) {
     requestedAt: data.requestedAt ? new Date(data.requestedAt) : null,
     lastModifiedAt: data.lastModifiedAt ? new Date(data.lastModifiedAt) : null,
     imageLinks: {
-      image: data.image || null, // Base64 image from Youverify
+      // Map Youverify image fields to our model structure
+      document_image: data.image || data.fullDocumentFrontImage || null,
+      cropped_image: data.croppedImage || null,
+      selfie_image: data.faceImage || null,
+      fullDocumentFrontImage: data.fullDocumentFrontImage || null,
+      fullDocumentBackImage: data.fullDocumentBackImage || null,
+      signatureImage: data.signatureImage || null,
+      // Keep original Youverify image for reference
+      image: data.image || null
     },
     validations: {
       firstName: validations.firstName || null,
@@ -201,14 +215,20 @@ function extractDocumentMetadata(norm) {
 }
 
 // ---------------- Webhook Handler ----------------
-// Use express.raw middleware to get raw body for signature verification
-router.post('/callback', express.raw({ type: 'application/json' }), async (req, res) => {
+// Note: express.raw middleware is applied at server level for /kyc-webhook routes
+// req.rawBody is set by server.js middleware, but we can also use req.body directly
+router.post('/callback', async (req, res) => {
   const startTime = Date.now();
   let webhookData;
+  let requestId = 'unknown';
+  let norm = null;
+  let userId = null;
+  let partnerJobId = null;
 
   try {
     // Get raw payload for signature verification
-    const rawPayload = req.body.toString('utf8');
+    // Use req.rawBody if available (from server.js middleware), otherwise req.body
+    const rawPayload = req.rawBody || (req.body ? req.body.toString('utf8') : JSON.stringify(req.body));
     const signature = req.headers['x-youverify-signature'];
 
     // Parse JSON payload
@@ -260,7 +280,7 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
       });
     }
 
-    const requestId = `${norm.youverifyId || norm.idNumber || 'unknown'}_${Date.now()}`;
+    requestId = `${norm.youverifyId || norm.idNumber || 'unknown'}_${Date.now()}`;
 
     logger.info('Youverify webhook received', {
       requestId,
@@ -279,8 +299,8 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
     // Method 1: Check if userId was passed in metadata (from frontend SDK)
     // Method 2: Find user by idNumber if available
     // Method 3: Use requestedById if it's a user ID
-    let userId = null;
-    let partnerJobId = norm.youverifyId;
+    userId = null;
+    partnerJobId = norm.youverifyId;
 
     // Try to find user by idNumber if we have it
     if (norm.idNumber) {
@@ -420,8 +440,6 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
         requestedById: norm.requestedById,
         parentId: norm.parentId,
         providerTimestamp: norm.providerTimestamp,
-        requestedAt: norm.requestedAt,
-        lastModifiedAt: norm.lastModifiedAt,
         lastUpdated: new Date(),
         payload: webhookData,
         errorReason: status === 'REJECTED' ? (norm.reason || norm.resultText || 'Verification failed') : null,
@@ -719,19 +737,19 @@ router.post('/callback', express.raw({ type: 'application/json' }), async (req, 
 
   } catch (e) {
     logger.error('Youverify webhook database error', {
-      requestId,
+      requestId: requestId || 'unknown',
       error: e.message,
       stack: e.stack,
-      userId,
-      youverifyId: norm.youverifyId,
-      partnerJobId
+      userId: userId || null,
+      youverifyId: norm?.youverifyId || null,
+      partnerJobId: partnerJobId || null
     });
 
     return res.status(200).json({
       success: false,
       retriable: true,
       error: e.message,
-      requestId
+      requestId: requestId || 'unknown'
     });
   }
 });

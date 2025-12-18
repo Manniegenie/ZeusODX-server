@@ -459,7 +459,7 @@ router.get('/details/:kycId', async (req, res) => {
     }
 
     const kycEntry = await KYC.findById(kycId).populate('userId', 
-      'firstname lastname email phonenumber kycLevel kycStatus createdAt'
+      'firstname lastname email phonenumber kycLevel kycStatus createdAt bvn bvnVerified'
     );
 
     if (!kycEntry) {

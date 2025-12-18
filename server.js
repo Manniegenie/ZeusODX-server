@@ -191,8 +191,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// Raw Body Parser for Webhook Routes
+// Raw Body Parser for Webhook Routes (including kyc-webhook)
 app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+  req.rawBody = req.body.toString('utf8');
+  next();
+});
+app.use('/kyc-webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
   req.rawBody = req.body.toString('utf8');
   next();
 });
