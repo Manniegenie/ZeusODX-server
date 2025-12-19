@@ -113,7 +113,7 @@ router.post('/password-pin', async (req, res) => {
       phonenumber 
     } = pendingUser;
 
-    // Generate unique username from first name
+    // Generate unique username from first name (placeholder - can be changed once via username endpoint)
     const generatedUsername = await generateUniqueUsername(firstname);
 
     const userFields = {
@@ -121,7 +121,7 @@ router.post('/password-pin', async (req, res) => {
       firstname,
       lastname,
       phonenumber,
-      username: generatedUsername, // Set the generated username
+      username: generatedUsername, // Auto-generated placeholder (can be changed once via username endpoint)
       isUsernameCustom: false, // Mark as auto-generated (allows one update)
       password: null, // Explicitly set to null
       passwordpin: newPin, // Set the PIN - let the model handle hashing
@@ -184,12 +184,73 @@ router.post('/password-pin', async (req, res) => {
     };
 
     const newUser = new User(userFields);
+    
+    // Save user first (before generating JWT tokens to ensure username is final)
+    try {
+      await newUser.save();
+    } catch (saveError) {
+      logger.error('Error saving new user', { 
+        error: saveError.message, 
+        stack: saveError.stack,
+        pendingUserId,
+        username: generatedUsername,
+        validationErrors: saveError.errors ? Object.keys(saveError.errors) : null,
+        source: 'password-pin' 
+      });
+      
+      // Handle specific validation errors
+      if (saveError.name === 'ValidationError') {
+        const errorMessages = Object.values(saveError.errors).map(err => err.message);
+        return res.status(400).json({ 
+          message: 'Validation failed', 
+          errors: errorMessages 
+        });
+      }
+      
+      // Handle duplicate key errors (race condition - username taken between check and save)
+      if (saveError.code === 11000) {
+        const duplicateField = Object.keys(saveError.keyPattern || {})[0];
+        if (duplicateField === 'username') {
+          // Username was taken by another user between our check and save
+          // Regenerate username from firstname as fallback
+          logger.warn('Username collision during signup, regenerating', { 
+            requestedUsername: generatedUsername, 
+            pendingUserId 
+          });
+          const fallbackUsername = await generateUniqueUsername(firstname);
+          newUser.username = fallbackUsername;
+          newUser.isUsernameCustom = false;
+          try {
+            await newUser.save();
+            logger.info('User saved with fallback username after collision', {
+              userId: newUser._id,
+              fallbackUsername,
+              pendingUserId
+            });
+          } catch (retryError) {
+            logger.error('Failed to save user even with fallback username', {
+              error: retryError.message,
+              pendingUserId
+            });
+            return res.status(500).json({ 
+              message: 'Failed to create account. Please try again.' 
+            });
+          }
+        } else {
+          return res.status(400).json({ 
+            message: `${duplicateField} already exists` 
+          });
+        }
+      } else {
+        throw saveError; // Re-throw if not handled
+      }
+    }
 
-    // JWT payload - Now includes the generated username
+    // JWT payload - Now includes the final username (after save is successful)
     const jwtPayload = {
       id: newUser._id,
       email: newUser.email,
-      username: newUser.username, // Now includes the generated username
+      username: newUser.username, // Use the actual saved username
       is2FAEnabled: newUser.is2FAEnabled || false,
       is2FAVerified: newUser.is2FAVerified || false,
     };
@@ -216,6 +277,10 @@ router.post('/password-pin', async (req, res) => {
       { expiresIn: "7d" }
     );
 
+    // Add refresh token to user and save again
+    newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
+    await newUser.save();
+
     // DEBUG: Log generated tokens (for debugging only - remove in production)
     logger.info('JWT tokens generated', {
       userId: newUser._id,
@@ -227,41 +292,6 @@ router.post('/password-pin', async (req, res) => {
       refreshTokenLength: refreshToken.length,
       source: 'password-pin'
     });
-
-    // Add refresh token to user before saving
-    newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
-    
-    // Save user first
-    try {
-      await newUser.save();
-    } catch (saveError) {
-      logger.error('Error saving new user', { 
-        error: saveError.message, 
-        stack: saveError.stack,
-        pendingUserId,
-        validationErrors: saveError.errors ? Object.keys(saveError.errors) : null,
-        source: 'password-pin' 
-      });
-      
-      // Handle specific validation errors
-      if (saveError.name === 'ValidationError') {
-        const errorMessages = Object.values(saveError.errors).map(err => err.message);
-        return res.status(400).json({ 
-          message: 'Validation failed', 
-          errors: errorMessages 
-        });
-      }
-      
-      // Handle duplicate key errors
-      if (saveError.code === 11000) {
-        const duplicateField = Object.keys(saveError.keyPattern || {})[0];
-        return res.status(400).json({ 
-          message: `${duplicateField} already exists` 
-        });
-      }
-      
-      throw saveError; // Re-throw if not handled
-    }
 
     logger.info('User created successfully with password PIN, phone verification, and KYC Level 1', {
       userId: newUser._id,

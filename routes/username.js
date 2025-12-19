@@ -33,21 +33,53 @@ router.post('/update-username', async (req, res) => {
   }
 
   try {
+    // Fetch user to check if username can be updated (only once allowed)
+    const user = await User.findById(userId);
+    if (!user) {
+      logger.warn('User not found', { userId });
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    // Check if username has already been changed (can only change once)
+    if (!user.canUpdateUsername()) {
+      logger.warn('Username already changed once, cannot change again', { userId, currentUsername: user.username });
+      return res.status(403).json({ 
+        message: "Username can only be changed once. Your current username cannot be modified." 
+      });
+    }
+
+    // Check if the username is already taken by another user
     const usernameExists = await User.findOne({ username });
     if (usernameExists && usernameExists._id.toString() !== userId) {
-      logger.info('Username already in use', { username });
+      logger.info('Username already in use', { username, existingUserId: usernameExists._id });
       return res.status(409).json({ message: "Username already taken." });
     }
 
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { username },
-      { new: true }
+    // Use findOneAndUpdate with atomic operation to prevent race conditions
+    // Only update if isUsernameCustom is still false (hasn't been changed yet)
+    const updatedUser = await User.findOneAndUpdate(
+      { 
+        _id: userId,
+        isUsernameCustom: false // Only allow update if username hasn't been customized yet
+      },
+      { 
+        $set: { 
+          username: username,
+          isUsernameCustom: true // Mark as custom username (prevents future changes)
+        } 
+      },
+      { 
+        new: true,
+        runValidators: true // Ensure validators run
+      }
     );
 
     if (!updatedUser) {
-      logger.warn('User not found', { userId });
-      return res.status(404).json({ message: "User not found." });
+      // User was found but isUsernameCustom was already true (race condition or already changed)
+      logger.warn('Username update blocked - already customized or user not found', { userId });
+      return res.status(403).json({ 
+        message: "Username can only be changed once. Your current username cannot be modified." 
+      });
     }
 
     // Clear all user caches to ensure profile data is fresh
@@ -57,7 +89,25 @@ router.post('/update-username', async (req, res) => {
     logger.info('Username updated successfully', { userId, newUsername: username });
     res.status(200).json({ message: "Username updated successfully.", user: updatedUser });
   } catch (error) {
-    logger.error('Error updating username', { error: error.message });
+    // Handle duplicate key error (race condition scenario)
+    if (error.code === 11000 || error.name === 'MongoServerError') {
+      // Check if it's a duplicate username error
+      if (error.keyPattern && error.keyPattern.username) {
+        logger.warn('Username update failed - duplicate key error (race condition)', { 
+          username, 
+          userId,
+          error: error.message 
+        });
+        return res.status(409).json({ message: "Username already taken. Please try another username." });
+      }
+    }
+    
+    logger.error('Error updating username', { 
+      error: error.message, 
+      stack: error.stack,
+      code: error.code,
+      userId 
+    });
     res.status(500).json({ message: "Server error while updating username." });
   }
 });
