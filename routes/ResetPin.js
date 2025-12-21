@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
-const { sendOtpEmail } = require('../services/EmailService');
+const { sendEmailVerificationOTP } = require('../services/EmailService');
 const EmailVerificationService = require('../services/VerifiedEmail');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
@@ -71,7 +71,7 @@ router.post('/initiate', async (req, res) => {
     // Send OTP via email
     try {
       const fullName = `${user.firstname} ${user.lastname}`;
-      const emailResult = await sendOtpEmail(user.email, fullName, otp, 10);
+      const emailResult = await sendEmailVerificationOTP(user.email, fullName, otp, 10);
       
       logger.info('Forgot pin OTP sent successfully', { 
         userId,
