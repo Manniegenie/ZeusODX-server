@@ -944,6 +944,51 @@ router.post('/withdraw', async (req, res) => {
       });
     }
 
+    // BVN verification check
+    const { bvnCheckService } = require('../services/bvnCheckService');
+    const bvnCheck = await bvnCheckService.checkBVNVerified(userId);
+    logger.info('BVN check for NGNZ withdrawal', {
+      userId,
+      verified: bvnCheck.success,
+      code: bvnCheck.code,
+      message: bvnCheck.message,
+      data: bvnCheck.data
+    });
+    if (!bvnCheck.success) {
+      await createAuditEntry({
+        userId,
+        eventType: 'USER_ACTION',
+        status: 'FAILED',
+        source: 'API_ENDPOINT',
+        action: 'Failed NGNZ Withdrawal - BVN Not Verified',
+        description: 'NGNZ withdrawal request failed: BVN not verified',
+        errorDetails: {
+          message: bvnCheck.message,
+          code: bvnCheck.code || 'BVN_NOT_VERIFIED'
+        },
+        requestData: {
+          amount,
+          withdrawalFee: NGNZ_WITHDRAWAL_FEE_RECORDED,
+          destination: destination ? {
+            ...destination,
+            accountNumber: maskAccountNumber(destination.accountNumber)
+          } : null
+        },
+        relatedEntities: {
+          correlationId
+        },
+        systemContext,
+        tags: ['withdrawal', 'ngnz', 'bvn-check', 'failed']
+      });
+
+      return res.status(400).json({
+        success: false,
+        error: bvnCheck.code || 'BVN_NOT_VERIFIED',
+        message: bvnCheck.message,
+        data: bvnCheck.data
+      });
+    }
+
     // Get user data with authentication fields
     const user = await getCachedUserAuth(userId);
     if (!user) {
