@@ -8,113 +8,108 @@ const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const logger = require('../utils/logger');
 const config = require('./config');
 
-// Configure Obiex axios instance
+/**
+ * Axios instance
+ */
 const obiexAxios = axios.create({
   baseURL: config.obiex.baseURL.replace(/\/+$/, ''),
-  timeout: 30000,
+  timeout: 30000
 });
 
-// Attach Obiex auth headers
 obiexAxios.interceptors.request.use(attachObiexAuth);
 
 /**
- * Fetch currency + network data from Obiex API
+ * Fetch ALL currencies
  */
-async function fetchObiexCurrencyNetworks() {
+async function fetchCurrencies() {
+  const res = await obiexAxios.get('/currencies');
+  return res.data?.data || [];
+}
+
+/**
+ * Fetch wallets (networks) for ONE currency
+ */
+async function fetchNetworksForCurrency(currencyCode) {
   try {
-    validateObiexConfig();
-
-    logger.info('Fetching currency-network data from Obiex API');
-
-    // ✅ CORRECT ENDPOINT
-    const response = await obiexAxios.get('/currencies');
+    const res = await obiexAxios.get(`/wallets/${currencyCode}`);
 
     return {
       success: true,
-      data: response.data,
+      networks: res.data?.data || []
     };
-  } catch (error) {
-    logger.error('Failed to fetch from Obiex API', {
-      error: error.response?.data || error.message,
-      status: error.response?.status,
+  } catch (err) {
+    logger.warn(`Failed fetching networks for ${currencyCode}`, {
+      error: err.response?.data || err.message
     });
 
     return {
       success: false,
-      message: error.response?.data?.message || error.message,
+      networks: []
     };
   }
 }
 
 /**
- * Save data to JSON file
+ * Fetch currency → networks map
  */
-async function saveToJsonFile(data, filename = 'obiex_currency_networks.json') {
-  try {
-    const filePath = path.join(__dirname, '..', filename);
-    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+async function fetchCurrencyNetworkMap() {
+  validateObiexConfig();
 
-    logger.info('Data saved to JSON file', { filePath });
+  logger.info('Fetching currencies from Obiex');
+  const currencies = await fetchCurrencies();
 
-    return {
-      success: true,
-      filePath,
-    };
-  } catch (error) {
-    logger.error('Failed to save JSON file', { error: error.message });
+  const result = {};
 
-    return {
-      success: false,
-      message: error.message,
+  for (const currency of currencies) {
+    const code = currency.code;
+
+    logger.info(`Fetching networks for ${code}`);
+
+    const networkResult = await fetchNetworksForCurrency(code);
+
+    result[code] = {
+      currency: currency,
+      networks: networkResult.networks
     };
   }
+
+  return result;
+}
+
+/**
+ * Save JSON file
+ */
+async function saveJson(data, filename) {
+  const filePath = path.join(__dirname, '..', filename);
+  await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+  return filePath;
 }
 
 /**
  * GET /fetchnetworktest/fetch-obiex-networks
- * Fetches currency-network data from Obiex and saves to JSON
  */
 router.get('/fetch-obiex-networks', async (req, res) => {
   try {
-    // Fetch from Obiex
-    const obiexResult = await fetchObiexCurrencyNetworks();
+    const data = await fetchCurrencyNetworkMap();
+    const filePath = await saveJson(data, 'obiex_currency_networks.json');
 
-    if (!obiexResult.success) {
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to fetch from Obiex API',
-        error: obiexResult.message,
-      });
-    }
-
-    // Save to JSON file
-    const saveResult = await saveToJsonFile(obiexResult.data);
-
-    if (!saveResult.success) {
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to save data to file',
-        error: saveResult.message,
-        data: obiexResult.data,
-      });
-    }
-
-    return res.status(200).json({
+    return res.json({
       success: true,
-      message: 'Currency-network data fetched and saved successfully',
-      filePath: saveResult.filePath,
-      data: obiexResult.data,
+      message: 'Currencies and networks fetched successfully',
+      filePath,
+      totalCurrencies: Object.keys(data).length
     });
-  } catch (error) {
-    logger.error('Error in fetch-obiex-networks route', {
-      error: error.message,
-      stack: error.stack,
+
+  } catch (err) {
+    logger.error('Failed fetching Obiex networks', {
+      error: err.message,
+      stack: err.stack
     });
 
     return res.status(500).json({
       success: false,
-      message: 'Internal server error',
-      error: error.message,
+      message: 'Failed to fetch currency networks',
+      error: err.message
     });
   }
 });
