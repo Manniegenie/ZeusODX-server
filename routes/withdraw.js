@@ -16,7 +16,7 @@ const logger = require('../utils/logger');
 const config = require('./config');
 const { sendWithdrawalEmail } = require('../services/EmailService');
 
-// 1. Load the dynamically generated network mapping
+// 1. Load the dynamic network mapping
 const NETWORK_MAP_PATH = path.join(__dirname, '..', 'obiex_currency_networks.json');
 let OBIEX_NETWORK_DATA = {};
 
@@ -34,24 +34,16 @@ const obiexAxios = axios.create({
 });
 obiexAxios.interceptors.request.use(attachObiexAuth);
 
-// Supported tokens configuration
+// Supported tokens metadata
 const SUPPORTED_TOKENS = {
-  BTC: { name: 'Bitcoin', symbol: 'BTC', decimals: 8, isStablecoin: false },
-  ETH: { name: 'Ethereum', symbol: 'ETH', decimals: 18, isStablecoin: false }, 
-  SOL: { name: 'Solana', symbol: 'SOL', decimals: 9, isStablecoin: false },
-  USDT: { name: 'Tether', symbol: 'USDT', decimals: 6, isStablecoin: true },
-  USDC: { name: 'USD Coin', symbol: 'USDC', decimals: 6, isStablecoin: true },
-  BNB: { name: 'Binance Coin', symbol: 'BNB', decimals: 18, isStablecoin: false },
-  MATIC: { name: 'Polygon', symbol: 'MATIC', decimals: 18, isStablecoin: false },
-  TRX: { name: 'Tron', symbol: 'TRX', decimals: 6, isStablecoin: false },
-  NGNB: { name: 'NGNB Token', symbol: 'NGNB', decimals: 2, isStablecoin: true, isNairaPegged: true }
-};
-
-const WITHDRAWAL_CONFIG = {
-  MAX_PENDING_WITHDRAWALS: 5,
-  DUPLICATE_CHECK_WINDOW: 30 * 60 * 1000, 
-  AMOUNT_PRECISION: 8,
-  MIN_CONFIRMATION_BLOCKS: { BTC: 1, ETH: 12, SOL: 32, USDT: 12, TRX: 1 },
+  BTC: { name: 'Bitcoin', symbol: 'BTC' },
+  ETH: { name: 'Ethereum', symbol: 'ETH' }, 
+  SOL: { name: 'Solana', symbol: 'SOL' },
+  USDT: { name: 'Tether', symbol: 'USDT' },
+  USDC: { name: 'USD Coin', symbol: 'USDC' },
+  BNB: { name: 'Binance Coin', symbol: 'BNB' },
+  MATIC: { name: 'Polygon', symbol: 'MATIC' },
+  TRX: { name: 'Tron', symbol: 'TRX' }
 };
 
 /**
@@ -60,7 +52,7 @@ const WITHDRAWAL_CONFIG = {
 function getBalanceFieldName(currency) {
   const fieldMap = {
     'BTC': 'btcBalance', 'ETH': 'ethBalance', 'SOL': 'solBalance', 'USDT': 'usdtBalance',
-    'USDC': 'usdcBalance', 'BNB': 'bnbBalance', 'MATIC': 'maticBalance', 'TRX': 'trxBalance', 'NGNB': 'ngnbBalance'
+    'USDC': 'usdcBalance', 'BNB': 'bnbBalance', 'MATIC': 'maticBalance', 'TRX': 'trxBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }
@@ -68,23 +60,9 @@ function getBalanceFieldName(currency) {
 function getPendingBalanceFieldName(currency) {
   const fieldMap = {
     'BTC': 'btcPendingBalance', 'ETH': 'ethPendingBalance', 'SOL': 'solPendingBalance', 'USDT': 'usdtPendingBalance',
-    'USDC': 'usdcPendingBalance', 'BNB': 'bnbPendingBalance', 'MATIC': 'maticPendingBalance', 'TRX': 'trxPendingBalance', 'NGNB': 'ngnbPendingBalance'
+    'USDC': 'usdcPendingBalance', 'BNB': 'bnbPendingBalance', 'MATIC': 'maticPendingBalance', 'TRX': 'trxPendingBalance'
   };
   return fieldMap[currency.toUpperCase()];
-}
-
-async function getCryptoPriceInternal(currency) {
-  try {
-    const prices = await getOriginalPricesWithCache([currency.toUpperCase()]);
-    return prices[currency.toUpperCase()] || 0;
-  } catch (error) {
-    return 0;
-  }
-}
-
-function getNetworkNativeCurrency(network) {
-  const map = { 'BSC': 'BNB', 'ETH': 'ETH', 'MATIC': 'MATIC', 'TRX': 'TRX', 'SOL': 'SOL', 'BTC': 'BTC' };
-  return map[network?.toUpperCase()] || 'ETH';
 }
 
 async function validateUserBalanceInternal(userId, currency, amount) {
@@ -119,44 +97,38 @@ async function comparePasswordPin(candidate, hashed) {
 }
 
 /**
- * UPDATED FEE CALCULATION
+ * UPDATED FEE LOGIC: DIRECT TOKEN PRICING
+ * No chain-price conversion (TRX/BNB price is ignored)
  */
 async function getWithdrawalFee(currency, network) {
   try {
     const upperCurrency = currency.toUpperCase();
     const upperNetwork = network.toUpperCase();
 
-    // 1. Get Obiex cost from JSON
+    // 1. Get Obiex cost from JSON (Priced in the Token)
     const asset = OBIEX_NETWORK_DATA[upperCurrency];
     const obiexNet = asset?.networks.find(n => n.code === upperNetwork);
     if (!obiexNet) throw new Error(`Network ${upperNetwork} not found for ${upperCurrency}`);
 
-    // 2. Get Your Markup from MongoDB
+    // 2. Get Your Profit Markup from MongoDB (Stored in the Token)
     const feeDoc = await CryptoFeeMarkup.findOne({ currency: upperCurrency, network: upperNetwork });
     if (!feeDoc) throw new Error(`Markup missing for ${upperCurrency} on ${upperNetwork}`);
 
-    // 3. Conversion logic
-    const nativeCurrency = getNetworkNativeCurrency(upperNetwork);
-    const prices = await getOriginalPricesWithCache([nativeCurrency, upperCurrency]);
-    const nativePrice = prices[nativeCurrency] || 0;
-    const withdrawalPrice = prices[upperCurrency] || 1;
-
-    // The combined native fee (Obiex Cost + Your Markup)
+    // Simple Addition: Both are in the same currency (e.g., USDT)
     const obiexFee = obiexNet.fee;
-    const originalNetworkFee = feeDoc.networkFee;
-    const totalNativeFee = obiexFee + originalNetworkFee;
+    const markupFee = feeDoc.networkFee;
+    const totalFee = obiexFee + markupFee;
 
-    const feeUsd = totalNativeFee * nativePrice;
-    const networkFeeInWithdrawalCurrency = feeUsd / withdrawalPrice;
+    // Optional: Get USD value just for the feeUsd display field
+    const prices = await getOriginalPricesWithCache([upperCurrency]);
+    const feeUsd = totalFee * (prices[upperCurrency] || 0);
 
     return {
       success: true,
-      // Field names preserved for your frontend
-      networkFee: parseFloat(networkFeeInWithdrawalCurrency.toFixed(8)), // Total combined fee
+      networkFee: parseFloat(totalFee.toFixed(8)), // Combined Fee
       feeUsd: parseFloat(feeUsd.toFixed(2)),
-      originalNetworkFee: originalNetworkFee, // Your markup only
-      obiexFee: obiexFee, // Obiex fee only
-      totalFeeInWithdrawalCurrency: networkFeeInWithdrawalCurrency
+      originalNetworkFee: markupFee, // Zeus Profit Markup
+      obiexFee: obiexFee // Obiex Base Cost
     };
   } catch (err) {
     return { success: false, message: err.message };
@@ -185,10 +157,10 @@ function validateWithdrawalRequest(body) {
   } else {
     const validNetwork = assetData.networks.find(n => n.code === upperNetwork);
     if (!validNetwork) {
-      errors.push(`Invalid network. Available: ${assetData.networks.map(n => n.code).join(', ')}`);
+      errors.push(`Invalid network '${upperNetwork}'. Use standard codes (e.g. TRX, BSC, ETH).`);
     } else if (validNetwork.addressRegex) {
       if (!new RegExp(validNetwork.addressRegex).test(address.trim())) {
-        errors.push(`Invalid ${validNetwork.name} address format.`);
+        errors.push(`Invalid address format for ${validNetwork.name}`);
       }
     }
   }
@@ -222,11 +194,8 @@ router.post('/crypto', async (req, res) => {
     const totalFees = feeInfo.networkFee;
     const receiverAmount = amount - totalFees;
     
-    // Obiex gets user amount minus your markup (converted)
-    const nativeCurrency = getNetworkNativeCurrency(network);
-    const prices = await getOriginalPricesWithCache([nativeCurrency, currency]);
-    const markupInWithdrawalCurrency = (feeInfo.originalNetworkFee * prices[nativeCurrency]) / (prices[currency] || 1);
-    const obiexSendAmount = amount - markupInWithdrawalCurrency;
+    // Obiex gets user amount minus your markup. Obiex then deducts their own fee.
+    const obiexSendAmount = amount - feeInfo.originalNetworkFee;
 
     if (receiverAmount <= 0) return res.status(400).json({ success: false, message: "Amount too low to cover fees" });
 
@@ -237,7 +206,7 @@ router.post('/crypto', async (req, res) => {
       destination: { address, network: network.toUpperCase(), memo: memo?.trim() },
       amount: Number(obiexSendAmount),
       currency: currency.toUpperCase(),
-      narration: narration || `Crypto withdrawal`
+      narration: narration || `Withdrawal`
     };
 
     const obiexRes = await obiexAxios.post('/wallets/ext/debit/crypto', payload);
@@ -256,11 +225,7 @@ router.post('/crypto', async (req, res) => {
     return res.json({
       success: true,
       message: 'Withdrawal initiated successfully',
-      data: {
-        transactionId: transaction._id,
-        receiverAmount: receiverAmount,
-        fee: totalFees
-      }
+      data: { transactionId: transaction._id, receiverAmount, fee: totalFees }
     });
 
   } catch (error) {
@@ -274,13 +239,11 @@ router.post('/initiate', async (req, res) => {
   const feeInfo = await getWithdrawalFee(currency, network);
   if (!feeInfo.success) return res.status(400).json(feeInfo);
 
-  // PRESERVED FIELD NAMES FOR FRONTEND
   res.json({
     success: true,
     data: {
-      amount,
-      currency,
-      fee: feeInfo.networkFee, // Combined fee
+      amount, currency,
+      fee: feeInfo.networkFee, // Combined Obiex + Zeus Markup
       feeUsd: feeInfo.feeUsd,
       receiverAmount: amount - feeInfo.networkFee,
       totalAmount: amount
