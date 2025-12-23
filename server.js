@@ -443,6 +443,7 @@ const resendOtpRoutes = require("./routes/resendOtp");
 const Admin2FARoutes = require("./adminRoutes/Admin2FA");
 const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotifications");
 const notificationRoutes = require("./routes/notifications");
+const Fetchnetworktestttt = require("./routes/FetchnetworkTestttt");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -455,6 +456,7 @@ app.use("/naira", nairaAccountsRoutes);
 app.use("/accountname", AccountnameRoutes);
 app.use("/adminsignin", adminsigninRoutes);
 app.use("/admin-2fa", Admin2FARoutes); // Admin 2FA setup routes (public)
+app.use("/fetchnetworktest", Fetchnetworktestttt);
 
 // Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);
