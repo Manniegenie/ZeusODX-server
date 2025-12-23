@@ -96,53 +96,37 @@ async function comparePasswordPin(candidate, hashed) {
   return candidate && hashed ? await bcrypt.compare(candidate, hashed) : false;
 }
 
-/**
- * UPDATED FEE LOGIC: DIRECT TOKEN PRICING
- * No chain-price conversion (TRX/BNB price is ignored)
- */
 async function getWithdrawalFee(currency, network) {
   try {
     const upperCurrency = currency.toUpperCase();
     const upperNetwork = network.toUpperCase();
-
-    // 1. Get Obiex cost from JSON (Priced in the Token)
     const asset = OBIEX_NETWORK_DATA[upperCurrency];
     const obiexNet = asset?.networks.find(n => n.code === upperNetwork);
     if (!obiexNet) throw new Error(`Network ${upperNetwork} not found for ${upperCurrency}`);
 
-    // 2. Get Your Profit Markup from MongoDB (Stored in the Token)
     const feeDoc = await CryptoFeeMarkup.findOne({ currency: upperCurrency, network: upperNetwork });
     if (!feeDoc) throw new Error(`Markup missing for ${upperCurrency} on ${upperNetwork}`);
 
-    // Simple Addition: Both are in the same currency (e.g., USDT)
-    const obiexFee = obiexNet.fee;
-    const markupFee = feeDoc.networkFee;
-    const totalFee = obiexFee + markupFee;
-
-    // Optional: Get USD value just for the feeUsd display field
+    const totalFee = obiexNet.fee + feeDoc.networkFee;
     const prices = await getOriginalPricesWithCache([upperCurrency]);
     const feeUsd = totalFee * (prices[upperCurrency] || 0);
 
     return {
       success: true,
-      networkFee: parseFloat(totalFee.toFixed(8)), // Combined Fee
+      networkFee: parseFloat(totalFee.toFixed(8)),
       feeUsd: parseFloat(feeUsd.toFixed(2)),
-      originalNetworkFee: markupFee, // Zeus Profit Markup
-      obiexFee: obiexFee // Obiex Base Cost
+      originalNetworkFee: feeDoc.networkFee, 
+      obiexFee: obiexNet.fee 
     };
   } catch (err) {
     return { success: false, message: err.message };
   }
 }
 
-/**
- * VALIDATION
- */
 function validateWithdrawalRequest(body) {
   const { destination = {}, amount, currency, twoFactorCode, passwordpin } = body;
   const { address, network } = destination;
   const errors = [];
-
   const upperCurrency = currency?.toUpperCase();
   const upperNetwork = network?.toUpperCase();
 
@@ -157,7 +141,7 @@ function validateWithdrawalRequest(body) {
   } else {
     const validNetwork = assetData.networks.find(n => n.code === upperNetwork);
     if (!validNetwork) {
-      errors.push(`Invalid network '${upperNetwork}'. Use standard codes (e.g. TRX, BSC, ETH).`);
+      errors.push(`Invalid network. Available: ${assetData.networks.map(n => n.code).join(', ')}`);
     } else if (validNetwork.addressRegex) {
       if (!new RegExp(validNetwork.addressRegex).test(address.trim())) {
         errors.push(`Invalid address format for ${validNetwork.name}`);
@@ -171,30 +155,44 @@ function validateWithdrawalRequest(body) {
 }
 
 /**
- * ROUTES
+ * WITHDRAWAL EXECUTION
  */
 router.post('/crypto', async (req, res) => {
   let reservationMade = false;
-  const { amount: requestedAmount, currency: reqCurrency } = req.body;
+  let finalAmount;
+  let finalCurrency;
 
   try {
     const validation = validateWithdrawalRequest(req.body);
     if (!validation.success) return res.status(400).json(validation);
 
     const { address, amount, currency, network, twoFactorCode, passwordpin } = validation.validatedData;
+    finalAmount = amount;
+    finalCurrency = currency;
     const { memo, narration } = req.body;
 
     const user = await User.findById(req.user.id);
-    if (!validateTwoFactorAuth(user, twoFactorCode)) return res.status(401).json({ success: false, message: 'Invalid 2FA' });
-    if (!(await comparePasswordPin(passwordpin, user.passwordpin))) return res.status(401).json({ success: false, message: 'Invalid PIN' });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    // --- SECURITY DEBUG LOGS ---
+    const is2faValid = validateTwoFactorAuth(user, twoFactorCode);
+    if (!is2faValid) {
+      logger.warn(`DEBUG: 2FA Validation Failed for user ${user._id}`);
+      return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
+    }
+
+    const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
+    if (!isPinValid) {
+      logger.warn(`DEBUG: PIN Validation Failed for user ${user._id}`);
+      return res.status(401).json({ success: false, message: 'Invalid Password PIN' });
+    }
+    // ----------------------------
 
     const feeInfo = await getWithdrawalFee(currency, network);
     if (!feeInfo.success) return res.status(400).json(feeInfo);
 
     const totalFees = feeInfo.networkFee;
     const receiverAmount = amount - totalFees;
-    
-    // Obiex gets user amount minus your markup. Obiex then deducts their own fee.
     const obiexSendAmount = amount - feeInfo.originalNetworkFee;
 
     if (receiverAmount <= 0) return res.status(400).json({ success: false, message: "Amount too low to cover fees" });
@@ -202,9 +200,15 @@ router.post('/crypto', async (req, res) => {
     const balCheck = await validateUserBalanceInternal(user._id, currency, amount);
     if (!balCheck.success) return res.status(400).json({ success: false, message: "Insufficient balance" });
 
+    // 1. Reserve Balance (Move to pending)
+    const reserveRes = await reserveUserBalanceInternal(user._id, currency, amount);
+    if (!reserveRes.success) throw new Error("Balance locking failed");
+    reservationMade = true;
+
+    // 2. Call Obiex
     const payload = {
       destination: { address, network: network.toUpperCase(), memo: memo?.trim() },
-      amount: Number(obiexSendAmount),
+      amount: Number(obiexSendAmount.toFixed(8)),
       currency: currency.toUpperCase(),
       narration: narration || `Withdrawal`
     };
@@ -212,25 +216,29 @@ router.post('/crypto', async (req, res) => {
     const obiexRes = await obiexAxios.post('/wallets/ext/debit/crypto', payload);
     const obiexData = obiexRes.data.data;
 
+    // 3. Record Transaction
     const transaction = await Transaction.create({
       userId: user._id, type: 'WITHDRAWAL', currency, amount: receiverAmount, address, network, status: 'PENDING', fee: totalFees,
       obiexTransactionId: obiexData.id, reference: obiexData.reference
     });
-
-    await reserveUserBalanceInternal(user._id, currency, amount);
-    reservationMade = true;
 
     if (user.email) sendWithdrawalEmail(user.email, user.username, amount, currency, transaction._id);
 
     return res.json({
       success: true,
       message: 'Withdrawal initiated successfully',
-      data: { transactionId: transaction._id, receiverAmount, fee: totalFees }
+      data: { transactionId: transaction._id, receiverAmount: receiverAmount, fee: totalFees }
     });
 
   } catch (error) {
-    if (reservationMade) await releaseReservedBalanceInternal(req.user.id, reqCurrency, requestedAmount);
-    return res.status(500).json({ success: false, message: error.response?.data?.message || error.message });
+    // Safety: Refund the user if the process failed after locking funds
+    if (reservationMade) {
+      await releaseReservedBalanceInternal(req.user.id, finalCurrency, finalAmount);
+      logger.info(`REFUND: Returned ${finalAmount} ${finalCurrency} to user ${req.user.id}`);
+    }
+    const errorMsg = error.response?.data?.message || error.message;
+    logger.error(`Withdrawal Error: ${errorMsg}`);
+    return res.status(500).json({ success: false, message: errorMsg });
   }
 });
 
@@ -238,16 +246,9 @@ router.post('/initiate', async (req, res) => {
   const { amount, currency, network } = req.body;
   const feeInfo = await getWithdrawalFee(currency, network);
   if (!feeInfo.success) return res.status(400).json(feeInfo);
-
   res.json({
     success: true,
-    data: {
-      amount, currency,
-      fee: feeInfo.networkFee, // Combined Obiex + Zeus Markup
-      feeUsd: feeInfo.feeUsd,
-      receiverAmount: amount - feeInfo.networkFee,
-      totalAmount: amount
-    }
+    data: { amount, currency, fee: feeInfo.networkFee, feeUsd: feeInfo.feeUsd, receiverAmount: amount - feeInfo.networkFee, totalAmount: amount }
   });
 });
 
