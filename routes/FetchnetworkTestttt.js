@@ -9,7 +9,7 @@ const logger = require('../utils/logger');
 const config = require('./config');
 
 /**
- * Axios instance
+ * Axios instance configured for Obiex
  */
 const obiexAxios = axios.create({
   baseURL: config.obiex.baseURL.replace(/\/+$/, ''),
@@ -19,7 +19,7 @@ const obiexAxios = axios.create({
 obiexAxios.interceptors.request.use(attachObiexAuth);
 
 /**
- * Fetch ALL currencies
+ * 1. Fetch ALL base currencies to get their IDs
  */
 async function fetchCurrencies() {
   const res = await obiexAxios.get('/currencies');
@@ -27,18 +27,19 @@ async function fetchCurrencies() {
 }
 
 /**
- * Fetch wallets (networks) for ONE currency
+ * 2. Fetch ACTUAL blockchain networks for a specific currency ID
+ * Endpoint: /currencies/:id/networks
  */
-async function fetchNetworksForCurrency(currencyCode) {
+async function fetchNetworksForCurrencyId(currencyId, code) {
   try {
-    const res = await obiexAxios.get(`/wallets/${currencyCode}`);
+    const res = await obiexAxios.get(`/currencies/${currencyId}/networks`);
 
     return {
       success: true,
       networks: res.data?.data || []
     };
   } catch (err) {
-    logger.warn(`Failed fetching networks for ${currencyCode}`, {
+    logger.warn(`Failed fetching networks for ${code} (ID: ${currencyId})`, {
       error: err.response?.data || err.message
     });
 
@@ -50,34 +51,46 @@ async function fetchNetworksForCurrency(currencyCode) {
 }
 
 /**
- * Fetch currency → networks map
+ * 3. Core Logic: Maps currencies to their technical networks
  */
 async function fetchCurrencyNetworkMap() {
   validateObiexConfig();
 
-  logger.info('Fetching currencies from Obiex');
+  logger.info('Initializing Obiex Currency & Network sync...');
   const currencies = await fetchCurrencies();
 
+  // The specific coins we want to deep-crawl for network metadata
+  const targetCodes = ['BTC', 'ETH', 'USDT', 'SOL', 'TRX', 'BNB', 'POL'];
   const result = {};
 
   for (const currency of currencies) {
     const code = currency.code;
 
-    logger.info(`Fetching networks for ${code}`);
+    // Check if this coin is in our target list
+    if (targetCodes.includes(code)) {
+      logger.info(`Syncing technical networks for ${code}...`);
+      
+      const networkResult = await fetchNetworksForCurrencyId(currency.id, code);
 
-    const networkResult = await fetchNetworksForCurrency(code);
-
-    result[code] = {
-      currency: currency,
-      networks: networkResult.networks
-    };
+      result[code] = {
+        currency: currency,
+        // This now contains actual network info (e.g. Tron, Ethereum, BSC)
+        networks: networkResult.networks 
+      };
+    } else {
+      // For non-target coins, we save the currency info but leave networks empty
+      result[code] = {
+        currency: currency,
+        networks: []
+      };
+    }
   }
 
   return result;
 }
 
 /**
- * Save JSON file
+ * Helper to save the generated map to a JSON file
  */
 async function saveJson(data, filename) {
   const filePath = path.join(__dirname, '..', filename);
@@ -86,7 +99,8 @@ async function saveJson(data, filename) {
 }
 
 /**
- * GET /fetchnetworktest/fetch-obiex-networks
+ * ROUTE: GET /fetchnetworktest/fetch-obiex-networks
+ * Triggers the full sync and saves to obiex_currency_networks.json
  */
 router.get('/fetch-obiex-networks', async (req, res) => {
   try {
@@ -95,20 +109,23 @@ router.get('/fetch-obiex-networks', async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Currencies and networks fetched successfully',
-      filePath,
-      totalCurrencies: Object.keys(data).length
+      message: 'Network metadata synced successfully for target coins',
+      stats: {
+        totalCurrencies: Object.keys(data).length,
+        targetsSynced: ['BTC', 'ETH', 'USDT', 'SOL', 'TRX', 'BNB', 'POL'],
+        filePath
+      }
     });
 
   } catch (err) {
-    logger.error('Failed fetching Obiex networks', {
+    logger.error('Critical failure in fetch-obiex-networks route', {
       error: err.message,
       stack: err.stack
     });
 
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch currency networks',
+      message: 'Failed to sync currency networks',
       error: err.message
     });
   }
