@@ -5197,3 +5197,1349 @@
 2025-12-23 10:52:52 [info]: Fetching networks for WLD
 2025-12-23 10:52:52 [info]: Fetching networks for XAF
 2025-12-23 10:52:52 [info]: Fetching networks for XRP
+2025-12-23 10:58:47 [info]: PIN sign-in request initiated {
+  "phonenumber": "+2348****"
+}
+2025-12-23 10:58:47 [info]: Login notification email sent {
+  "userId": "6947e4c112b5037c2566f5ab",
+  "email": "manuelwurld@gmail.com",
+  "ip": "105.113.106.225"
+}
+2025-12-23 10:58:47 [info]: Total cache entries cleared for user 6947e4c112b5037c2566f5ab: 0
+2025-12-23 10:58:47 [info]: Total cache entries cleared for user 6947e4c112b5037c2566f5ab: 0
+2025-12-23 10:58:47 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:47 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:47 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:47 [info]: Total cache entries cleared for user 6947e4c112b5037c2566f5ab: 0
+2025-12-23 10:58:47 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:47 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:47 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:47 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:47 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Profile fetched successfully {
+  "userId": "6947e4c112b5037c2566f5ab",
+  "processingTime": 36,
+  "hasKyc": true
+}
+2025-12-23 10:58:48 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Total cache entries cleared for user 6947e4c112b5037c2566f5ab: 0
+2025-12-23 10:58:48 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:48 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:48 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:48 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:48 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 9 prices from job-populated database
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 9 prices from job-populated database
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 8 prices from job-populated database
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 9 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 9,
+  "tokens": [
+    "NGNZ",
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 9 prices from job-populated database
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 9 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 9,
+  "tokens": [
+    "NGNZ",
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 9 prices from job-populated database
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 8 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 9 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 9,
+  "tokens": [
+    "NGNZ",
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 9 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 9,
+  "tokens": [
+    "NGNZ",
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 9 prices from job-populated database
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 9 prices from job-populated database
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 9 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 9,
+  "tokens": [
+    "NGNZ",
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 9 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 9,
+  "tokens": [
+    "NGNZ",
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 8 prices from job-populated database
+2025-12-23 10:58:48 [info]: Dashboard fetched successfully {
+  "userId": "6947e4c112b5037c2566f5ab",
+  "processingTime": 237
+}
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 8 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Dashboard fetched successfully {
+  "userId": "6947e4c112b5037c2566f5ab",
+  "processingTime": 251
+}
+2025-12-23 10:58:48 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Successfully fetched 8 prices from job-populated database
+2025-12-23 10:58:48 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Applied 0.2% markdown to 8 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:48 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:48 [info]: Dashboard fetched successfully {
+  "userId": "6947e4c112b5037c2566f5ab",
+  "processingTime": 200
+}
+2025-12-23 10:58:49 [info]: Starting crypto price fetch from job-populated database {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:49 [info]: Fetching prices from job-populated database {
+  "requestedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX",
+    "NGNZ"
+  ]
+}
+2025-12-23 10:58:49 [info]: Requesting job-populated prices from database {
+  "dbTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:49 [info]: Job-populated prices retrieved from database {
+  "pricesFound": 8,
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:49 [info]: Successfully fetched 9 prices from job-populated database
+2025-12-23 10:58:49 [info]: Applying global markdown to all crypto prices {
+  "markdownPercentage": 0.2,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:49 [info]: Applied 0.2% markdown to 9 token prices {
+  "discountMultiplier": 0.998,
+  "affectedTokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 10:58:49 [info]: Prices fetched successfully from job-populated database {
+  "tokenCount": 9,
+  "tokens": [
+    "NGNZ",
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "markdownApplied": true,
+  "markdownPercentage": "0.2%"
+}
+2025-12-23 10:58:49 [info]: Balances fetched with portfolio service markdown-adjusted USD calculations {
+  "userId": "6947e4c112b5037c2566f5ab",
+  "requestedFields": [
+    "btcBalance",
+    "btcBalanceUSD",
+    "btcPendingBalance",
+    "ethBalance",
+    "ethBalanceUSD",
+    "ethPendingBalance",
+    "solBalance",
+    "solBalanceUSD",
+    "solPendingBalance",
+    "usdtBalance",
+    "usdtBalanceUSD",
+    "usdtPendingBalance",
+    "usdcBalance",
+    "usdcBalanceUSD",
+    "usdcPendingBalance",
+    "bnbBalance",
+    "bnbBalanceUSD",
+    "bnbPendingBalance",
+    "maticBalance",
+    "maticBalanceUSD",
+    "maticPendingBalance",
+    "trxBalance",
+    "trxBalanceUSD",
+    "trxPendingBalance",
+    "ngnzBalance",
+    "ngnzBalanceUSD",
+    "ngnzPendingBalance",
+    "totalPortfolioBalance"
+  ],
+  "tokenFieldsFromDB": 9,
+  "usdFieldsCalculated": 9,
+  "totalPortfolioCalculated": true,
+  "markdownApplied": true
+}
+2025-12-23 11:00:00 [info]: Job lock acquired {
+  "lockId": "job-1766484000013-bt22hhdwj"
+}
+2025-12-23 11:00:00 [info]: Starting crypto price update job {
+  "lockId": "job-1766484000013-bt22hhdwj"
+}
+2025-12-23 11:00:00 [info]: Starting Binance API price fetch
+2025-12-23 11:00:01 [info]: Fetched 8 prices from https://data-api.binance.vision {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:00:01 [info]: Processing 8 tokens for price storage {
+  "lockId": "job-1766484000013-bt22hhdwj",
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:00:01 [info]: Storing prices to database {
+  "pricesCount": 8,
+  "source": "binance_vision",
+  "prices": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "lockId": "job-1766484000013-bt22hhdwj"
+}
+2025-12-23 11:00:01 [info]: Price storage completed {
+  "storedCount": 8,
+  "requestedCount": 8,
+  "source": "binance_vision",
+  "lockId": "job-1766484000013-bt22hhdwj"
+}
+2025-12-23 11:00:01 [info]: Crypto price update job completed successfully {
+  "pricesStored": 8,
+  "duration": "1200ms",
+  "symbols": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "source": "binance_vision"
+}
+2025-12-23 11:00:01 [info]: Job lock released {
+  "lockId": "job-1766484000013-bt22hhdwj"
+}
+2025-12-23 11:07:41 [info]: Registered cache: airtime_userCache
+2025-12-23 11:07:41 [info]: Registered cache: data_userCache
+2025-12-23 11:07:41 [info]: Registered cache: electricity_userCache
+2025-12-23 11:07:41 [info]: Registered cache: betting_userCache
+2025-12-23 11:07:41 [info]: Registered cache: cabletv_userCache
+2025-12-23 11:07:41 [info]: Registered cache: dashboard_cache
+2025-12-23 11:07:41 [info]: Registered cache: swap_userCache
+2025-12-23 11:07:41 [info]: Registered cache: ngnz_swaps_userCache
+2025-12-23 11:07:41 [info]: Registered cache: ngnz_withdrawal_userCache
+2025-12-23 11:07:41 [info]: SmileIDAuth: Credentials validated {
+  "environment": "sandbox",
+  "apiBase": "https://testapi.smileidentity.com",
+  "hasCallbackUrl": true
+}
+2025-12-23 11:07:41 [info]: SmileIDNINService: Initialized {
+  "environment": "sandbox",
+  "apiBase": "https://testapi.smileidentity.com",
+  "hasCallbackUrl": true,
+  "partnerId": "7931"
+}
+2025-12-23 11:07:41 [info]: Starting scheduled notification service...
+2025-12-23 11:07:41 [info]: Scheduled price notification for 6:00 AM (0 6 * * *)
+2025-12-23 11:07:41 [info]: Scheduled price notification for 12:00 PM (0 12 * * *)
+2025-12-23 11:07:41 [info]: Scheduled price notification for 6:00 PM (0 18 * * *)
+2025-12-23 11:07:41 [info]: Scheduled price notification for 9:00 PM (0 21 * * *)
+2025-12-23 11:07:41 [info]: Scheduled notification service started successfully
+2025-12-23 11:07:46 [info]: Job lock acquired {
+  "lockId": "job-1766484466792-gckg78ef2"
+}
+2025-12-23 11:07:46 [info]: Starting crypto price update job {
+  "lockId": "job-1766484466792-gckg78ef2"
+}
+2025-12-23 11:07:46 [info]: Starting Binance API price fetch
+2025-12-23 11:07:48 [info]: Fetched 8 prices from https://data-api.binance.vision {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:07:48 [info]: Processing 8 tokens for price storage {
+  "lockId": "job-1766484466792-gckg78ef2",
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:07:48 [info]: Storing prices to database {
+  "pricesCount": 8,
+  "source": "binance_vision",
+  "prices": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "lockId": "job-1766484466792-gckg78ef2"
+}
+2025-12-23 11:07:48 [info]: Price storage completed {
+  "storedCount": 8,
+  "requestedCount": 8,
+  "source": "binance_vision",
+  "lockId": "job-1766484466792-gckg78ef2"
+}
+2025-12-23 11:07:48 [info]: Crypto price update job completed successfully {
+  "pricesStored": 8,
+  "duration": "1243ms",
+  "symbols": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "source": "binance_vision"
+}
+2025-12-23 11:07:48 [info]: Job lock released {
+  "lockId": "job-1766484466792-gckg78ef2"
+}
+2025-12-23 11:15:00 [info]: Job lock acquired {
+  "lockId": "job-1766484900013-eylivtxve"
+}
+2025-12-23 11:15:00 [info]: Starting crypto price update job {
+  "lockId": "job-1766484900013-eylivtxve"
+}
+2025-12-23 11:15:00 [info]: Starting Binance API price fetch
+2025-12-23 11:15:01 [info]: Fetched 8 prices from https://data-api.binance.vision {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:15:01 [info]: Processing 8 tokens for price storage {
+  "lockId": "job-1766484900013-eylivtxve",
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:15:01 [info]: Storing prices to database {
+  "pricesCount": 8,
+  "source": "binance_vision",
+  "prices": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "lockId": "job-1766484900013-eylivtxve"
+}
+2025-12-23 11:15:01 [info]: Price storage completed {
+  "storedCount": 8,
+  "requestedCount": 8,
+  "source": "binance_vision",
+  "lockId": "job-1766484900013-eylivtxve"
+}
+2025-12-23 11:15:01 [info]: Crypto price update job completed successfully {
+  "pricesStored": 8,
+  "duration": "1229ms",
+  "symbols": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "source": "binance_vision"
+}
+2025-12-23 11:15:01 [info]: Job lock released {
+  "lockId": "job-1766484900013-eylivtxve"
+}
+2025-12-23 11:28:02 [info]: Initializing Obiex Currency & Network sync...
+2025-12-23 11:28:03 [info]: Syncing technical networks for BNB...
+2025-12-23 11:28:04 [info]: Syncing technical networks for BTC...
+2025-12-23 11:28:05 [info]: Syncing technical networks for ETH...
+2025-12-23 11:28:06 [info]: Syncing technical networks for POL...
+2025-12-23 11:28:07 [info]: Syncing technical networks for SOL...
+2025-12-23 11:28:08 [info]: Syncing technical networks for TRX...
+2025-12-23 11:28:09 [info]: Syncing technical networks for USDT...
+2025-12-23 11:30:00 [info]: Job lock acquired {
+  "lockId": "job-1766485800014-6sz2kogc7"
+}
+2025-12-23 11:30:00 [info]: Starting crypto price update job {
+  "lockId": "job-1766485800014-6sz2kogc7"
+}
+2025-12-23 11:30:00 [info]: Starting Binance API price fetch
+2025-12-23 11:30:00 [info]: Fetched 8 prices from https://data-api.binance.vision {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:30:00 [info]: Processing 8 tokens for price storage {
+  "lockId": "job-1766485800014-6sz2kogc7",
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:30:00 [info]: Storing prices to database {
+  "pricesCount": 8,
+  "source": "binance_vision",
+  "prices": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "lockId": "job-1766485800014-6sz2kogc7"
+}
+2025-12-23 11:30:00 [info]: Price storage completed {
+  "storedCount": 8,
+  "requestedCount": 8,
+  "source": "binance_vision",
+  "lockId": "job-1766485800014-6sz2kogc7"
+}
+2025-12-23 11:30:00 [info]: Crypto price update job completed successfully {
+  "pricesStored": 8,
+  "duration": "981ms",
+  "symbols": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "source": "binance_vision"
+}
+2025-12-23 11:30:00 [info]: Job lock released {
+  "lockId": "job-1766485800014-6sz2kogc7"
+}
+2025-12-23 11:45:00 [info]: Job lock acquired {
+  "lockId": "job-1766486700008-8w43e6btd"
+}
+2025-12-23 11:45:00 [info]: Starting crypto price update job {
+  "lockId": "job-1766486700008-8w43e6btd"
+}
+2025-12-23 11:45:00 [info]: Starting Binance API price fetch
+2025-12-23 11:45:00 [info]: Fetched 8 prices from https://data-api.binance.vision {
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:45:00 [info]: Processing 8 tokens for price storage {
+  "lockId": "job-1766486700008-8w43e6btd",
+  "tokens": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ]
+}
+2025-12-23 11:45:00 [info]: Storing prices to database {
+  "pricesCount": 8,
+  "source": "binance_vision",
+  "prices": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "lockId": "job-1766486700008-8w43e6btd"
+}
+2025-12-23 11:45:00 [info]: Price storage completed {
+  "storedCount": 8,
+  "requestedCount": 8,
+  "source": "binance_vision",
+  "lockId": "job-1766486700008-8w43e6btd"
+}
+2025-12-23 11:45:00 [info]: Crypto price update job completed successfully {
+  "pricesStored": 8,
+  "duration": "953ms",
+  "symbols": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "USDT",
+    "USDC",
+    "BNB",
+    "MATIC",
+    "TRX"
+  ],
+  "source": "binance_vision"
+}
+2025-12-23 11:45:00 [info]: Job lock released {
+  "lockId": "job-1766486700008-8w43e6btd"
+}
