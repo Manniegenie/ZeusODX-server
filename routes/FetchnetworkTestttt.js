@@ -13,33 +13,35 @@ const obiexAxios = axios.create({
   baseURL: config.obiex.baseURL.replace(/\/+$/, ''),
   timeout: 30000,
 });
+
+// Attach Obiex auth headers
 obiexAxios.interceptors.request.use(attachObiexAuth);
 
 /**
- * Fetch currency-network data from Obiex API
+ * Fetch currency + network data from Obiex API
  */
 async function fetchObiexCurrencyNetworks() {
   try {
     validateObiexConfig();
-    
+
     logger.info('Fetching currency-network data from Obiex API');
-    
-    // Fetch from Obiex API - adjust endpoint as needed
-    const response = await obiexAxios.get('/wallets/supported-currencies');
-    
+
+    // ✅ CORRECT ENDPOINT
+    const response = await obiexAxios.get('/currencies');
+
     return {
       success: true,
-      data: response.data
+      data: response.data,
     };
   } catch (error) {
     logger.error('Failed to fetch from Obiex API', {
       error: error.response?.data || error.message,
-      status: error.response?.status
+      status: error.response?.status,
     });
-    
+
     return {
       success: false,
-      message: error.response?.data?.message || error.message
+      message: error.response?.data?.message || error.message,
     };
   }
 }
@@ -51,68 +53,68 @@ async function saveToJsonFile(data, filename = 'obiex_currency_networks.json') {
   try {
     const filePath = path.join(__dirname, '..', filename);
     await fs.writeFile(filePath, JSON.stringify(data, null, 2));
-    
+
     logger.info('Data saved to JSON file', { filePath });
-    
+
     return {
       success: true,
-      filePath
+      filePath,
     };
   } catch (error) {
     logger.error('Failed to save JSON file', { error: error.message });
-    
+
     return {
       success: false,
-      message: error.message
+      message: error.message,
     };
   }
 }
 
 /**
- * GET /withdrawal/fetch-obiex-networks
+ * GET /fetchnetworktest/fetch-obiex-networks
  * Fetches currency-network data from Obiex and saves to JSON
  */
 router.get('/fetch-obiex-networks', async (req, res) => {
   try {
     // Fetch from Obiex
     const obiexResult = await fetchObiexCurrencyNetworks();
-    
+
     if (!obiexResult.success) {
       return res.status(500).json({
         success: false,
         message: 'Failed to fetch from Obiex API',
-        error: obiexResult.message
+        error: obiexResult.message,
       });
     }
-    
+
     // Save to JSON file
     const saveResult = await saveToJsonFile(obiexResult.data);
-    
+
     if (!saveResult.success) {
       return res.status(500).json({
         success: false,
         message: 'Failed to save data to file',
         error: saveResult.message,
-        data: obiexResult.data
+        data: obiexResult.data,
       });
     }
-    
-    res.status(200).json({
+
+    return res.status(200).json({
       success: true,
       message: 'Currency-network data fetched and saved successfully',
       filePath: saveResult.filePath,
-      data: obiexResult.data
+      data: obiexResult.data,
     });
-    
   } catch (error) {
     logger.error('Error in fetch-obiex-networks route', {
-      error: error.message
+      error: error.message,
+      stack: error.stack,
     });
-    
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
       message: 'Internal server error',
-      error: error.message
+      error: error.message,
     });
   }
 });
