@@ -98,18 +98,33 @@ async function comparePasswordPin(candidate, hashed) {
 
 async function getWithdrawalFee(currency, network) {
   try {
-    const upperCurrency = currency.toUpperCase();
-    const upperNetwork = network.toUpperCase();
+    let upperCurrency = currency?.toUpperCase();
+    let upperNetwork = network?.toUpperCase();
+
+    // 1. FORCE TO "POL" to match your JSON's top-level key
+    if (upperCurrency === 'MATIC') upperCurrency = 'POL';
+
+    // 2. FORCE NETWORK TO "MATIC" to match the network code inside your JSON
+    if (upperNetwork === 'POL' || upperNetwork === 'POLYGON') upperNetwork = 'MATIC';
+
     const asset = OBIEX_NETWORK_DATA[upperCurrency];
-    const obiexNet = asset?.networks.find(n => n.code === upperNetwork);
+    if (!asset) throw new Error(`Currency ${upperCurrency} not found in configuration`);
+
+    const obiexNet = asset.networks.find(n => n.code === upperNetwork);
     if (!obiexNet) throw new Error(`Network ${upperNetwork} not found for ${upperCurrency}`);
 
-    const feeDoc = await CryptoFeeMarkup.findOne({ currency: upperCurrency, network: upperNetwork });
-    if (!feeDoc) throw new Error(`Markup missing for ${upperCurrency} on ${upperNetwork}`);
+    // 3. DATABASE CHECK: Your DB likely still uses "MATIC" for markups
+    // We search the DB using MATIC, even though we used POL for the JSON
+    const dbCurrency = upperCurrency === 'POL' ? 'MATIC' : upperCurrency;
+    const feeDoc = await CryptoFeeMarkup.findOne({ currency: dbCurrency, network: upperNetwork });
+    
+    if (!feeDoc) throw new Error(`Markup missing in DB for ${dbCurrency} on ${upperNetwork}`);
 
     const totalFee = obiexNet.fee + feeDoc.networkFee;
-    const prices = await getOriginalPricesWithCache([upperCurrency]);
-    const feeUsd = totalFee * (prices[upperCurrency] || 0);
+    
+    // 4. PRICE CHECK: Your portfolio service uses "MATIC"
+    const prices = await getOriginalPricesWithCache([dbCurrency]);
+    const feeUsd = totalFee * (prices[dbCurrency] || 0);
 
     return {
       success: true,
@@ -119,6 +134,7 @@ async function getWithdrawalFee(currency, network) {
       obiexFee: obiexNet.fee 
     };
   } catch (err) {
+    logger.error(`Withdrawal Fee Error: ${err.message}`);
     return { success: false, message: err.message };
   }
 }
