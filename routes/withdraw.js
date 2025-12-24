@@ -177,34 +177,55 @@ router.post('/crypto', async (req, res) => {
   let reservationMade = false;
   let finalAmount;
   let finalCurrency;
+  let internalCurrency; // The name used in our DB (MATIC)
+  let internalNetwork;  // The name used in our DB/JSON code (MATIC)
 
   try {
     const validation = validateWithdrawalRequest(req.body);
     if (!validation.success) return res.status(400).json(validation);
 
     const { address, amount, currency, network, twoFactorCode, passwordpin } = validation.validatedData;
+    
+    // --- 1. NORMALIZATION LAYER (POL/MATIC Fix) ---
+    // We use "MATIC" for our Database, Portfolio Service, and KYC Service
+    // We use "POL" specifically for looking up the top-level key in the JSON
+    internalCurrency = currency.toUpperCase() === 'POL' ? 'MATIC' : currency.toUpperCase();
+    internalNetwork = (network.toUpperCase() === 'POL' || network.toUpperCase() === 'POLYGON') ? 'MATIC' : network.toUpperCase();
+    
     finalAmount = amount;
-    finalCurrency = currency;
+    finalCurrency = internalCurrency; 
     const { memo, narration } = req.body;
 
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // --- SECURITY DEBUG LOGS ---
+    // --- 2. SECURITY CHECKS (2FA & PIN) ---
     const is2faValid = validateTwoFactorAuth(user, twoFactorCode);
     if (!is2faValid) {
-      logger.warn(`DEBUG: 2FA Validation Failed for user ${user._id}`);
+      logger.warn(`2FA Validation Failed for user ${user._id}`);
       return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
     }
 
     const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
     if (!isPinValid) {
-      logger.warn(`DEBUG: PIN Validation Failed for user ${user._id}`);
+      logger.warn(`PIN Validation Failed for user ${user._id}`);
       return res.status(401).json({ success: false, message: 'Invalid Password PIN' });
     }
-    // ----------------------------
 
-    const feeInfo = await getWithdrawalFee(currency, network);
+    // --- 3. KYC / TRANSACTION LIMIT CHECK (New) ---
+    // This calls your imported kyccheckservice
+    const kycCheck = await validateTransactionLimit(user, amount, internalCurrency);
+    if (!kycCheck.success) {
+      logger.warn(`KYC Limit Block: User ${user._id} attempted ${amount} ${internalCurrency}`);
+      return res.status(403).json({ 
+        success: false, 
+        message: kycCheck.message || 'Transaction exceeds your current KYC limit.' 
+      });
+    }
+
+    // --- 4. FEE CALCULATION ---
+    // This function now uses the mapped internal names
+    const feeInfo = await getWithdrawalFee(currency, network); 
     if (!feeInfo.success) return res.status(400).json(feeInfo);
 
     const totalFees = feeInfo.networkFee;
@@ -213,32 +234,41 @@ router.post('/crypto', async (req, res) => {
 
     if (receiverAmount <= 0) return res.status(400).json({ success: false, message: "Amount too low to cover fees" });
 
-    const balCheck = await validateUserBalanceInternal(user._id, currency, amount);
+    // --- 5. BALANCE VALIDATION & LOCKING ---
+    const balCheck = await validateUserBalanceInternal(user._id, internalCurrency, amount);
     if (!balCheck.success) return res.status(400).json({ success: false, message: "Insufficient balance" });
 
-    // 1. Reserve Balance (Move to pending)
-    const reserveRes = await reserveUserBalanceInternal(user._id, currency, amount);
+    const reserveRes = await reserveUserBalanceInternal(user._id, internalCurrency, amount);
     if (!reserveRes.success) throw new Error("Balance locking failed");
     reservationMade = true;
 
-    // 2. Call Obiex
+    // --- 6. EXTERNAL PROVIDER CALL (Obiex) ---
     const payload = {
-      destination: { address, network: network.toUpperCase(), memo: memo?.trim() },
+      destination: { address, network: internalNetwork, memo: memo?.trim() },
       amount: Number(obiexSendAmount.toFixed(8)),
-      currency: currency.toUpperCase(),
+      // If Obiex strictly expects 'POL' at the API level, use the original input:
+      currency: currency.toUpperCase(), 
       narration: narration || `Withdrawal`
     };
 
     const obiexRes = await obiexAxios.post('/wallets/ext/debit/crypto', payload);
     const obiexData = obiexRes.data.data;
 
-    // 3. Record Transaction
+    // --- 7. RECORD TRANSACTION ---
     const transaction = await Transaction.create({
-      userId: user._id, type: 'WITHDRAWAL', currency, amount: receiverAmount, address, network, status: 'PENDING', fee: totalFees,
-      obiexTransactionId: obiexData.id, reference: obiexData.reference
+      userId: user._id, 
+      type: 'WITHDRAWAL', 
+      currency: internalCurrency, 
+      amount: receiverAmount, 
+      address, 
+      network: internalNetwork, 
+      status: 'PENDING', 
+      fee: totalFees,
+      obiexTransactionId: obiexData.id, 
+      reference: obiexData.reference
     });
 
-    if (user.email) sendWithdrawalEmail(user.email, user.username, amount, currency, transaction._id);
+    if (user.email) sendWithdrawalEmail(user.email, user.username, amount, internalCurrency, transaction._id);
 
     return res.json({
       success: true,
