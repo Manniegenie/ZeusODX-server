@@ -33,25 +33,34 @@ function safeParseTemplateId(envVar, fallback = null) {
 }
 
 /**
- * Helper function to safely format numbers for email templates
+ * IMPROVED: Helper function to safely format numbers for email templates.
+ * Handles high precision for crypto (BTC, ETH, etc.) and standard precision for fiat.
  */
-function formatNumber(value, decimals = 2) {
+function formatNumber(value, currency = 'NGN') {
   if (value === null || value === undefined || value === '') return '0.00';
   const num = parseFloat(value);
   if (isNaN(num)) return '0.00';
+
+  const upperCurrency = currency.toUpperCase();
+  const cryptoTokens = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX'];
+  
+  // Use 8 decimals for crypto, 2 for fiat (like NGN/USD)
+  const decimals = cryptoTokens.includes(upperCurrency) ? 8 : 2;
+
   return num.toLocaleString('en-US', { 
-    minimumFractionDigits: decimals,
+    minimumFractionDigits: 2, 
     maximumFractionDigits: decimals 
   });
 }
 
 /**
- * Helper function to format currency amounts with symbol
+ * IMPROVED: Helper function to format currency amounts with symbol or code.
+ * Prevents adding "₦" to Bitcoin.
  */
 function formatCurrency(amount, currency = 'NGN') {
-  const formattedAmount = formatNumber(amount);
+  const upperCurrency = currency?.toUpperCase() || 'NGN';
+  const formattedAmount = formatNumber(amount, upperCurrency);
   
-  // Currency symbol mapping
   const currencySymbols = {
     'NGN': '₦',
     'USD': '$',
@@ -60,8 +69,11 @@ function formatCurrency(amount, currency = 'NGN') {
     'CAD': 'C$'
   };
   
-  const symbol = currencySymbols[currency?.toUpperCase()] || currency || '₦';
-  return `${symbol}${formattedAmount}`;
+  const symbol = currencySymbols[upperCurrency];
+
+  // If we have a symbol (fiat), return Symbol + Amount. 
+  // If no symbol (crypto), return Amount + Currency Code (e.g., 0.00054 BTC)
+  return symbol ? `${symbol}${formattedAmount}` : `${formattedAmount} ${upperCurrency}`;
 }
 
 /**
@@ -79,25 +91,18 @@ function formatDate(date, includeTime = true) {
     dateObj = new Date();
   }
   
-  // Check if date is valid
   if (isNaN(dateObj.getTime())) {
     dateObj = new Date();
   }
   
   if (includeTime) {
     return dateObj.toLocaleString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
+      year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true
     });
   } else {
     return dateObj.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+      year: 'numeric', month: 'long', day: 'numeric'
     });
   }
 }
@@ -107,7 +112,6 @@ function formatDate(date, includeTime = true) {
  */
 async function sendEmail({ to, name, templateId, params = {}, options = {} }) {
   try {
-    // Validate template ID
     if (!templateId || isNaN(templateId)) {
       throw new Error(`Invalid template ID: ${templateId}`);
     }
@@ -116,92 +120,22 @@ async function sendEmail({ to, name, templateId, params = {}, options = {} }) {
     email.to = [{ email: to, name }];
     email.templateId = templateId;
     email.params = params;
-
-    // Set sender (required by Brevo)
-    email.sender = { 
-      email: SENDER_EMAIL, 
-      name: SENDER_NAME 
-    };
+    email.sender = { email: SENDER_EMAIL, name: SENDER_NAME };
 
     if (options.replyTo) email.replyTo = options.replyTo;
     if (options.headers) email.headers = options.headers;
 
-    console.log('Sending email with params:', {
-      to,
-      templateId,
-      sender: email.sender,
-      // don't log OTP directly
-      params: { ...params, otp: params?.otp ? `${String(params.otp).slice(0, 2)}****` : undefined }
-    });
+    console.log(`Sending email to ${to} [Template: ${templateId}]`);
 
     const response = await apiInstance.sendTransacEmail(email);
-    const messageId = response.body?.messageId || response.messageId || 'No message ID';
-    console.log(`Email sent successfully to ${to}: ${messageId}`);
-    return { success: true, messageId, response: messageId };
+    return { success: true, messageId: response.body?.messageId || response.messageId };
   } catch (error) {
-    console.error(`Error sending email to ${to}:`, {
-      message: error.message,
-      response: error.response?.body || error.response?.data,
-      templateId,
-      params: Object.keys(params || {})
-    });
+    console.error(`Error sending email to ${to}:`, error.message);
     throw error;
   }
 }
 
 // === Email Types ===
-async function sendLoginEmail(to, name, device, location, time) {
-  try {
-    const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_LOGIN);
-    if (!templateId) throw new Error('Login email template ID not configured');
-
-    const params = {
-      username: String(name || 'User'),
-      device: String(device || 'Unknown Device'),
-      location: String(location || 'Unknown Location'),
-      time: formatDate(time)
-    };
-    return await sendEmail({ to, name, templateId, params });
-  } catch (error) {
-    console.error('Failed to send login email:', error.message);
-    throw error;
-  }
-}
-
-async function sendEmailVerificationOTP(
-  to,
-  name,
-  otp,
-  expiryMinutes = 10,
-  extras = {}
-) {
-  try {
-    const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_EMAIL_VERIFICATION);
-    if (!templateId) throw new Error('Email verification template ID not configured');
-
-    const { verifyUrl, appDeepLink } = buildVerifyUrls(to);
-    const expiryTime = new Date(Date.now() + expiryMinutes * 60 * 1000);
-    
-    const params = {
-      username: String(name || 'User'),
-      otp: String(otp),
-      expiryMinutes: String(expiryMinutes),
-      expiryTime: formatDate(expiryTime),
-
-      // routing/branding params your template can use
-      verifyUrl: String(extras.verifyUrl || verifyUrl),
-      appDeepLink: String(extras.appDeepLink || appDeepLink),
-      ctaText: String(extras.ctaText || 'Verify email'),
-      companyName: String(extras.companyName || COMPANY_NAME),
-      supportEmail: String(extras.supportEmail || SUPPORT_EMAIL)
-    };
-
-    return await sendEmail({ to, name, templateId, params });
-  } catch (error) {
-    console.error('Failed to send email verification OTP:', error.message);
-    throw error;
-  }
-}
 
 async function sendDepositEmail(to, name, amount, currency, reference) {
   try {
@@ -212,7 +146,7 @@ async function sendDepositEmail(to, name, amount, currency, reference) {
       to, name, templateId,
       params: { 
         username: String(name || 'User'), 
-        amount: formatNumber(amount), 
+        amount: formatNumber(amount, currency), 
         currency: String(currency || 'NGN'),
         amountWithCurrency: formatCurrency(amount, currency),
         reference: String(reference || ''),
@@ -234,7 +168,7 @@ async function sendWithdrawalEmail(to, name, amount, currency, reference) {
       to, name, templateId,
       params: { 
         username: String(name || 'User'), 
-        amount: formatNumber(amount), 
+        amount: formatNumber(amount, currency), 
         currency: String(currency || 'NGN'),
         amountWithCurrency: formatCurrency(amount, currency),
         reference: String(reference || ''),
@@ -247,10 +181,51 @@ async function sendWithdrawalEmail(to, name, amount, currency, reference) {
   }
 }
 
-/**
- * Simple utility email helper (keeps parity with earlier usage)
- * signature: (to, name, utilityType, amount, reference)
- */
+async function sendLoginEmail(to, name, device, location, time) {
+  try {
+    const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_LOGIN);
+    if (!templateId) throw new Error('Login email template ID not configured');
+
+    const params = {
+      username: String(name || 'User'),
+      device: String(device || 'Unknown Device'),
+      location: String(location || 'Unknown Location'),
+      time: formatDate(time)
+    };
+    return await sendEmail({ to, name, templateId, params });
+  } catch (error) {
+    console.error('Failed to send login email:', error.message);
+    throw error;
+  }
+}
+
+async function sendEmailVerificationOTP(to, name, otp, expiryMinutes = 10, extras = {}) {
+  try {
+    const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_EMAIL_VERIFICATION);
+    if (!templateId) throw new Error('Email verification template ID not configured');
+
+    const { verifyUrl, appDeepLink } = buildVerifyUrls(to);
+    const expiryTime = new Date(Date.now() + expiryMinutes * 60 * 1000);
+    
+    const params = {
+      username: String(name || 'User'),
+      otp: String(otp),
+      expiryMinutes: String(expiryMinutes),
+      expiryTime: formatDate(expiryTime),
+      verifyUrl: String(extras.verifyUrl || verifyUrl),
+      appDeepLink: String(extras.appDeepLink || appDeepLink),
+      ctaText: String(extras.ctaText || 'Verify email'),
+      companyName: String(extras.companyName || COMPANY_NAME),
+      supportEmail: String(extras.supportEmail || SUPPORT_EMAIL)
+    };
+
+    return await sendEmail({ to, name, templateId, params });
+  } catch (error) {
+    console.error('Failed to send email verification OTP:', error.message);
+    throw error;
+  }
+}
+
 async function sendUtilityEmail(to, name, utilityType, amount, reference) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_UTILITY);
@@ -263,7 +238,7 @@ async function sendUtilityEmail(to, name, utilityType, amount, reference) {
       params: {
         username: String(name || 'User'),
         utilityType: String(utilityType || ''),
-        amount: formatNumber(amount),
+        amount: formatNumber(amount, currency),
         currency: String(currency),
         amountWithCurrency: formatCurrency(amount, currency),
         reference: String(reference || ''),
@@ -276,20 +251,19 @@ async function sendUtilityEmail(to, name, utilityType, amount, reference) {
   }
 }
 
-// Legacy/simple helper (keeps parity with earlier API usage)
 async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD);
     if (!templateId) throw new Error('Giftcard email template ID not configured');
 
-    const currency = 'NGN'; // Default for giftcards
+    const currency = 'NGN'; 
 
     return await sendEmail({
       to, name, templateId,
       params: { 
         username: String(name || 'User'), 
         giftcardType: String(giftcardType || ''), 
-        amount: formatNumber(amount),
+        amount: formatNumber(amount, currency),
         currency: currency,
         amountWithCurrency: formatCurrency(amount, currency),
         reference: String(reference || ''),
@@ -302,24 +276,7 @@ async function sendGiftcardEmail(to, name, giftcardType, amount, reference) {
   }
 }
 
-/**
- * Updated sendGiftcardSubmissionEmail to use provided params
- */
-async function sendGiftcardSubmissionEmail(
-  to,
-  name,
-  submissionId,
-  giftcardType,
-  cardFormat,
-  country,
-  cardValue,
-  expectedAmount,
-  expectedCurrency,
-  rateDisplay,
-  totalImages,
-  imageUrls,
-  reference
-) {
+async function sendGiftcardSubmissionEmail(to, name, submissionId, giftcardType, cardFormat, country, cardValue, expectedAmount, expectedCurrency, rateDisplay, totalImages, imageUrls, reference) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_SUBMISSION);
     if (!templateId) throw new Error('Giftcard submission email template ID not configured');
@@ -351,38 +308,22 @@ async function sendGiftcardSubmissionEmail(
   }
 }
 
-/**
- * NEW generic utility helper (rich)
- * Use this for all utility-type transactions (airtime, cable, data, betting, etc.)
- */
 async function sendUtilityTransactionEmail(to, name, options = {}) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_UTILITY);
     if (!templateId) throw new Error('Utility transaction email template ID not configured');
 
     const {
-      utilityType,
-      amount,
-      currency = process.env.DEFAULT_CURRENCY || 'NGN',
-      reference = '',
-      status = 'PENDING',
-      date,
-      recipientPhone = '',
-      provider = '',
-      transactionId = '',
-      account = '',
-      additionalNote = '',
-      webUrl,
-      appDeepLink
+      utilityType, amount, currency = process.env.DEFAULT_CURRENCY || 'NGN',
+      reference = '', status = 'PENDING', date, recipientPhone = '',
+      provider = '', transactionId = '', account = '', additionalNote = '',
+      webUrl, appDeepLink
     } = options || {};
-
-    const viewUrl = webUrl || (reference ? `${APP_WEB_BASE_URL}/transactions/${reference}` : APP_WEB_BASE_URL);
-    const deepLink = appDeepLink || (reference ? `${APP_DEEP_LINK}/transactions/${reference}` : APP_DEEP_LINK);
 
     const params = {
       username: String(name || 'User'),
       utilityType: String(utilityType || ''),
-      amount: formatNumber(amount),
+      amount: formatNumber(amount, currency),
       amountWithCurrency: formatCurrency(amount, currency),
       currency: String(currency || 'NGN'),
       reference: String(reference || ''),
@@ -393,8 +334,8 @@ async function sendUtilityTransactionEmail(to, name, options = {}) {
       transactionId: String(transactionId || ''),
       account: String(account || ''),
       additionalNote: String(additionalNote || ''),
-      viewUrl,
-      appDeepLink: deepLink,
+      viewUrl: webUrl || (reference ? `${APP_WEB_BASE_URL}/transactions/${reference}` : APP_WEB_BASE_URL),
+      appDeepLink: appDeepLink || (reference ? `${APP_DEEP_LINK}/transactions/${reference}` : APP_DEEP_LINK),
       companyName: String(COMPANY_NAME),
       supportEmail: String(SUPPORT_EMAIL)
     };
