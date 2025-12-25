@@ -121,10 +121,10 @@ async function getWithdrawalFee(currency, network) {
 
     return {
       success: true,
-      networkFee: parseFloat(totalFee.toFixed(8)),
+      networkFee: parseFloat(totalFee.toFixed(8)), // Total displayed to user
       feeUsd: parseFloat(feeUsd.toFixed(2)),
-      originalNetworkFee: feeDoc.networkFee, 
-      obiexFee: obiexNet.fee 
+      originalNetworkFee: feeDoc.networkFee,       // This is YOUR markup
+      obiexFee: obiexNet.fee                      // This is Obiex's fee
     };
   } catch (err) {
     logger.error(`Withdrawal Fee Error: ${err.message}`);
@@ -179,7 +179,6 @@ router.post('/crypto', async (req, res) => {
 
     const { address, amount, currency, network, twoFactorCode, passwordpin } = validation.validatedData;
     
-    // Normalize names for internal logic (MATIC)
     internalCurrency = currency.toUpperCase() === 'POL' ? 'MATIC' : currency.toUpperCase();
     internalNetwork = (network.toUpperCase() === 'POL' || network.toUpperCase() === 'POLYGON') ? 'MATIC' : network.toUpperCase();
     
@@ -199,25 +198,25 @@ router.post('/crypto', async (req, res) => {
 
     // --- 3. KYC / TRANSACTION LIMIT CHECK ---
     const kycCheck = await validateTransactionLimit(user._id, amount, internalCurrency, 'WITHDRAWAL');
-    
     if (!kycCheck.allowed) {
-      // We only log the detailed reason, we don't send details to the frontend
       logger.warn(`KYC Limit Block: User ${user._id} attempted ${amount} ${internalCurrency}. Reason: ${kycCheck.message}`);
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Transaction exceeds your current KYC limit.' 
-      });
+      return res.status(403).json({ success: false, message: 'Transaction exceeds your current KYC limit.' });
     }
 
     // --- 4. FEE CALCULATION ---
     const feeInfo = await getWithdrawalFee(currency, network); 
     if (!feeInfo.success) return res.status(400).json(feeInfo);
 
+    /**
+     * Logic: 
+     * totalFees = Obiex Fee + Your Markup.
+     * We subtract only YOUR markup (originalNetworkFee) from the amount we send to Obiex.
+     * Obiex will then subtract its own fee (obiexFee) from the remaining balance.
+     */
     const totalFees = feeInfo.networkFee;
-    const receiverAmount = amount - totalFees;
     const obiexSendAmount = amount - feeInfo.originalNetworkFee;
 
-    if (receiverAmount <= 0) return res.status(400).json({ success: false, message: "Amount too low to cover fees" });
+    if (obiexSendAmount <= 0) return res.status(400).json({ success: false, message: "Amount too low to cover fees" });
 
     // --- 5. BALANCE VALIDATION & LOCKING ---
     const balCheck = await validateUserBalanceInternal(user._id, internalCurrency, amount);
@@ -230,7 +229,7 @@ router.post('/crypto', async (req, res) => {
     // --- 6. EXTERNAL PROVIDER CALL (Obiex) ---
     const payload = {
       destination: { address, network: internalNetwork, memo: memo?.trim() },
-      amount: Number(obiexSendAmount.toFixed(8)),
+      amount: Number(obiexSendAmount.toFixed(8)), // We send amount minus our markup
       currency: currency.toUpperCase(), 
       narration: narration || `Withdrawal`
     };
@@ -243,11 +242,11 @@ router.post('/crypto', async (req, res) => {
       userId: user._id, 
       type: 'WITHDRAWAL', 
       currency: internalCurrency, 
-      amount: receiverAmount, 
+      amount: amount, // Save the actual total amount withdrawn from wallet
       address, 
       network: internalNetwork, 
       status: 'PENDING', 
-      fee: totalFees,
+      fee: totalFees, // Total fee (Yours + Obiex)
       obiexTransactionId: obiexData.id, 
       reference: obiexData.reference
     });
@@ -257,7 +256,11 @@ router.post('/crypto', async (req, res) => {
     return res.json({
       success: true,
       message: 'Withdrawal initiated successfully',
-      data: { transactionId: transaction._id, receiverAmount: receiverAmount, fee: totalFees }
+      data: { 
+        transactionId: transaction._id, 
+        amount: amount, 
+        fee: totalFees 
+      }
     });
 
   } catch (error) {
@@ -274,9 +277,17 @@ router.post('/initiate', async (req, res) => {
   const { amount, currency, network } = req.body;
   const feeInfo = await getWithdrawalFee(currency, network);
   if (!feeInfo.success) return res.status(400).json(feeInfo);
+  
   res.json({
     success: true,
-    data: { amount, currency, fee: feeInfo.networkFee, feeUsd: feeInfo.feeUsd, receiverAmount: amount - feeInfo.networkFee, totalAmount: amount }
+    data: { 
+      amount: Number(amount), 
+      currency, 
+      fee: feeInfo.networkFee, 
+      feeUsd: feeInfo.feeUsd, 
+      receiverAmount: Number(amount) - feeInfo.networkFee, 
+      totalAmount: Number(amount) 
+    }
   });
 });
 
