@@ -101,10 +101,7 @@ async function getWithdrawalFee(currency, network) {
     let upperCurrency = currency?.toUpperCase();
     let upperNetwork = network?.toUpperCase();
 
-    // 1. FORCE TO "POL" to match your JSON's top-level key
     if (upperCurrency === 'MATIC') upperCurrency = 'POL';
-
-    // 2. FORCE NETWORK TO "MATIC" to match the network code inside your JSON
     if (upperNetwork === 'POL' || upperNetwork === 'POLYGON') upperNetwork = 'MATIC';
 
     const asset = OBIEX_NETWORK_DATA[upperCurrency];
@@ -113,16 +110,12 @@ async function getWithdrawalFee(currency, network) {
     const obiexNet = asset.networks.find(n => n.code === upperNetwork);
     if (!obiexNet) throw new Error(`Network ${upperNetwork} not found for ${upperCurrency}`);
 
-    // 3. DATABASE CHECK: Your DB likely still uses "MATIC" for markups
-    // We search the DB using MATIC, even though we used POL for the JSON
     const dbCurrency = upperCurrency === 'POL' ? 'MATIC' : upperCurrency;
     const feeDoc = await CryptoFeeMarkup.findOne({ currency: dbCurrency, network: upperNetwork });
     
     if (!feeDoc) throw new Error(`Markup missing in DB for ${dbCurrency} on ${upperNetwork}`);
 
     const totalFee = obiexNet.fee + feeDoc.networkFee;
-    
-    // 4. PRICE CHECK: Your portfolio service uses "MATIC"
     const prices = await getOriginalPricesWithCache([dbCurrency]);
     const feeUsd = totalFee * (prices[dbCurrency] || 0);
 
@@ -177,8 +170,8 @@ router.post('/crypto', async (req, res) => {
   let reservationMade = false;
   let finalAmount;
   let finalCurrency;
-  let internalCurrency; // The name used in our DB (MATIC)
-  let internalNetwork;  // The name used in our DB/JSON code (MATIC)
+  let internalCurrency; 
+  let internalNetwork;  
 
   try {
     const validation = validateWithdrawalRequest(req.body);
@@ -186,9 +179,7 @@ router.post('/crypto', async (req, res) => {
 
     const { address, amount, currency, network, twoFactorCode, passwordpin } = validation.validatedData;
     
-    // --- 1. NORMALIZATION LAYER (POL/MATIC Fix) ---
-    // We use "MATIC" for our Database, Portfolio Service, and KYC Service
-    // We use "POL" specifically for looking up the top-level key in the JSON
+    // Normalize names for internal logic (MATIC)
     internalCurrency = currency.toUpperCase() === 'POL' ? 'MATIC' : currency.toUpperCase();
     internalNetwork = (network.toUpperCase() === 'POL' || network.toUpperCase() === 'POLYGON') ? 'MATIC' : network.toUpperCase();
     
@@ -199,32 +190,26 @@ router.post('/crypto', async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // --- 2. SECURITY CHECKS (2FA & PIN) ---
+    // --- SECURITY CHECKS ---
     const is2faValid = validateTwoFactorAuth(user, twoFactorCode);
-    if (!is2faValid) {
-      logger.warn(`2FA Validation Failed for user ${user._id}`);
-      return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
-    }
+    if (!is2faValid) return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
 
     const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
-    if (!isPinValid) {
-      logger.warn(`PIN Validation Failed for user ${user._id}`);
-      return res.status(401).json({ success: false, message: 'Invalid Password PIN' });
-    }
+    if (!isPinValid) return res.status(401).json({ success: false, message: 'Invalid Password PIN' });
 
-    // --- 3. KYC / TRANSACTION LIMIT CHECK (New) ---
-    // This calls your imported kyccheckservice
-    const kycCheck = await validateTransactionLimit(user, amount, internalCurrency);
-    if (!kycCheck.success) {
-      logger.warn(`KYC Limit Block: User ${user._id} attempted ${amount} ${internalCurrency}`);
+    // --- 3. KYC / TRANSACTION LIMIT CHECK ---
+    const kycCheck = await validateTransactionLimit(user._id, amount, internalCurrency, 'WITHDRAWAL');
+    
+    if (!kycCheck.allowed) {
+      // We only log the detailed reason, we don't send details to the frontend
+      logger.warn(`KYC Limit Block: User ${user._id} attempted ${amount} ${internalCurrency}. Reason: ${kycCheck.message}`);
       return res.status(403).json({ 
         success: false, 
-        message: kycCheck.message || 'Transaction exceeds your current KYC limit.' 
+        message: 'Transaction exceeds your current KYC limit.' 
       });
     }
 
     // --- 4. FEE CALCULATION ---
-    // This function now uses the mapped internal names
     const feeInfo = await getWithdrawalFee(currency, network); 
     if (!feeInfo.success) return res.status(400).json(feeInfo);
 
@@ -246,7 +231,6 @@ router.post('/crypto', async (req, res) => {
     const payload = {
       destination: { address, network: internalNetwork, memo: memo?.trim() },
       amount: Number(obiexSendAmount.toFixed(8)),
-      // If Obiex strictly expects 'POL' at the API level, use the original input:
       currency: currency.toUpperCase(), 
       narration: narration || `Withdrawal`
     };
@@ -277,10 +261,8 @@ router.post('/crypto', async (req, res) => {
     });
 
   } catch (error) {
-    // Safety: Refund the user if the process failed after locking funds
     if (reservationMade) {
       await releaseReservedBalanceInternal(req.user.id, finalCurrency, finalAmount);
-      logger.info(`REFUND: Returned ${finalAmount} ${finalCurrency} to user ${req.user.id}`);
     }
     const errorMsg = error.response?.data?.message || error.message;
     logger.error(`Withdrawal Error: ${errorMsg}`);
