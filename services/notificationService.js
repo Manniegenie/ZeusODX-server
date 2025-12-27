@@ -86,7 +86,7 @@ const NOTIFICATION_TEMPLATES = {
     title: '📨 Transfer Sent',
     getMessage: (amount, currency, recipient) => `Sent ${amount} ${currency}${recipient ? ` to ${recipient}` : ''}.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   TRANSFER_RECEIVED: {
     title: '📬 Transfer Received',
@@ -99,14 +99,14 @@ const NOTIFICATION_TEMPLATES = {
     getMessage: (fromAmount, fromCurrency, toAmount, toCurrency) => 
       `Swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   PAYMENT_COMPLETED: {
     title: '💳 Payment Successful',
     getMessage: (amount, currency, description) => 
       `Payment of ${amount} ${currency}${description ? ` for ${description}` : ''} completed.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   SECURITY_ALERT: {
     title: '🔒 Security Alert',
@@ -119,14 +119,14 @@ const NOTIFICATION_TEMPLATES = {
     getMessage: (amount, network, phone) => 
       `${network} airtime ₦${amount} to ${phone} completed.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   AIRTIME_PROCESSING: {
     title: '⏳ Airtime Purchase Processing',
     getMessage: (amount, network, phone) => 
       `Your ${network} airtime purchase of ₦${amount} to ${phone} is being processed.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   AIRTIME_FAILED: {
     title: '❌ Airtime Purchase Failed',
@@ -142,40 +142,33 @@ const NOTIFICATION_TEMPLATES = {
     sound: 'default',
     priority: 'high',
   },
-  SWAP_COMPLETED: {
-    title: '💱 Swap Completed',
-    getMessage: (fromAmount, fromCurrency, toAmount, toCurrency) => 
-      `Swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
-    sound: 'default',
-    priority: 'default',
-  },
   NGNZ_SWAP_COMPLETED: {
     title: '💱 NGNZ Swap Completed',
     getMessage: (fromAmount, fromCurrency, toAmount, toCurrency) => 
       `Swapped ${fromAmount} ${fromCurrency} to ${toAmount} ${toCurrency}.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   CABLE_TV_COMPLETED: {
     title: '📺 Cable TV Payment',
     getMessage: (amount, provider, account) => 
       `₦${amount} paid for ${provider}${account ? ` (${account})` : ''}.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   BETTING_FUNDING_COMPLETED: {
     title: '🎲 Betting Funding',
     getMessage: (amount, provider, account) => 
       `₦${amount} funded to ${provider}${account ? ` (${account})` : ''}.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
   ELECTRICITY_PAYMENT_COMPLETED: {
     title: '⚡ Electricity Payment',
     getMessage: (amount, provider, account) => 
       `₦${amount} paid for ${provider}${account ? ` (${account})` : ''}.`,
     sound: 'default',
-    priority: 'default',
+    priority: 'high',
   },
 };
 
@@ -219,12 +212,12 @@ async function getUserPushToken(userId) {
  * @param {string} notificationData.body - Notification body
  * @param {Object} notificationData.data - Additional data to send with notification
  * @param {string} notificationData.sound - Sound to play (default: 'default')
- * @param {string} notificationData.priority - Notification priority (default: 'default')
+ * @param {string} notificationData.priority - Notification priority (default: 'high')
  * @returns {Promise<Object>} Result of notification send
  */
 async function sendPushNotification(userId, notificationData) {
   try {
-    const { title, body, data = {}, sound = 'default', priority = 'default' } = notificationData;
+    const { title, body, data = {}, sound = 'default', priority = 'high' } = notificationData;
 
     // Get user's push token
     const tokenResult = await getUserPushToken(userId);
@@ -594,7 +587,7 @@ async function sendCustomNotification(userId, title, message, data = {}, options
       title,
       body: message,
       sound: options.sound || 'default',
-      priority: options.priority || 'default',
+      priority: options.priority || 'high',
       data: {
         type: 'CUSTOM',
         ...data
