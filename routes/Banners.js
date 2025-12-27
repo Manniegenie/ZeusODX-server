@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const Banner = require('../models/Banner');
+const Banner = require('../models/Banners');
 const logger = require('../utils/logger');
 
 /**
