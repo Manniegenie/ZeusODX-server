@@ -444,6 +444,7 @@ const Admin2FARoutes = require("./adminRoutes/Admin2FA");
 const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotifications");
 const notificationRoutes = require("./routes/notifications");
 const Fetchnetworktestttt = require("./routes/FetchnetworkTestttt");
+const bannerRoutes = require("./routes/Banners");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -457,6 +458,7 @@ app.use("/accountname", AccountnameRoutes);
 app.use("/adminsignin", adminsigninRoutes);
 app.use("/admin-2fa", Admin2FARoutes); // Admin 2FA setup routes (public)
 app.use("/fetchnetworktest", Fetchnetworktestttt);
+app.use("/banners", bannerRoutes);
 
 // Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);

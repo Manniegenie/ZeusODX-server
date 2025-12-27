@@ -7,7 +7,7 @@ const logger = require('../utils/logger');
  * POST /api/banners
  * Create a banner with a limit check
  */
-router.post('/', async (req, res) => {
+router.post('/banner', async (req, res) => {
   try {
     const { title, imageUrl, link, priority } = req.body;
 
@@ -62,7 +62,7 @@ router.delete('/:id', async (req, res) => {
 /**
  * GET /api/banners
  */
-router.get('/', async (req, res) => {
+router.get('/banners-live', async (req, res) => {
   try {
     const banners = await Banner.find({ isActive: true }).sort({ priority: -1 });
     res.status(200).json({ success: true, data: banners });
