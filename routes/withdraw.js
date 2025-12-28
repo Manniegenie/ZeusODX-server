@@ -16,6 +16,9 @@ const logger = require('../utils/logger');
 const config = require('./config');
 const { sendWithdrawalEmail } = require('../services/EmailService');
 
+// Import idempotency middleware
+const { idempotencyMiddleware } = require('../utils/Idempotency');
+
 // 1. Load the dynamic network mapping
 const NETWORK_MAP_PATH = path.join(__dirname, '..', 'obiex_currency_networks.json');
 let OBIEX_NETWORK_DATA = {};
@@ -165,8 +168,9 @@ function validateWithdrawalRequest(body) {
 
 /**
  * WITHDRAWAL EXECUTION
+ * NOTE: idempotencyMiddleware is applied here to prevent duplicate withdrawals
  */
-router.post('/crypto', async (req, res) => {
+router.post('/crypto', idempotencyMiddleware, async (req, res) => {
   let reservationMade = false;
   let finalAmount;
   let finalCurrency;
@@ -273,6 +277,7 @@ router.post('/crypto', async (req, res) => {
   }
 });
 
+// These routes don't need idempotency protection as they don't modify state
 router.post('/initiate', async (req, res) => {
   const { amount, currency, network } = req.body;
   const feeInfo = await getWithdrawalFee(currency, network);
