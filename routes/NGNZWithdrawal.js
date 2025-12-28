@@ -20,7 +20,7 @@ const logger = require('../utils/logger');
 
 // IDEMPOTENCY MIDDLEWARE
 // Ensure your middleware file is named 'idempotency.middleware.js' as per your recent update
-const { idempotencyMiddleware } = require('../middleware/idempotency.middleware');
+const { idempotencyMiddleware } = require('../utils/Idempotency');
 
 const router = express.Router();
 
