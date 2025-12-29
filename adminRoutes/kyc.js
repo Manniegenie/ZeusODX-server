@@ -52,7 +52,7 @@ router.post('/cancel', async (req, res) => {
       }
     });
 
-    // --- SEND REJECTION EMAIL ---
+    // Send rejection email
     try {
       await sendKycEmail(
         user.email,
@@ -175,7 +175,7 @@ router.post('/approve', async (req, res) => {
 
     const updatedUser = await User.findById(user._id);
     
-    // --- SEND APPROVAL EMAIL ---
+    // Send approval email
     try {
       const isNIN = ['nin', 'nin_slip', 'national_id'].includes(idType.toLowerCase());
       if (isNIN) {
@@ -232,10 +232,12 @@ router.post('/reset', async (req, res) => {
       $set: { status: 'CANCELLED', cancelledAt: new Date(), cancelledReason: 'Reset by admin' }
     });
 
-    // Optional: Send an email about reset
+    // Send reset email
     try {
       await sendKycEmail(user.email, user.firstname, 'RESET', 'Your KYC status has been reset. You can now re-submit your documents.');
-    } catch (e) {}
+    } catch (emailErr) {
+      logger.error('Failed to send KYC reset email', { userId: user._id, error: emailErr.message });
+    }
 
     logger.info(`KYC reset for user: ${phoneNumber}`, { userId: user._id });
     return res.status(200).json({ success: true, message: 'KYC reset successfully.' });
@@ -244,10 +246,180 @@ router.post('/reset', async (req, res) => {
   }
 });
 
-// GET: List KYC Entries (Truncated for brevity, logic remains same)
-router.get('/list', async (req, res) => { /* ... Keep your existing list logic ... */ });
+// GET: List KYC Entries with filtering and pagination
+router.get('/list', async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      idType,
+      searchTerm,
+      dateFrom,
+      dateTo,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
 
-// POST: Manually approve BVN for a user
+    // Build filter object
+    const filter = {};
+    
+    if (status) {
+      filter.status = status.toUpperCase();
+    }
+    
+    if (idType) {
+      filter.frontendIdType = idType;
+    }
+    
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) {
+        filter.createdAt.$gte = new Date(dateFrom);
+      }
+      if (dateTo) {
+        filter.createdAt.$lte = new Date(dateTo);
+      }
+    }
+
+    // Build aggregation pipeline
+    const pipeline = [
+      { $match: filter },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      { $unwind: '$user' }
+    ];
+
+    // Add search functionality
+    if (searchTerm) {
+      pipeline.push({
+        $match: {
+          $or: [
+            { idNumber: { $regex: searchTerm, $options: 'i' } },
+            { fullName: { $regex: searchTerm, $options: 'i' } },
+            { 'user.firstname': { $regex: searchTerm, $options: 'i' } },
+            { 'user.lastname': { $regex: searchTerm, $options: 'i' } },
+            { 'user.email': { $regex: searchTerm, $options: 'i' } },
+            { 'user.phonenumber': { $regex: searchTerm, $options: 'i' } }
+          ]
+        }
+      });
+    }
+
+    // Add sorting
+    const sortObj = {};
+    sortObj[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    pipeline.push({ $sort: sortObj });
+
+    // Get total count
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const totalResult = await KYC.aggregate(countPipeline);
+    const total = totalResult.length > 0 ? totalResult[0].total : 0;
+
+    // Add pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    pipeline.push(
+      { $skip: skip },
+      { $limit: parseInt(limit) }
+    );
+
+    // Project fields
+    pipeline.push({
+      $project: {
+        _id: 1,
+        userId: 1,
+        status: 1,
+        idType: 1,
+        frontendIdType: 1,
+        idNumber: 1,
+        fullName: 1,
+        firstName: 1,
+        lastName: 1,
+        dateOfBirth: 1,
+        gender: 1,
+        country: 1,
+        resultCode: 1,
+        resultText: 1,
+        confidenceValue: 1,
+        verificationDate: 1,
+        createdAt: 1,
+        lastUpdated: 1,
+        imageLinks: 1,
+        'user._id': 1,
+        'user.firstname': 1,
+        'user.lastname': 1,
+        'user.email': 1,
+        'user.phonenumber': 1,
+        'user.kycLevel': 1,
+        'user.kycStatus': 1
+      }
+    });
+
+    const kycEntries = await KYC.aggregate(pipeline);
+
+    // Calculate pagination
+    const totalPages = Math.ceil(total / parseInt(limit));
+    const hasNextPage = parseInt(page) < totalPages;
+    const hasPrevPage = parseInt(page) > 1;
+
+    logger.info('KYC entries retrieved', { total, page: parseInt(page), limit: parseInt(limit) });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        kycEntries,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages,
+          total,
+          hasNextPage,
+          hasPrevPage,
+          limit: parseInt(limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error retrieving KYC entries', { error: error.message, stack: error.stack });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// GET: Get KYC details by ID
+router.get('/details/:kycId', async (req, res) => {
+  try {
+    const { kycId } = req.params;
+
+    if (!kycId || !validator.isMongoId(kycId)) {
+      return res.status(400).json({ success: false, error: 'Valid KYC ID is required.' });
+    }
+
+    const kycEntry = await KYC.findById(kycId).populate('userId', 
+      'firstname lastname email phonenumber kycLevel kycStatus createdAt bvn bvnVerified'
+    );
+
+    if (!kycEntry) {
+      return res.status(404).json({ success: false, error: 'KYC entry not found.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: { kyc: kycEntry, user: kycEntry.userId }
+    });
+
+  } catch (error) {
+    logger.error('Error retrieving KYC details', { error: error.message });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST: Approve BVN
 router.post('/approve-bvn', async (req, res) => {
   const { phoneNumber, bvn } = req.body;
 
@@ -261,17 +433,18 @@ router.post('/approve-bvn', async (req, res) => {
 
     await User.findByIdAndUpdate(user._id, { $set: { bvn: bvn, bvnVerified: true } });
 
-    // Handle KYC record creation/update (Manual approval)
     const now = new Date();
     await KYC.create({
       userId: user._id, provider: 'manual-admin', status: 'APPROVED', 
       frontendIdType: 'bvn', idNumber: bvn, verificationDate: now
     });
 
-    // --- SEND EMAIL ---
+    // Send approval email
     try {
       await sendKycEmail(user.email, user.firstname, 'APPROVED', 'Your BVN has been manually verified.');
-    } catch (e) {}
+    } catch (emailErr) {
+      logger.error('Failed to send BVN approval email', { userId: user._id, error: emailErr.message });
+    }
 
     return res.status(200).json({ success: true, message: 'BVN approved successfully.' });
   } catch (error) {
@@ -279,7 +452,71 @@ router.post('/approve-bvn', async (req, res) => {
   }
 });
 
-// POST: Manually upgrade user KYC level
+// POST: Verify BVN
+router.post('/verify-bvn', async (req, res) => {
+  const { phoneNumber, bvn } = req.body;
+
+  if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
+    return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
+  }
+
+  try {
+    const user = await User.findOne({ phonenumber: phoneNumber });
+    if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
+
+    const bvnToUse = bvn || user.bvn;
+    if (!bvnToUse || !/^\d{11}$/.test(bvnToUse)) {
+      return res.status(400).json({ success: false, error: 'Valid 11-digit BVN is required.' });
+    }
+
+    const now = new Date();
+    await User.findByIdAndUpdate(user._id, { $set: { bvn: bvnToUse, bvnVerified: true } });
+
+    await KYC.create({
+      userId: user._id, provider: 'manual-admin', status: 'APPROVED',
+      frontendIdType: 'bvn', idNumber: bvnToUse, verificationDate: now
+    });
+
+    // Send verification email
+    try {
+      await sendKycEmail(user.email, user.firstname, 'APPROVED', 'Your BVN has been verified.');
+    } catch (emailErr) {
+      logger.error('Failed to send BVN verification email', { userId: user._id, error: emailErr.message });
+    }
+
+    return res.status(200).json({ success: true, message: 'BVN verified successfully.' });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST: Disable BVN
+router.post('/disable-bvn', async (req, res) => {
+  const { phoneNumber } = req.body;
+
+  if (!phoneNumber || !validator.isMobilePhone(phoneNumber, 'any')) {
+    return res.status(400).json({ success: false, error: 'Valid phone number is required.' });
+  }
+
+  try {
+    const user = await User.findOne({ phonenumber: phoneNumber });
+    if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
+
+    const now = new Date();
+    await User.findByIdAndUpdate(user._id, { $set: { bvn: null, bvnVerified: false } });
+
+    await KYC.updateMany(
+      { userId: user._id, frontendIdType: 'bvn', status: { $ne: 'CANCELLED' } },
+      { $set: { status: 'CANCELLED', cancelledAt: now, cancelledReason: 'BVN disabled by admin' } }
+    );
+
+    return res.status(200).json({ success: true, message: 'BVN disabled successfully.' });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST: Upgrade KYC Level
 router.post('/upgrade', async (req, res) => {
   const { phoneNumber, kycLevel, reason } = req.body;
 
@@ -308,10 +545,12 @@ router.post('/upgrade', async (req, res) => {
 
     await User.findByIdAndUpdate(user._id, { $set: updateData });
 
-    // --- SEND EMAIL ---
+    // Send upgrade email
     try {
       await sendKycEmail(user.email, user.firstname, 'APPROVED', `Your account has been upgraded to ${kycLevel}. ${upgradeReason}`);
-    } catch (e) {}
+    } catch (emailErr) {
+      logger.error('Failed to send KYC upgrade email', { userId: user._id, error: emailErr.message });
+    }
 
     return res.status(200).json({ success: true, message: `Upgraded to ${kycLevel}.` });
   } catch (error) {

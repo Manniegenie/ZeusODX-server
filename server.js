@@ -17,21 +17,24 @@ const scheduledNotificationService = require('./services/scheduledNotificationSe
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS Setup - Placed at the very top to ensure headers are set before any logic
+// CORS Setup
 app.set("trust proxy", 1);
 
+// Allowed origins for CORS
 const allowedOrigins = [
   process.env.CLIENT_URL,
-  "http://localhost:5173",
-  "https://www.zeusodx.online",
-  "https://zeusodx.online",
-  "https://zeusadminxyz.online",
-].filter(Boolean);
+  "http://localhost:5173", // Local development
+  "https://www.zeusodx.online", // Admin frontend production
+  "https://zeusodx.online", // Admin frontend (without www)
+  "https://zeusadminxyz.online", // Server domain
+].filter(Boolean); // Remove undefined values
 
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
+      
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -40,9 +43,8 @@ app.use(
       }
     },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
-    credentials: true,
-    optionsSuccessStatus: 204 // Standard for preflight OPTIONS requests
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true, // Allow cookies/auth headers
   })
 );
 
@@ -52,66 +54,144 @@ app.use(morgan("combined"));
 // Helmet Security
 app.use(helmet());
 
-// Security: Track failed requests
-const failedRequestTracker = new Map();
+// Security: Track failed requests for rate limiting
+const failedRequestTracker = new Map(); // IP -> { count, firstAttempt, lastAttempt }
 
-// Security: Block sensitive files
+// Security: Block access to sensitive files and directories
 app.use((req, res, next) => {
   const path = req.path.toLowerCase();
   const originalPath = req.path;
   const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
   
+  // Attack pattern detection (Cisco ASA exploits, etc.)
   const attackPatterns = [
-    /\+csco[le]\+/i, /\+cscol\+/i, /\+cscoe\+/i, /\+cscot\+/i, /\+cscou\+/i,
-    /\.\./, /%2e%2e/, /\.\.%2f/, /\/etc\/passwd/i, /\/proc\/self/i,
-    /\/boot\.ini/i, /\/win\.ini/i, /\/web\.config/i, /\/phpmyadmin/i,
-    /\/adminer/i, /\/wp-login/i, /\/xmlrpc\.php/i,
+    /\+csco[le]\+/i,  // Cisco ASA exploits (+CSCOL+, +CSCOE+)
+    /\+cscol\+/i,     // Cisco ASA exploit (+CSCOL+)
+    /\+cscoe\+/i,     // Cisco ASA exploit (+CSCOE+)
+    /\+cscot\+/i,     // Cisco ASA exploit (+CSCOT+)
+    /\+cscou\+/i,     // Cisco ASA exploit (+CSCOU+)
+    /\.\./,           // Path traversal attempts
+    /%2e%2e/,         // URL-encoded path traversal
+    /\.\.%2f/,        // URL-encoded path traversal
+    /\/etc\/passwd/i, // System file access attempts
+    /\/proc\/self/i,  // System file access attempts
+    /\/boot\.ini/i,   // Windows system file
+    /\/win\.ini/i,    // Windows system file
+    /\/web\.config/i, // ASP.NET config
+    /\/phpmyadmin/i,  // phpMyAdmin access
+    /\/adminer/i,     // Adminer access
+    /\/wp-login/i,    // WordPress login
+    /\/xmlrpc\.php/i, // WordPress XML-RPC
   ];
   
+  // Check for attack patterns
   const hasAttackPattern = attackPatterns.some(pattern => pattern.test(originalPath));
   
+  // List of sensitive paths to block
   const sensitivePaths = [
-    '/.git', '/.env', '/.env.local', '/.env.production', '/.env.development',
-    '/package.json', '/package-lock.json', '/yarn.lock', '/composer.json',
-    '/composer.lock', '/.htaccess', '/.htpasswd', '/web.config', '/.ssh',
-    '/.docker', '/docker-compose.yml', '/.gitignore', '/.gitattributes',
-    '/.git/config', '/.git/HEAD', '/.git/logs', '/.git/objects', '/.git/refs',
-    '/.git/index', '/.git/hooks', '/.git/info', '/.git/description', '/.npmrc',
-    '/.yarnrc', '/.vscode', '/.idea', '/node_modules', '/.DS_Store',
-    '/Thumbs.db', '/backup', '/backups', '/config', '/logs', '/secure',
-    '/private', '/admin/config', '/wp-admin', '/wp-config.php', '/phpinfo.php',
-    '/.php', '/server-status', '/server-info', '/+cscol+', '/+cscoe+',
-    '/+cscot+', '/+cscou+',
+    '/.git',
+    '/.env',
+    '/.env.local',
+    '/.env.production',
+    '/.env.development',
+    '/package.json',
+    '/package-lock.json',
+    '/yarn.lock',
+    '/composer.json',
+    '/composer.lock',
+    '/.htaccess',
+    '/.htpasswd',
+    '/web.config',
+    '/.ssh',
+    '/.docker',
+    '/docker-compose.yml',
+    '/.gitignore',
+    '/.gitattributes',
+    '/.git/config',
+    '/.git/HEAD',
+    '/.git/logs',
+    '/.git/objects',
+    '/.git/refs',
+    '/.git/index',
+    '/.git/hooks',
+    '/.git/info',
+    '/.git/description',
+    '/.npmrc',
+    '/.yarnrc',
+    '/.vscode',
+    '/.idea',
+    '/node_modules',
+    '/.DS_Store',
+    '/Thumbs.db',
+    '/backup',
+    '/backups',
+    '/config',
+    '/logs',
+    '/secure',
+    '/private',
+    '/admin/config',
+    '/wp-admin',
+    '/wp-config.php',
+    '/phpinfo.php',
+    '/.php',
+    '/server-status',
+    '/server-info',
+    // Cisco ASA exploit paths
+    '/+cscol+',
+    '/+cscoe+',
+    '/+cscot+',
+    '/+cscou+',
   ];
   
+  // Check if the path matches any sensitive path
   const isSensitive = sensitivePaths.some(sensitivePath => 
     path === sensitivePath || path.startsWith(sensitivePath + '/')
   );
   
+  // Also check for common file extensions that shouldn't be accessed
   const sensitiveExtensions = ['.env', '.git', '.log', '.sql', '.bak', '.backup', '.old', '.tmp', '.swp', '.swo', '.jar'];
   const hasSensitiveExtension = sensitiveExtensions.some(ext => path.endsWith(ext));
   
   if (isSensitive || hasSensitiveExtension || hasAttackPattern) {
+    // Track failed requests for rate limiting
     const now = Date.now();
     const tracker = failedRequestTracker.get(clientIP) || { count: 0, firstAttempt: now, lastAttempt: now };
     tracker.count++;
     tracker.lastAttempt = now;
     failedRequestTracker.set(clientIP, tracker);
     
+    // Log the attempt for security monitoring
+    const attackType = hasAttackPattern ? 'ATTACK_PATTERN' : isSensitive ? 'SENSITIVE_PATH' : 'SENSITIVE_EXTENSION';
+    console.warn(`🚫 [${attackType}] Blocked access attempt to: ${originalPath} from IP: ${clientIP} (Attempt #${tracker.count})`);
+    
+    // If too many failed attempts from same IP, return 429 (Too Many Requests)
     if (tracker.count > 10) {
-      return res.status(429).json({ success: false, error: 'Too Many Requests' });
+      console.error(`⚠️  IP ${clientIP} has made ${tracker.count} blocked requests - potential attacker`);
+      return res.status(429).json({ 
+        success: false, 
+        error: 'Too Many Requests' 
+      });
     }
-    return res.status(404).json({ success: false, error: 'Not Found' });
+    
+    // Return 404 to not reveal that the path exists
+    return res.status(404).json({ 
+      success: false, 
+      error: 'Not Found' 
+    });
   }
   
+  // Clean up old tracker entries (older than 1 hour)
   const oneHourAgo = Date.now() - (60 * 60 * 1000);
   for (const [ip, tracker] of failedRequestTracker.entries()) {
-    if (tracker.lastAttempt < oneHourAgo) failedRequestTracker.delete(ip);
+    if (tracker.lastAttempt < oneHourAgo) {
+      failedRequestTracker.delete(ip);
+    }
   }
+  
   next();
 });
 
-// Raw Body Parser
+// Raw Body Parser for Webhook Routes (including kyc-webhook)
 app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
   req.rawBody = req.body.toString('utf8');
   next();
@@ -121,21 +201,39 @@ app.use('/kyc-webhook', express.raw({ type: 'application/json' }), (req, res, ne
   next();
 });
 
-// JSON Body Parser
+// JSON Body Parser for Other Routes - INCREASED TO 100MB FOR IMAGE UPLOADS (KYC documents, driver's license, etc.)
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 // Rate Limiters
+// Global rate limiter - increased significantly for production mobile app
+// Production apps need higher limits due to:
+// - Multiple API calls per screen navigation
+// - Auto-refresh features
+// - Background sync operations
+// - Real-time data updates
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 1000,
-  message: { success: false, error: "Too many requests, please try again later", retryAfter: 15 },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => req.path === '/' || req.path.startsWith('/static/'),
-  keyGenerator: (req) => req.ip || req.connection.remoteAddress || 'unknown',
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // 1000 requests per 15 minutes (increased from 100)
+  // This equals ~66 requests per minute, which is reasonable for a production app
+  message: { 
+    success: false, 
+    error: "Too many requests, please try again later",
+    retryAfter: 15 // minutes
+  },
+  standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
+  legacyHeaders: false, // Disable `X-RateLimit-*` headers
+  skip: (req) => {
+    // Skip rate limiting for health checks and static assets
+    return req.path === '/' || req.path.startsWith('/static/');
+  },
+  // Use IP address for tracking (works for both authenticated and unauthenticated)
+  keyGenerator: (req) => {
+    return req.ip || req.connection.remoteAddress || 'unknown';
+  },
 });
 
+// Apply global limiter to all routes
 app.use(apiLimiter);
 
 const webhookLimiter = rateLimit({
@@ -149,7 +247,7 @@ const webhookLimiter = rateLimit({
 // Passport Init
 app.use(passport.initialize());
 
-// Auth Middlewares
+// Regular user authentication middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -157,35 +255,65 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ success: false, error: "Forbidden: Invalid token." });
+
     req.user = user;
     next();
   });
 };
 
+// Admin authentication middleware
 const authenticateAdminToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
-  if (!token) return res.status(401).json({ success: false, error: "Unauthorized: No admin token provided." });
+  
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      error: "Unauthorized: No admin token provided." 
+    });
+  }
   
   jwt.verify(token, process.env.ADMIN_JWT_SECRET, (err, admin) => {
-    if (err) return res.status(403).json({ success: false, error: "Forbidden: Invalid admin token." });
+    if (err) {
+      return res.status(403).json({ 
+        success: false, 
+        error: "Forbidden: Invalid admin token." 
+      });
+    }
+    
     req.admin = admin;
     next();
   });
 };
 
+// Role-specific middlewares
 const requireSuperAdmin = (req, res, next) => {
-  if (req.admin.adminRole !== 'super_admin') return res.status(403).json({ success: false, error: "Super admin access required." });
+  if (req.admin.adminRole !== 'super_admin') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Super admin access required." 
+    });
+  }
   next();
 };
 
 const requireAdmin = (req, res, next) => {
-  if (!['admin', 'super_admin'].includes(req.admin.adminRole)) return res.status(403).json({ success: false, error: "Admin access required." });
+  if (!['admin', 'super_admin'].includes(req.admin.adminRole)) {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Admin access required." 
+    });
+  }
   next();
 };
 
 const requireModerator = (req, res, next) => {
-  if (!['moderator', 'admin', 'super_admin'].includes(req.admin.adminRole)) return res.status(403).json({ success: false, error: "Moderator access required." });
+  if (!['moderator', 'admin', 'super_admin'].includes(req.admin.adminRole)) {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Moderator access required." 
+    });
+  }
   next();
 };
 
@@ -194,11 +322,49 @@ const fixCryptoFeeIndexes = async () => {
   try {
     const db = mongoose.connection.db;
     const collection = db.collection('cryptofeemarkups');
+    
+    // Check if collection exists
     const collections = await db.listCollections({ name: 'cryptofeemarkups' }).toArray();
-    if (collections.length === 0) return;
-    try { await collection.dropIndex("currency_1"); } catch (error) {}
-    try { await collection.createIndex({ currency: 1, network: 1 }, { unique: true }); } catch (error) {}
-  } catch (error) { console.error("❌ Error fixing CryptoFeeMarkup indexes:", error.message); }
+    if (collections.length === 0) {
+      console.log("CryptoFeeMarkup collection doesn't exist yet, skipping index fix");
+      return;
+    }
+    
+    // Get existing indexes
+    const indexes = await collection.indexes();
+    console.log("Current indexes for cryptofeemarkups:", indexes.map(idx => idx.name));
+    
+    // Drop old currency-only index if it exists
+    try {
+      await collection.dropIndex("currency_1");
+      console.log("✅ Old currency index dropped successfully");
+    } catch (error) {
+      if (error.code === 27) {
+        console.log("ℹ️  Old currency index doesn't exist, skipping drop");
+      } else {
+        console.log("⚠️  Error dropping old index:", error.message);
+      }
+    }
+    
+    // Create new compound index if it doesn't exist
+    try {
+      await collection.createIndex({ currency: 1, network: 1 }, { unique: true });
+      console.log("✅ New compound index (currency + network) created successfully");
+    } catch (error) {
+      if (error.code === 85) {
+        console.log("ℹ️  Compound index already exists, skipping creation");
+      } else {
+        console.log("⚠️  Error creating compound index:", error.message);
+      }
+    }
+    
+    // Verify final indexes
+    const finalIndexes = await collection.indexes();
+    console.log("Final indexes for cryptofeemarkups:", finalIndexes.map(idx => idx.name));
+    
+  } catch (error) {
+    console.error("❌ Error fixing CryptoFeeMarkup indexes:", error.message);
+  }
 };
 
 // Route Imports
@@ -290,7 +456,7 @@ app.use("/usernamecheck", usernamecheckRoutes);
 app.use("/naira", nairaAccountsRoutes);
 app.use("/accountname", AccountnameRoutes);
 app.use("/adminsignin", adminsigninRoutes);
-app.use("/admin-2fa", Admin2FARoutes);
+app.use("/admin-2fa", Admin2FARoutes); // Admin 2FA setup routes (public)
 app.use("/fetchnetworktest", Fetchnetworktestttt);
 app.use("/banners", bannerRoutes);
 
@@ -299,22 +465,24 @@ app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
 app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 
-// SUPER ADMIN ONLY ROUTES
+// SUPER ADMIN ONLY ROUTES (highest permissions)
 app.use("/deleteuser", authenticateAdminToken, requireSuperAdmin, deleteuserRoutes);
 app.use("/fund", authenticateAdminToken, requireSuperAdmin, FunduserRoutes);
 app.use("/delete-pin", authenticateAdminToken, requireSuperAdmin, deletepinRoutes);
 app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
 
-// ADMIN LEVEL ROUTES
+// ADMIN LEVEL ROUTES (admin + super_admin)
 app.use("/set-fee", authenticateAdminToken, requireAdmin, SetfeeRoutes);
 app.use("/updateuseraddress", authenticateAdminToken, requireAdmin, updateuseraddressRoutes);
 app.use("/marker", authenticateAdminToken, requireAdmin, pricemarkdownRoutes);
 app.use('/admingiftcard', authenticateAdminToken, requireAdmin, admingiftcardRoutes);
+// Public notification registration for users
 app.use('/notification', Pushnotification);
+// Admin notification management (requires auth)
 app.use('/admin/notification', authenticateAdminToken, requireAdmin, Pushnotification);
 app.use('/admin/scheduled-notifications', authenticateAdminToken, requireAdmin, scheduledNotificationRoutes);
 
-// MODERATOR LEVEL ROUTES
+// MODERATOR LEVEL ROUTES (all admin roles can access)
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
 app.use("/fetch", authenticateAdminToken, requireModerator, fetchtransactionRoutes);
 app.use("/pending", authenticateAdminToken, requireModerator, clearpendingRoutes);
@@ -373,29 +541,58 @@ app.use("/collection", authenticateToken, collectionRoutes);
 app.use("/notifications", authenticateToken, notificationRoutes);
 app.use("/signup", resendOtpRoutes);
 
-app.get("/", (req, res) => res.send(`🚀 API Running at ${new Date().toISOString()}`));
+// Health Check
+app.get("/", (req, res) => {
+  res.send(`🚀 API Running at ${new Date().toISOString()}`);
+});
 
+// Global Error Handler
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ success: false, error: "Internal Server Error" });
 });
 
+// Crypto Price Update Job - Run every 15 minutes
 cron.schedule('*/15 * * * *', async () => {
   try {
+    console.log('🔄 Starting scheduled crypto price update...');
     await updateCryptoPrices();
+    console.log('✅ Scheduled crypto price update completed');
   } catch (error) {
     console.error('❌ Scheduled crypto price job failed:', error.message);
   }
 });
 
+// Start Server
 const startServer = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {});
     console.log("✅ MongoDB Connected");
+    
+    // Fix CryptoFeeMarkup indexes after database connection
+    console.log("🔧 Fixing CryptoFeeMarkup database indexes...");
     await fixCryptoFeeIndexes();
+    
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
+      console.log('📦 Body parser limit: 100MB (for KYC image uploads, driver\'s license, etc.)');
+      console.log('⏰ Crypto price update job scheduled every 15 minutes');
+      console.log('🔐 Admin authentication enabled with role-based access control');
+      
+      // Start scheduled notifications
       scheduledNotificationService.start();
+      console.log('📱 Scheduled price notifications started (6am, 12pm, 6pm, 9pm)');
+      
+      // Run price update immediately on startup
+      setTimeout(async () => {
+        try {
+          console.log('🚀 Running initial crypto price update...');
+          await updateCryptoPrices();
+          console.log('✅ Initial crypto price update completed');
+        } catch (error) {
+          console.error('❌ Initial crypto price update failed:', error.message);
+        }
+      }, 5000); // Wait 5 seconds after server start
     });
   } catch (error) {
     console.error("Error during startup:", error);
