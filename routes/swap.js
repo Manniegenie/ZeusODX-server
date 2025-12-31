@@ -510,6 +510,22 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       obiexTransactionId: `${swapReference}_OUT`,
       narration: `Obiex Swap: ${amount} ${sourceCurrency} to ${finalAmountReceived} ${targetCurrency}`,
       completedAt: new Date(),
+      // Populate top-level swap fields for frontend compatibility
+      fromCurrency: sourceCurrency,
+      toCurrency: targetCurrency,
+      fromAmount: amount,
+      toAmount: finalAmountReceived,
+      exchangeRate: finalAmountReceived / amount,
+      swapType,
+      swapCategory: 'CRYPTO_EXCHANGE',
+      swapPair: `${sourceCurrency}-${targetCurrency}`,
+      correlationId,
+      executionTimestamp: new Date(),
+      swapDirection: 'OUT',
+      ...(swapType === 'CRYPTO_TO_CRYPTO' && {
+        intermediateToken: quote.intermediateToken,
+        routingPath: quote.routingPath
+      }),
       metadata: { ...metadata, swapDirection: 'OUT' }
     });
 
@@ -524,6 +540,22 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       obiexTransactionId: `${swapReference}_IN`,
       narration: `Obiex Swap: ${amount} ${sourceCurrency} to ${finalAmountReceived} ${targetCurrency}`,
       completedAt: new Date(),
+      // Populate top-level swap fields for frontend compatibility
+      fromCurrency: sourceCurrency,
+      toCurrency: targetCurrency,
+      fromAmount: amount,
+      toAmount: finalAmountReceived,
+      exchangeRate: finalAmountReceived / amount,
+      swapType,
+      swapCategory: 'CRYPTO_EXCHANGE',
+      swapPair: `${sourceCurrency}-${targetCurrency}`,
+      correlationId,
+      executionTimestamp: new Date(),
+      swapDirection: 'IN',
+      ...(swapType === 'CRYPTO_TO_CRYPTO' && {
+        intermediateToken: quote.intermediateToken,
+        routingPath: quote.routingPath
+      }),
       metadata: { ...metadata, swapDirection: 'IN' }
     });
 

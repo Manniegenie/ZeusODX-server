@@ -428,7 +428,7 @@ transactionSchema.methods.getReceiptData = function() {
 
   return {
     id: this._id.toString(),
-    type: this.type === 'WITHDRAWAL' ? 'Withdrawal' : 
+    type: this.type === 'WITHDRAWAL' ? 'Withdrawal' :
           this.type === 'SWAP' ? 'Swap' : this.type,
     status: this.status === 'SUCCESSFUL' ? 'Successful' : this.status,
     amount: this.receiptDetails.amount,
@@ -448,15 +448,25 @@ transactionSchema.methods.getReceiptData = function() {
       amount: this.receiptDetails.amount,
       narration: this.receiptDetails.narration,
       category: this.receiptDetails.category,
-      
-      // NEW: Enhanced swap details
+
+      // NEW: Enhanced swap details (top-level for backward compatibility)
       fromCurrency: this.fromCurrency,
       toCurrency: this.toCurrency,
       fromAmount: this.fromAmount,
       toAmount: this.toAmount,
       swapType: this.swapType,
       swapCategory: this.swapCategory,
-      
+
+      // 🔧 FIX: Add swapDetails nested object for frontend compatibility
+      swapDetails: this.type === 'SWAP' && this.fromCurrency && this.toCurrency ? {
+        fromAmount: this.fromAmount?.toString() || '',
+        fromCurrency: this.fromCurrency || '',
+        toAmount: this.toAmount?.toString() || '',
+        toCurrency: this.toCurrency || '',
+        rate: this.exchangeRate?.toString() || '',
+        exchangeRate: this.exchangeRate?.toString() || ''
+      } : undefined,
+
       // Additional fields that might be useful
       ...this.receiptDetails.additionalFields
     }

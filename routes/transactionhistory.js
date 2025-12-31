@@ -48,6 +48,18 @@ function shapeTokenDetails(tx) {
     createdAt: tx.createdAt,
   };
 
+  // Add swapDetails for SWAP transactions
+  if (tx.type === 'SWAP' && tx.fromCurrency && tx.toCurrency) {
+    baseDetails.swapDetails = {
+      fromAmount: tx.fromAmount?.toString() || '',
+      fromCurrency: tx.fromCurrency || '',
+      toAmount: tx.toAmount?.toString() || '',
+      toCurrency: tx.toCurrency || '',
+      rate: tx.exchangeRate?.toString() || '',
+      exchangeRate: tx.exchangeRate?.toString() || ''
+    };
+  }
+
   // Enhanced details for NGNZ withdrawals
   if (tx.isNGNZWithdrawal && tx.type === 'WITHDRAWAL') {
     return {
