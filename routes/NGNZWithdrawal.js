@@ -268,8 +268,22 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
     // 2. Authentication
     const user = await getCachedUserAuth(userId);
-    if (!user || !user.is2FAEnabled || !validateTwoFactorAuth(user, twoFactorCode)) {
-      return res.status(401).json({ success: false, message: 'Invalid 2FA credentials' });
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    // SECURITY FIX: Enforce 2FA must be enabled for withdrawals
+    if (!user.is2FAEnabled) {
+      logger.warn(`NGNZ withdrawal blocked: 2FA not enabled`, { userId, ip: req.ip });
+      return res.status(403).json({
+        success: false,
+        message: 'Two-factor authentication must be enabled to perform withdrawals. Please enable 2FA in your security settings.'
+      });
+    }
+
+    if (!validateTwoFactorAuth(user, twoFactorCode)) {
+      logger.warn(`NGNZ withdrawal blocked: Invalid 2FA code`, { userId, ip: req.ip });
+      return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
     }
 
     const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);

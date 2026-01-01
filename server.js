@@ -54,6 +54,29 @@ app.use(morgan("combined"));
 // Helmet Security
 app.use(helmet());
 
+// Enhanced Security Headers
+app.use((req, res, next) => {
+  // HSTS: Force HTTPS for 1 year, including subdomains
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+
+  // Prevent MIME type sniffing
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // Prevent clickjacking
+  res.setHeader('X-Frame-Options', 'DENY');
+
+  // Control referrer information
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  // Prevent XSS attacks
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+
+  // Content Security Policy (basic - can be enhanced)
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;");
+
+  next();
+});
+
 // Security: Track failed requests for rate limiting
 const failedRequestTracker = new Map(); // IP -> { count, firstAttempt, lastAttempt }
 

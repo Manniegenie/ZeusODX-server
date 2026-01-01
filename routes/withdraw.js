@@ -40,13 +40,30 @@ obiexAxios.interceptors.request.use(attachObiexAuth);
 // Supported tokens metadata
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin', symbol: 'BTC' },
-  ETH: { name: 'Ethereum', symbol: 'ETH' }, 
+  ETH: { name: 'Ethereum', symbol: 'ETH' },
   SOL: { name: 'Solana', symbol: 'SOL' },
   USDT: { name: 'Tether', symbol: 'USDT' },
   USDC: { name: 'USD Coin', symbol: 'USDC' },
   BNB: { name: 'Binance Coin', symbol: 'BNB' },
   MATIC: { name: 'Polygon', symbol: 'MATIC' },
   TRX: { name: 'Tron', symbol: 'TRX' }
+};
+
+// Network-specific minimum withdrawal amounts (prevents unprofitable micro-withdrawals)
+const NETWORK_MINIMUM_WITHDRAWALS = {
+  'BTC-BITCOIN': { min: 0.0001, max: 10 },
+  'ETH-ETHEREUM': { min: 0.005, max: 100 },
+  'SOL-SOLANA': { min: 0.01, max: 10000 },
+  'USDT-TRC20': { min: 5, max: 100000 },
+  'USDT-ERC20': { min: 10, max: 100000 },
+  'USDT-POLYGON': { min: 5, max: 100000 },
+  'USDT-BEP20': { min: 5, max: 100000 },
+  'USDC-ERC20': { min: 10, max: 100000 },
+  'USDC-POLYGON': { min: 5, max: 100000 },
+  'USDC-TRC20': { min: 5, max: 100000 },
+  'BNB-BEP20': { min: 0.01, max: 1000 },
+  'MATIC-POLYGON': { min: 1, max: 100000 },
+  'TRX-TRC20': { min: 10, max: 1000000 }
 };
 
 /**
@@ -154,14 +171,29 @@ function validateWithdrawalRequest(body) {
     const validNetwork = assetData.networks.find(n => n.code === upperNetwork);
     if (!validNetwork) {
       errors.push(`Invalid network. Available: ${assetData.networks.map(n => n.code).join(', ')}`);
-    } else if (validNetwork.addressRegex) {
-      if (!new RegExp(validNetwork.addressRegex).test(address.trim())) {
-        errors.push(`Invalid address format for ${validNetwork.name}`);
+    } else {
+      // Address format validation
+      if (validNetwork.addressRegex) {
+        if (!new RegExp(validNetwork.addressRegex).test(address.trim())) {
+          errors.push(`Invalid address format for ${validNetwork.name}`);
+        }
+      }
+
+      // SECURITY FIX: Network-specific minimum/maximum validation
+      const networkKey = `${upperCurrency}-${upperNetwork}`;
+      const limits = NETWORK_MINIMUM_WITHDRAWALS[networkKey];
+      if (limits) {
+        if (Number(amount) < limits.min) {
+          errors.push(`Minimum withdrawal for ${upperCurrency} on ${upperNetwork} is ${limits.min} ${upperCurrency}`);
+        }
+        if (Number(amount) > limits.max) {
+          errors.push(`Maximum withdrawal for ${upperCurrency} on ${upperNetwork} is ${limits.max} ${upperCurrency}`);
+        }
       }
     }
   }
 
-  return errors.length > 0 
+  return errors.length > 0
     ? { success: false, message: errors.join('; ') }
     : { success: true, validatedData: { address, amount: Number(amount), currency: upperCurrency, network: upperNetwork, twoFactorCode, passwordpin } };
 }
@@ -191,14 +223,35 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
     const { memo, narration } = req.body;
 
     const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user) return res.status(401).json({ success: false, message: 'Authentication required' });
 
     // --- SECURITY CHECKS ---
+    // SECURITY FIX: Enforce 2FA must be enabled for withdrawals
+    if (!user.is2FAEnabled) {
+      logger.warn(`Withdrawal blocked: 2FA not enabled`, { userId: user._id, ip: req.ip });
+      return res.status(403).json({
+        success: false,
+        message: 'Two-factor authentication must be enabled to perform withdrawals. Please enable 2FA in your security settings.'
+      });
+    }
+
     const is2faValid = validateTwoFactorAuth(user, twoFactorCode);
-    if (!is2faValid) return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
+    if (!is2faValid) {
+      logger.warn(`Withdrawal blocked: Invalid 2FA code`, { userId: user._id, ip: req.ip });
+      return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
+    }
 
     const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
-    if (!isPinValid) return res.status(401).json({ success: false, message: 'Invalid Password PIN' });
+    if (!isPinValid) {
+      logger.warn(`Withdrawal blocked: Invalid PIN`, {
+        userId: user._id,
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        amount,
+        currency: internalCurrency
+      });
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
 
     // --- 3. KYC / TRANSACTION LIMIT CHECK ---
     const kycCheck = await validateTransactionLimit(user._id, amount, internalCurrency, 'WITHDRAWAL');
@@ -257,13 +310,27 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
 
     if (user.email) sendWithdrawalEmail(user.email, user.username, amount, internalCurrency, transaction._id);
 
+    // Enhanced security logging
+    logger.info(`Crypto withdrawal initiated`, {
+      userId: user._id,
+      transactionId: transaction._id,
+      amount,
+      currency: internalCurrency,
+      network: internalNetwork,
+      destination: `${address.substring(0, 10)}...${address.substring(address.length - 6)}`,
+      fee: totalFees,
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      country: req.get('CF-IPCountry') || 'unknown'
+    });
+
     return res.json({
       success: true,
       message: 'Withdrawal initiated successfully',
-      data: { 
-        transactionId: transaction._id, 
-        amount: amount, 
-        fee: totalFees 
+      data: {
+        transactionId: transaction._id,
+        amount: amount,
+        fee: totalFees
       }
     });
 
