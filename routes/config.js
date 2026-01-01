@@ -27,7 +27,8 @@ module.exports = {
 
   youverify: {
     publicMerchantKey: process.env.YOUVERIFY_PUBLIC_MERCHANT_KEY,
-    secretKey: process.env.YOUVERIFY_SECRET_KEY,
+    secretKey: process.env.YOUVERIFY_SECRET_KEY, // For advanced API operations
+    webhookSigningKey: process.env.YOUVERIFY_WEBHOOK_SIGNING_KEY, // For webhook signature verification
     callbackUrl: process.env.YOUVERIFY_CALLBACK_URL || 'https://your-domain.com/kyc-webhook/callback',
     apiBaseUrl: process.env.YOUVERIFY_API_URL || 'https://api.youverify.co'
   }

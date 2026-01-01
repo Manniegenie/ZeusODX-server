@@ -11,8 +11,12 @@ const axios = require('axios');
 
 const REQUIRED_ENV_VARS = [
   'YOUVERIFY_PUBLIC_MERCHANT_KEY',
-  'YOUVERIFY_SECRET_KEY',
+  'YOUVERIFY_WEBHOOK_SIGNING_KEY',
   'YOUVERIFY_CALLBACK_URL'
+];
+
+const OPTIONAL_ENV_VARS = [
+  'YOUVERIFY_SECRET_KEY' // Optional, only needed for advanced API operations
 ];
 
 console.log('🔍 ZeusODX KYC Setup Verification\n');

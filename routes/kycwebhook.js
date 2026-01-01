@@ -14,7 +14,7 @@ const { sendKycEmail, sendNINVerificationEmail } = require('../services/EmailSer
 
 // Youverify Configuration
 const YOUVERIFY_CONFIG = {
-  secretKey: process.env.YOUVERIFY_SECRET_KEY || config.youverify?.secretKey,
+  webhookSigningKey: process.env.YOUVERIFY_WEBHOOK_SIGNING_KEY || config.youverify?.webhookSigningKey,
 };
 
 // ID type mappings for Youverify
@@ -116,12 +116,12 @@ router.post('/callback', async (req, res) => {
     const signature = req.headers['x-youverify-signature'];
 
     // 1. Signature Verification - REQUIRED FOR SECURITY
-    if (!YOUVERIFY_CONFIG.secretKey) {
-      logger.error('Youverify secret key not configured - rejecting webhook');
+    if (!YOUVERIFY_CONFIG.webhookSigningKey) {
+      logger.error('Youverify webhook signing key not configured - rejecting webhook');
       return res.status(500).json({ success: false, message: 'Server configuration error' });
     }
 
-    if (!verifyYouverifySignature(rawPayload, signature, YOUVERIFY_CONFIG.secretKey)) {
+    if (!verifyYouverifySignature(rawPayload, signature, YOUVERIFY_CONFIG.webhookSigningKey)) {
       logger.warn('Invalid webhook signature detected', { signature: signature?.substring(0, 10) + '...' });
       return res.status(401).json({ success: false, message: 'Invalid signature' });
     }
