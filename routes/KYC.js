@@ -1,6 +1,7 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 const jwt = require("jsonwebtoken");
+const axios = require("axios");
 const router = express.Router();
 
 const User = require("../models/user");
@@ -11,7 +12,9 @@ const logger = require("../utils/logger");
 // Youverify Configuration
 const YOUVERIFY_CONFIG = {
   publicMerchantKey: process.env.YOUVERIFY_PUBLIC_MERCHANT_KEY || config.youverify?.publicMerchantKey,
-  callback_url: process.env.YOUVERIFY_CALLBACK_URL || config.youverify?.callbackUrl || 'https://your-domain.com/api/youverify/callback'
+  secretKey: process.env.YOUVERIFY_SECRET_KEY || config.youverify?.secretKey,
+  callbackUrl: process.env.YOUVERIFY_CALLBACK_URL || config.youverify?.callbackUrl || 'https://your-domain.com/kyc-webhook/callback',
+  apiBaseUrl: process.env.YOUVERIFY_API_URL || config.youverify?.apiBaseUrl || 'https://api.youverify.co'
 };
 
 // Nigerian ID type mappings for Youverify
@@ -142,8 +145,99 @@ function classifyOutcome({ job_success, code, text, actions }) {
   return 'REJECTED';
 }
 
-// Note: With Youverify, the frontend SDK handles verification submission.
-// This backend endpoint creates a pending record and waits for webhook callback.
+/**
+ * Submit verification request to Youverify API
+ * @param {Object} params - Verification parameters
+ * @returns {Promise<Object>} Youverify API response
+ */
+async function submitToYouverify({
+  idType,
+  idNumber,
+  firstName,
+  lastName,
+  selfieImage,
+  dob,
+  userId,
+  partnerJobId
+}) {
+  try {
+    logger.info('Submitting verification to Youverify', { idType, userId, partnerJobId });
+
+    // Youverify API endpoint for identity verification
+    const apiUrl = `${YOUVERIFY_CONFIG.apiBaseUrl}/v2/identities/verifications`;
+
+    // Prepare request payload according to Youverify API spec
+    const payload = {
+      type: idType, // e.g., 'nin', 'passport', 'drivers-license', 'bvn'
+      id_number: idNumber,
+      first_name: firstName,
+      last_name: lastName,
+      isSubjectConsent: true, // Required by Youverify
+      validations: {
+        match_first_name: true,
+        match_last_name: true
+      }
+    };
+
+    // Add selfie for biometric verification (if not BVN)
+    if (selfieImage && idType !== 'bvn') {
+      // Remove base64 prefix if present
+      const base64Image = selfieImage.replace(/^data:image\/\w+;base64,/, '');
+      payload.face_image = base64Image;
+      payload.validations.selfie_to_id_authority_compare = true;
+    }
+
+    // Add DOB if provided
+    if (dob) {
+      payload.dob = dob; // YYYY-MM-DD format
+      payload.validations.match_dob = true;
+    }
+
+    // Add callback URL and metadata
+    payload.callback_url = YOUVERIFY_CONFIG.callbackUrl;
+    payload.metadata = {
+      user_id: userId.toString(),
+      partner_job_id: partnerJobId,
+      source: 'zeusodx-mobile-app'
+    };
+
+    // Make API request to Youverify
+    const response = await axios.post(apiUrl, payload, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Token': YOUVERIFY_CONFIG.publicMerchantKey
+      },
+      timeout: 30000 // 30 second timeout
+    });
+
+    logger.info('Youverify API response received', {
+      status: response.status,
+      data: response.data,
+      partnerJobId
+    });
+
+    return {
+      success: true,
+      data: response.data,
+      youverifyId: response.data?.id || response.data?.data?.id
+    };
+
+  } catch (error) {
+    logger.error('Youverify API error', {
+      message: error.message,
+      response: error.response?.data,
+      status: error.response?.status,
+      partnerJobId
+    });
+
+    // Return error details
+    return {
+      success: false,
+      error: error.response?.data || error.message,
+      status: error.response?.status || 500
+    };
+  }
+}
 
 // POST: /biometric-verification - Verify user identity using Youverify
 router.post(
@@ -311,7 +405,6 @@ router.post(
       const jobId = `${user._id}_${Date.now()}`;
 
       // Create pending KYC record
-      // Note: Frontend Youverify SDK will handle submission, webhook will update status
       const kycDoc = await KYC.create({
         userId: user._id,
         provider: 'youverify',
@@ -329,6 +422,52 @@ router.post(
           liveness_images: livenessImages || []
         }
       });
+
+      // Submit verification to Youverify API
+      logger.info("Submitting to Youverify API", { userId: user._id, jobId, idType });
+
+      const youverifyResult = await submitToYouverify({
+        idType: youverifyIdType,
+        idNumber,
+        firstName: user.firstname,
+        lastName: user.lastname,
+        selfieImage,
+        dob,
+        userId: user._id,
+        partnerJobId: jobId
+      });
+
+      // Update KYC record with Youverify ID
+      if (youverifyResult.success && youverifyResult.youverifyId) {
+        await KYC.findByIdAndUpdate(kycDoc._id, {
+          $set: {
+            youverifyId: youverifyResult.youverifyId,
+            lastUpdated: new Date()
+          }
+        });
+        logger.info("Youverify submission successful", {
+          kycId: kycDoc._id,
+          youverifyId: youverifyResult.youverifyId
+        });
+      } else {
+        // Log error but don't fail the request - webhook might still work
+        logger.warn("Youverify API submission failed, but KYC record created", {
+          kycId: kycDoc._id,
+          error: youverifyResult.error,
+          status: youverifyResult.status
+        });
+
+        // If Youverify submission completely fails, we might want to mark as provisional
+        if (youverifyResult.status >= 400) {
+          await KYC.findByIdAndUpdate(kycDoc._id, {
+            $set: {
+              status: 'PROVISIONAL',
+              errorReason: `Youverify API error: ${JSON.stringify(youverifyResult.error)}`,
+              lastUpdated: new Date()
+            }
+          });
+        }
+      }
 
       // Update user status based on verification type
       if (isBvnVerification) {
@@ -363,8 +502,8 @@ router.post(
       });
 
       const successMessage = isBvnVerification
-        ? "BVN verification submitted! Your Bank Verification Number is being processed."
-        : "Submission complete! Your ID verification is being processed.";
+        ? "BVN verification submitted! Your Bank Verification Number is being verified with NIMC."
+        : "Submission complete! Your ID verification is being processed with Youverify.";
 
       return res.status(200).json({
         success: true,
@@ -372,11 +511,13 @@ router.post(
         data: {
           jobId,
           kycId: kycDoc._id,
-          status: "pending",
+          youverifyId: youverifyResult.youverifyId || null,
+          status: youverifyResult.status >= 400 ? "provisional" : "pending",
           submittedAt: kycDoc.createdAt,
           idType,
           verificationType: isBvnVerification ? 'bvn' : 'document',
-          processingTime: Date.now() - startTime
+          processingTime: Date.now() - startTime,
+          youverifySubmitted: youverifyResult.success
         }
       });
 

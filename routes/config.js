@@ -23,5 +23,12 @@ module.exports = {
     apiSecret: process.env.OBIEX_API_SECRET,
     baseURL: process.env.OBIEX_BASE_URL, // Changed from baseUrl to baseURL
     webhookSecret: process.env.OBIEX_WEBHOOK_SECRET,
+  },
+
+  youverify: {
+    publicMerchantKey: process.env.YOUVERIFY_PUBLIC_MERCHANT_KEY,
+    secretKey: process.env.YOUVERIFY_SECRET_KEY,
+    callbackUrl: process.env.YOUVERIFY_CALLBACK_URL || 'https://your-domain.com/kyc-webhook/callback',
+    apiBaseUrl: process.env.YOUVERIFY_API_URL || 'https://api.youverify.co'
   }
 };

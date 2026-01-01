@@ -57,40 +57,46 @@ function classifyOutcome({ status, allValidationPassed }) {
 
 function normalize(webhookBody) {
   const { event, apiVersion, data } = webhookBody || {};
-  if (!data) return null;
+  if (!data || typeof data !== 'object') return null;
+
+  // Sanitize function to prevent injection attacks
+  const sanitize = (str) => {
+    if (typeof str !== 'string') return str;
+    return str.replace(/[<>$]/g, '').trim().substring(0, 500); // Limit length
+  };
 
   const addressData = data.address || {};
   const addressString = addressData.addressLine
-    ? `${addressData.addressLine}, ${addressData.lga || ''}, ${addressData.state || ''}`.trim()
+    ? `${sanitize(addressData.addressLine)}, ${sanitize(addressData.lga || '')}, ${sanitize(addressData.state || '')}`.trim()
     : null;
 
   const validations = data.validations?.data || {};
   const fullName = data.firstName && data.lastName
-    ? `${data.firstName} ${data.middleName || ''} ${data.lastName}`.trim().replace(/\s+/g, ' ')
+    ? `${sanitize(data.firstName)} ${sanitize(data.middleName || '')} ${sanitize(data.lastName)}`.trim().replace(/\s+/g, ' ')
     : null;
 
   return {
     jobComplete: true,
     jobSuccess: data.status === 'found' && data.allValidationPassed === true,
-    status: data.status,
+    status: sanitize(data.status),
     allValidationPassed: data.allValidationPassed,
-    country: data.country || 'NG',
-    dob: data.dateOfBirth || null,
+    country: sanitize(data.country) || 'NG',
+    dob: sanitize(data.dateOfBirth) || null,
     fullName,
-    firstName: data.firstName || null,
-    lastName: data.lastName || null,
-    idNumber: data.idNumber || null,
-    idType: data.type || null,
+    firstName: sanitize(data.firstName) || null,
+    lastName: sanitize(data.lastName) || null,
+    idNumber: sanitize(data.idNumber) || null,
+    idType: sanitize(data.type) || null,
     address: addressString,
-    youverifyId: data._id || null,
+    youverifyId: sanitize(data._id) || null,
     imageLinks: {
       document_image: data.image || data.fullDocumentFrontImage || null,
       selfie_image: data.faceImage || null,
     },
-    reason: data.reason || data.validations?.validationMessages?.[0] || null,
+    reason: sanitize(data.reason || data.validations?.validationMessages?.[0]) || null,
     environment: process.env.NODE_ENV || 'development',
-    event,
-    apiVersion
+    event: sanitize(event),
+    apiVersion: sanitize(apiVersion)
   };
 }
 
@@ -109,8 +115,14 @@ router.post('/callback', async (req, res) => {
     const rawPayload = req.rawBody || JSON.stringify(req.body);
     const signature = req.headers['x-youverify-signature'];
 
-    // 1. Signature Verification
-    if (YOUVERIFY_CONFIG.secretKey && !verifyYouverifySignature(rawPayload, signature, YOUVERIFY_CONFIG.secretKey)) {
+    // 1. Signature Verification - REQUIRED FOR SECURITY
+    if (!YOUVERIFY_CONFIG.secretKey) {
+      logger.error('Youverify secret key not configured - rejecting webhook');
+      return res.status(500).json({ success: false, message: 'Server configuration error' });
+    }
+
+    if (!verifyYouverifySignature(rawPayload, signature, YOUVERIFY_CONFIG.secretKey)) {
+      logger.warn('Invalid webhook signature detected', { signature: signature?.substring(0, 10) + '...' });
       return res.status(401).json({ success: false, message: 'Invalid signature' });
     }
 
