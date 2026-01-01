@@ -19,9 +19,16 @@ The backend was designed to wait for Youverify webhook callbacks, but **no initi
 
 **Added:**
 - `submitToYouverify()` function that calls Youverify API v2 endpoint
-- Direct API call after creating KYC record (line 426-470)
+- Direct API call after creating KYC record
 - Error handling for API failures
 - Updates KYC record with Youverify ID when successful
+- Uses country and ID-type specific endpoints per Youverify API v2 spec
+
+**API Endpoints Used:**
+- NIN: `POST /v2/api/identity/ng/nin`
+- BVN: `POST /v2/api/identity/ng/bvn`
+- Passport: `POST /v2/api/identity/ng/passport`
+- Driver's License: `POST /v2/api/identity/ng/drivers-license`
 
 **What it does:**
 - When user submits KYC, backend now immediately calls Youverify API

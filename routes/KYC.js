@@ -163,49 +163,74 @@ async function submitToYouverify({
   try {
     logger.info('Submitting verification to Youverify', { idType, userId, partnerJobId });
 
-    // Youverify API endpoint for identity verification
-    const apiUrl = `${YOUVERIFY_CONFIG.apiBaseUrl}/v2/identities/verifications`;
+    // Map idType to Youverify-specific endpoint paths
+    const endpointMap = {
+      'nin': '/v2/api/identity/ng/nin',
+      'national_id': '/v2/api/identity/ng/nin',
+      'bvn': '/v2/api/identity/ng/bvn',
+      'passport': '/v2/api/identity/ng/passport',
+      'drivers_license': '/v2/api/identity/ng/drivers-license',
+      'drivers-license': '/v2/api/identity/ng/drivers-license'
+    };
 
-    // Prepare request payload according to Youverify API spec
+    // Get the correct endpoint path for this ID type
+    const endpointPath = endpointMap[idType.toLowerCase()];
+
+    if (!endpointPath) {
+      throw new Error(`Unsupported ID type: ${idType}`);
+    }
+
+    const apiUrl = `${YOUVERIFY_CONFIG.apiBaseUrl}${endpointPath}`;
+
+    // Prepare request payload according to Youverify API spec v2
     const payload = {
-      type: idType, // e.g., 'nin', 'passport', 'drivers-license', 'bvn'
-      id_number: idNumber,
-      first_name: firstName,
-      last_name: lastName,
-      isSubjectConsent: true, // Required by Youverify
-      validations: {
-        match_first_name: true,
-        match_last_name: true
+      id: idNumber, // The ID number to verify
+      isSubjectConsent: true, // Required - must be true
+      metadata: {
+        user_id: userId.toString(),
+        partner_job_id: partnerJobId,
+        source: 'zeusodx-mobile-app'
       }
     };
 
-    // Add selfie for biometric verification (if not BVN)
-    if (selfieImage && idType !== 'bvn') {
+    // Build validations object for data matching and/or selfie
+    const validations = {};
+
+    // Add personal data validation if firstName, lastName, or DOB provided
+    if (firstName || lastName || dob) {
+      validations.data = {};
+      if (firstName) validations.data.firstName = firstName;
+      if (lastName) validations.data.lastName = lastName;
+      if (dob) validations.data.dateOfBirth = dob; // YYYY-MM-DD format
+    }
+
+    // Add selfie validation if image provided
+    if (selfieImage) {
       // Remove base64 prefix if present
       const base64Image = selfieImage.replace(/^data:image\/\w+;base64,/, '');
-      payload.face_image = base64Image;
-      payload.validations.selfie_to_id_authority_compare = true;
+      validations.selfie = {
+        image: base64Image
+      };
     }
 
-    // Add DOB if provided
-    if (dob) {
-      payload.dob = dob; // YYYY-MM-DD format
-      payload.validations.match_dob = true;
+    // Only add validations if we have any
+    if (Object.keys(validations).length > 0) {
+      payload.validations = validations;
     }
 
-    // Add callback URL and metadata
-    payload.callback_url = YOUVERIFY_CONFIG.callbackUrl;
-    payload.metadata = {
-      user_id: userId.toString(),
-      partner_job_id: partnerJobId,
-      source: 'zeusodx-mobile-app'
-    };
+    logger.info('Youverify API request', {
+      endpoint: apiUrl,
+      idType,
+      hasDataValidation: !!validations.data,
+      hasSelfieValidation: !!validations.selfie,
+      partnerJobId
+    });
 
     // Make API request to Youverify
     const response = await axios.post(apiUrl, payload, {
       headers: {
         'Content-Type': 'application/json',
-        'Token': YOUVERIFY_CONFIG.publicMerchantKey
+        'token': YOUVERIFY_CONFIG.publicMerchantKey // Note: lowercase 'token' per docs
       },
       timeout: 30000 // 30 second timeout
     });
