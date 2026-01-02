@@ -12,6 +12,10 @@ const { sendWithdrawalEmail } = require('../services/EmailService');
 const { sendWithdrawalNotification } = require('../services/notificationService');
 const { bvnCheckService } = require('../services/bvnCheckService');
 
+// SECURITY FIX: Import distributed lock and security service
+const { withLock } = require('../utils/redisLock');
+const securityService = require('../services/securityService');
+
 // Model & Utils Imports
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
@@ -281,24 +285,106 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
       });
     }
 
+    // SECURITY FIX: Check 2FA attempt rate limiting
+    const twoFACheck = await securityService.check2FAAttempts(userId);
+    if (!twoFACheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: twoFACheck.message,
+        lockUntil: twoFACheck.lockUntil
+      });
+    }
+
+    // SECURITY FIX: Check for 2FA code replay attack
+    const isReplay = await securityService.check2FACodeReplay(userId, twoFactorCode);
+    if (isReplay) {
+      logger.warn(`NGNZ 2FA replay attack detected`, { userId, ip: req.ip });
+      return res.status(401).json({
+        success: false,
+        message: 'This 2FA code has already been used. Please wait for a new code.'
+      });
+    }
+
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
-      logger.warn(`NGNZ withdrawal blocked: Invalid 2FA code`, { userId, ip: req.ip });
-      return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
+      await securityService.record2FAFailure(userId);
+      const remainingAttempts = twoFACheck.attemptsRemaining - 1;
+
+      logger.warn(`NGNZ withdrawal blocked: Invalid 2FA code`, {
+        userId,
+        ip: req.ip,
+        attemptsRemaining: remainingAttempts
+      });
+
+      return res.status(401).json({
+        success: false,
+        message: remainingAttempts > 0
+          ? `Invalid 2FA code. ${remainingAttempts} attempt(s) remaining.`
+          : 'Invalid 2FA code.'
+      });
+    }
+
+    // Reset 2FA attempts on success
+    await securityService.reset2FAAttempts(userId);
+
+    // SECURITY FIX: Check PIN attempt rate limiting
+    const pinCheck = await securityService.checkPINAttempts(userId);
+    if (!pinCheck.allowed) {
+      return res.status(423).json({
+        success: false,
+        message: pinCheck.message,
+        accountLocked: true,
+        lockUntil: pinCheck.lockUntil
+      });
     }
 
     const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
-    if (!isPinValid) return res.status(401).json({ success: false, message: 'Invalid Transaction PIN' });
+    if (!isPinValid) {
+      const attempts = await securityService.recordPINFailure(userId);
+      const remainingAttempts = Math.max(0, 5 - attempts);
+
+      logger.warn(`NGNZ withdrawal blocked: Invalid PIN`, {
+        userId,
+        ip: req.ip,
+        attemptsRemaining: remainingAttempts
+      });
+
+      return res.status(401).json({
+        success: false,
+        message: remainingAttempts > 0
+          ? `Invalid PIN. ${remainingAttempts} attempt(s) remaining before account lock.`
+          : 'Invalid credentials.'
+      });
+    }
+
+    // Reset PIN attempts on success
+    await securityService.resetPINAttempts(userId);
 
     if (!isTokenSupported('NGNZ')) return res.status(400).json({ success: false, message: 'Currency not supported' });
 
-    // 3. Execution (Deduct Balance + Create Transaction)
-    const withdrawalResult = await executeNGNZWithdrawal(
-        userId, 
-        { amount, destination, narration }, 
-        correlationId, 
-        systemContext, 
-        idempotencyKey
-    );
+    // 3. Execution (Deduct Balance + Create Transaction) WITH DISTRIBUTED LOCK
+    // SECURITY FIX: Use distributed lock to prevent race conditions
+    const lockKey = `withdrawal:${userId}:NGNZ`;
+
+    const withdrawalResult = await withLock(
+      lockKey,
+      async () => {
+        return await executeNGNZWithdrawal(
+          userId,
+          { amount, destination, narration },
+          correlationId,
+          systemContext,
+          idempotencyKey
+        );
+      },
+      {
+        ttl: 15000,        // Lock timeout: 15 seconds (longer for bank transfers)
+        maxWaitTime: 5000, // Wait up to 5 seconds for lock
+        retryInterval: 50  // Check every 50ms
+      }
+    ).catch(error => {
+      logger.error(`Failed to acquire NGNZ withdrawal lock for user ${userId}:`, error.message);
+      throw error; // Re-throw to be caught by outer try-catch
+    });
 
     // 4. External Payout (Obiex)
     const obiexResult = await processObiexWithdrawal(

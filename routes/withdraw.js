@@ -19,6 +19,10 @@ const { sendWithdrawalEmail } = require('../services/EmailService');
 // Import idempotency middleware
 const { idempotencyMiddleware } = require('../utils/Idempotency');
 
+// SECURITY FIX: Import distributed lock and security service
+const { withLock } = require('../utils/redisLock');
+const securityService = require('../services/securityService');
+
 // 1. Load the dynamic network mapping
 const NETWORK_MAP_PATH = path.join(__dirname, '..', 'obiex_currency_networks.json');
 let OBIEX_NETWORK_DATA = {};
@@ -235,23 +239,83 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
       });
     }
 
+    // SECURITY FIX: Check 2FA attempt rate limiting
+    const twoFACheck = await securityService.check2FAAttempts(user._id.toString());
+    if (!twoFACheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: twoFACheck.message,
+        lockUntil: twoFACheck.lockUntil
+      });
+    }
+
+    // SECURITY FIX: Check for 2FA code replay attack
+    const isReplay = await securityService.check2FACodeReplay(user._id.toString(), twoFactorCode);
+    if (isReplay) {
+      logger.warn(`2FA replay attack detected`, { userId: user._id, ip: req.ip });
+      return res.status(401).json({
+        success: false,
+        message: 'This 2FA code has already been used. Please wait for a new code.'
+      });
+    }
+
     const is2faValid = validateTwoFactorAuth(user, twoFactorCode);
     if (!is2faValid) {
-      logger.warn(`Withdrawal blocked: Invalid 2FA code`, { userId: user._id, ip: req.ip });
-      return res.status(401).json({ success: false, message: 'Invalid 2FA code' });
+      await securityService.record2FAFailure(user._id.toString());
+      const remainingAttempts = twoFACheck.attemptsRemaining - 1;
+
+      logger.warn(`Withdrawal blocked: Invalid 2FA code`, {
+        userId: user._id,
+        ip: req.ip,
+        attemptsRemaining: remainingAttempts
+      });
+
+      return res.status(401).json({
+        success: false,
+        message: remainingAttempts > 0
+          ? `Invalid 2FA code. ${remainingAttempts} attempt(s) remaining.`
+          : 'Invalid 2FA code.'
+      });
+    }
+
+    // Reset 2FA attempts on success
+    await securityService.reset2FAAttempts(user._id.toString());
+
+    // SECURITY FIX: Check PIN attempt rate limiting
+    const pinCheck = await securityService.checkPINAttempts(user._id.toString());
+    if (!pinCheck.allowed) {
+      return res.status(423).json({
+        success: false,
+        message: pinCheck.message,
+        accountLocked: true,
+        lockUntil: pinCheck.lockUntil
+      });
     }
 
     const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
     if (!isPinValid) {
+      const attempts = await securityService.recordPINFailure(user._id.toString());
+      const remainingAttempts = Math.max(0, 5 - attempts);
+
       logger.warn(`Withdrawal blocked: Invalid PIN`, {
         userId: user._id,
         ip: req.ip,
         userAgent: req.get('User-Agent'),
         amount,
-        currency: internalCurrency
+        currency: internalCurrency,
+        attemptsRemaining: remainingAttempts
       });
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+      return res.status(401).json({
+        success: false,
+        message: remainingAttempts > 0
+          ? `Invalid PIN. ${remainingAttempts} attempt(s) remaining before account lock.`
+          : 'Invalid credentials.'
+      });
     }
+
+    // Reset PIN attempts on success
+    await securityService.resetPINAttempts(user._id.toString());
 
     // --- 3. KYC / TRANSACTION LIMIT CHECK ---
     const kycCheck = await validateTransactionLimit(user._id, amount, internalCurrency, 'WITHDRAWAL');
@@ -275,12 +339,45 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
 
     if (obiexSendAmount <= 0) return res.status(400).json({ success: false, message: "Amount too low to cover fees" });
 
-    // --- 5. BALANCE VALIDATION & LOCKING ---
-    const balCheck = await validateUserBalanceInternal(user._id, internalCurrency, amount);
-    if (!balCheck.success) return res.status(400).json({ success: false, message: "Insufficient balance" });
+    // --- 5. BALANCE VALIDATION & LOCKING WITH DISTRIBUTED LOCK ---
+    // SECURITY FIX: Use distributed lock to prevent race conditions
+    const lockKey = `withdrawal:${user._id}:${internalCurrency}`;
 
-    const reserveRes = await reserveUserBalanceInternal(user._id, internalCurrency, amount);
-    if (!reserveRes.success) throw new Error("Balance locking failed");
+    const lockResult = await withLock(
+      lockKey,
+      async () => {
+        // Atomic check and reserve within lock
+        const balCheck = await validateUserBalanceInternal(user._id, internalCurrency, amount);
+        if (!balCheck.success) {
+          throw new Error("Insufficient balance");
+        }
+
+        const reserveRes = await reserveUserBalanceInternal(user._id, internalCurrency, amount);
+        if (!reserveRes.success) {
+          throw new Error("Balance locking failed - race condition detected");
+        }
+
+        return { success: true };
+      },
+      {
+        ttl: 10000,        // Lock timeout: 10 seconds
+        maxWaitTime: 5000, // Wait up to 5 seconds for lock
+        retryInterval: 50  // Check every 50ms
+      }
+    ).catch(error => {
+      logger.error(`Failed to acquire withdrawal lock for user ${user._id}:`, error.message);
+      return { success: false, error: error.message };
+    });
+
+    if (!lockResult.success) {
+      return res.status(409).json({
+        success: false,
+        message: lockResult.error === "Insufficient balance"
+          ? "Insufficient balance"
+          : "Another withdrawal is in progress. Please wait and try again."
+      });
+    }
+
     reservationMade = true;
 
     // --- 6. EXTERNAL PROVIDER CALL (Obiex) ---
