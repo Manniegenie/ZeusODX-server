@@ -237,8 +237,8 @@ function formatAmount(amount, currency, type = '', isNegative = false) {
     return `${sign}₦${absAmount.toLocaleString()}`;
   }
 
-  // For crypto, use toFixed(8) to avoid scientific notation
-  const formattedAmount = absAmount < 0.01 ? absAmount.toFixed(8) : absAmount.toString();
+  // For crypto, always use toFixed(8) to show full decimals without scientific notation
+  const formattedAmount = absAmount.toFixed(8);
   return `${sign}${formattedAmount} ${currency}`;
 }
 

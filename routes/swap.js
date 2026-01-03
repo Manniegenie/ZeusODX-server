@@ -869,8 +869,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       },
       transactions: {
         swapId: swapResult.swapId,
-        swapOutTransactionId: swapResult.swapOutTransaction._id,
-        swapInTransactionId: swapResult.swapInTransaction._id
+        transactionId: swapResult.swapTransaction._id
       },
       balanceUpdated: true,
       newBalances: {
