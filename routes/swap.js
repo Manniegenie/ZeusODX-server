@@ -499,18 +499,18 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       })
     };
 
-    const swapOutTransaction = new Transaction({
+    // Create single swap transaction
+    const swapTransaction = new Transaction({
       userId,
       type: 'SWAP',
-      currency: sourceCurrency,
-      amount: -amount,
+      currency: targetCurrency, // Use target currency for display
+      amount: finalAmountReceived, // Use positive amount
       status: 'SUCCESSFUL',
       source: 'OBIEX',
       reference: swapReference,
-      obiexTransactionId: `${swapReference}_OUT`,
-      narration: `Obiex Swap: ${amount} ${sourceCurrency} to ${finalAmountReceived} ${targetCurrency}`,
+      obiexTransactionId: swapReference,
+      narration: `Swap: ${amount} ${sourceCurrency} → ${finalAmountReceived} ${targetCurrency}`,
       completedAt: new Date(),
-      // Populate top-level swap fields for frontend compatibility
       fromCurrency: sourceCurrency,
       toCurrency: targetCurrency,
       fromAmount: amount,
@@ -521,46 +521,14 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       swapPair: `${sourceCurrency}-${targetCurrency}`,
       correlationId,
       executionTimestamp: new Date(),
-      swapDirection: 'OUT',
       ...(swapType === 'CRYPTO_TO_CRYPTO' && {
         intermediateToken: quote.intermediateToken,
         routingPath: quote.routingPath
       }),
-      metadata: { ...metadata, swapDirection: 'OUT' }
+      metadata
     });
 
-    const swapInTransaction = new Transaction({
-      userId,
-      type: 'SWAP',
-      currency: targetCurrency,
-      amount: finalAmountReceived,
-      status: 'SUCCESSFUL',
-      source: 'OBIEX',
-      reference: swapReference,
-      obiexTransactionId: `${swapReference}_IN`,
-      narration: `Obiex Swap: ${amount} ${sourceCurrency} to ${finalAmountReceived} ${targetCurrency}`,
-      completedAt: new Date(),
-      // Populate top-level swap fields for frontend compatibility
-      fromCurrency: sourceCurrency,
-      toCurrency: targetCurrency,
-      fromAmount: amount,
-      toAmount: finalAmountReceived,
-      exchangeRate: finalAmountReceived / amount,
-      swapType,
-      swapCategory: 'CRYPTO_EXCHANGE',
-      swapPair: `${sourceCurrency}-${targetCurrency}`,
-      correlationId,
-      executionTimestamp: new Date(),
-      swapDirection: 'IN',
-      ...(swapType === 'CRYPTO_TO_CRYPTO' && {
-        intermediateToken: quote.intermediateToken,
-        routingPath: quote.routingPath
-      }),
-      metadata: { ...metadata, swapDirection: 'IN' }
-    });
-
-    await swapOutTransaction.save({ session });
-    await swapInTransaction.save({ session });
+    await swapTransaction.save({ session });
 
     await session.commitTransaction();
     session.endSession();
@@ -633,7 +601,7 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       },
       relatedEntities: {
         correlationId,
-        relatedTransactionIds: [swapOutTransaction._id, swapInTransaction._id]
+        relatedTransactionIds: [swapTransaction._id]
       },
       systemContext,
       timing: {
@@ -646,8 +614,7 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
 
     return {
       user: updatedUser,
-      swapOutTransaction,
-      swapInTransaction,
+      swapTransaction,
       swapId: swapReference,
       obiexResult
     };

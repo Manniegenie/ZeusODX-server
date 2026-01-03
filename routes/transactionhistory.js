@@ -48,16 +48,13 @@ function shapeTokenDetails(tx) {
     createdAt: tx.createdAt,
   };
 
-  // Add swapDetails for SWAP transactions
-  if (tx.type === 'SWAP' && tx.fromCurrency && tx.toCurrency) {
-    baseDetails.swapDetails = {
-      fromAmount: tx.fromAmount?.toString() || '',
-      fromCurrency: tx.fromCurrency || '',
-      toAmount: tx.toAmount?.toString() || '',
-      toCurrency: tx.toCurrency || '',
-      rate: tx.exchangeRate?.toString() || '',
-      exchangeRate: tx.exchangeRate?.toString() || ''
-    };
+  // Add swap fields directly for SWAP transactions
+  if (tx.type === 'SWAP') {
+    baseDetails.fromAmount = tx.fromAmount;
+    baseDetails.fromCurrency = tx.fromCurrency;
+    baseDetails.toAmount = tx.toAmount;
+    baseDetails.toCurrency = tx.toCurrency;
+    baseDetails.exchangeRate = tx.exchangeRate;
   }
 
   // Enhanced details for NGNZ withdrawals
@@ -233,20 +230,16 @@ function formatStatus(status, type = 'token') {
 }
 
 function formatAmount(amount, currency, type = '', isNegative = false) {
-  if (type === 'SWAP') {
-    const sign = amount < 0 ? '-' : '+';
-    const absAmount = Math.abs(amount);
-    if (currency === 'NGNB' || currency === 'NGNZ') {
-      return `${sign}₦${absAmount.toLocaleString()}`;
-    }
-    return `${sign}${absAmount} ${currency}`;
-  }
-  
-  const sign = isNegative ? '-' : '+';
+  const sign = isNegative ? '-' : (type === 'SWAP' && amount > 0 ? '+' : '');
+  const absAmount = Math.abs(amount);
+
   if (currency === 'NGNB' || currency === 'NGNZ') {
-    return `${sign}₦${Math.abs(amount).toLocaleString()}`;
+    return `${sign}₦${absAmount.toLocaleString()}`;
   }
-  return `${sign}${Math.abs(amount)} ${currency}`;
+
+  // For crypto, use toFixed(8) to avoid scientific notation
+  const formattedAmount = absAmount < 0.01 ? absAmount.toFixed(8) : absAmount.toString();
+  return `${sign}${formattedAmount} ${currency}`;
 }
 
 function formatDate(date) {
