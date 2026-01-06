@@ -9,6 +9,7 @@ const KYC = require("../models/kyc");
 const config = require("./config");
 const logger = require("../utils/logger");
 const { classifyOutcome } = require("../utils/kycHelpers");
+const { sendKycEmail, sendNINVerificationEmail } = require("../services/EmailService");
 
 // Youverify Configuration
 const YOUVERIFY_CONFIG = {
@@ -190,10 +191,29 @@ async function submitToYouverify({
       });
     }
 
+    // Extract verification result details
+    const verificationResult = {
+      allValidationPassed: response.data?.allValidationPassed,
+      status: response.data?.status,
+      firstName: response.data?.firstName,
+      lastName: response.data?.lastName,
+      dateOfBirth: response.data?.dateOfBirth,
+      gender: response.data?.gender,
+      idNumber: response.data?.idNumber
+    };
+
+    logger.info('Youverify verification result', {
+      jobId: partnerJobId,
+      youverifyId,
+      allValidationPassed: verificationResult.allValidationPassed,
+      status: verificationResult.status
+    });
+
     return {
       success: true,
       data: response.data,
-      youverifyId
+      youverifyId,
+      verificationResult
     };
 
   } catch (error) {
@@ -459,14 +479,78 @@ router.post(
         partnerJobId: jobId
       });
 
-      // Update KYC record with Youverify ID
+      // Process immediate verification result from Youverify
       if (youverifyResult.success && youverifyResult.youverifyId) {
-        await KYC.findByIdAndUpdate(kycDoc._id, {
-          $set: {
-            youverifyId: youverifyResult.youverifyId,
-            lastUpdated: new Date()
+        const verification = youverifyResult.verificationResult || {};
+        const kycUpdateData = {
+          youverifyId: youverifyResult.youverifyId,
+          lastUpdated: new Date()
+        };
+
+        // Check if we got an immediate verification result
+        if (verification.allValidationPassed !== undefined) {
+          // Determine status based on validation result
+          if (verification.allValidationPassed === true) {
+            kycUpdateData.status = 'APPROVED';
+            kycUpdateData.jobSuccess = true;
+            kycUpdateData.allValidationPassed = true;
+            kycUpdateData.verificationDate = new Date();
+            kycUpdateData.resultText = 'Verification successful - all validations passed';
+          } else {
+            kycUpdateData.status = 'REJECTED';
+            kycUpdateData.jobSuccess = false;
+            kycUpdateData.allValidationPassed = false;
+            kycUpdateData.resultText = 'Verification failed - incorrect data provided';
           }
-        });
+
+          // Add personal info if available
+          if (verification.firstName) kycUpdateData.firstName = verification.firstName;
+          if (verification.lastName) kycUpdateData.lastName = verification.lastName;
+          if (verification.dateOfBirth) kycUpdateData.dateOfBirth = verification.dateOfBirth;
+          if (verification.gender) kycUpdateData.gender = verification.gender;
+          if (verification.idNumber) kycUpdateData.idNumber = verification.idNumber;
+
+          logger.info("Youverify immediate result processed", {
+            kycId: kycDoc._id,
+            userId: user._id,
+            status: kycUpdateData.status,
+            allValidationPassed: verification.allValidationPassed
+          });
+        }
+
+        await KYC.findByIdAndUpdate(kycDoc._id, { $set: kycUpdateData });
+
+        // Send email notification based on verification result
+        if (verification.allValidationPassed !== undefined) {
+          try {
+            const isNIN = ['nin', 'nin_slip', 'national_id'].includes(idType.toLowerCase());
+
+            if (verification.allValidationPassed === true) {
+              // Send approval email
+              if (isNIN) {
+                await sendNINVerificationEmail(user.email, user.firstname, 'approved', user.kycLevel);
+              } else {
+                await sendKycEmail(user.email, user.firstname, 'APPROVED', 'Your identity verification has been successfully completed.');
+              }
+              logger.info('KYC approval email sent', { userId: user._id, kycId: kycDoc._id });
+            } else {
+              // Send rejection email with generic reason
+              const rejectionReason = 'Incorrect data provided. Please ensure your selfie clearly shows your face and matches your ID document.';
+              if (isNIN) {
+                await sendNINVerificationEmail(user.email, user.firstname, 'rejected', user.kycLevel);
+              } else {
+                await sendKycEmail(user.email, user.firstname, 'REJECTED', rejectionReason);
+              }
+              logger.info('KYC rejection email sent', { userId: user._id, kycId: kycDoc._id });
+            }
+          } catch (emailErr) {
+            logger.error('Failed to send KYC result email', {
+              userId: user._id,
+              kycId: kycDoc._id,
+              error: emailErr.message
+            });
+          }
+        }
       } else {
         logger.warn("Youverify submission failed", {
           kycId: kycDoc._id,
@@ -477,7 +561,7 @@ router.post(
           responseData: JSON.stringify(youverifyResult.data || {})
         });
 
-        // If Youverify submission completely fails, we might want to mark as provisional
+        // If Youverify submission completely fails, mark as provisional
         if (youverifyResult.status >= 400) {
           await KYC.findByIdAndUpdate(kycDoc._id, {
             $set: {
@@ -489,26 +573,57 @@ router.post(
         }
       }
 
-      // Update user status based on verification type
+      // Update user status based on verification result
+      const verification = youverifyResult.verificationResult || {};
+      const finalStatus = verification.allValidationPassed === true ? 'approved' :
+                         verification.allValidationPassed === false ? 'rejected' : 'pending';
+
       if (isBvnVerification) {
-        // For BVN, update bvn field and set pending status
+        // For BVN, update bvn field and status
         await User.findByIdAndUpdate(user._id, {
           $set: {
             bvn: idNumber,
-            bvnVerified: false, // Will be set to true by webhook on approval
+            bvnVerified: verification.allValidationPassed === true,
             'kyc.updatedAt': new Date(),
             'kyc.latestKycId': kycDoc._id
           }
         });
       } else {
         // For document KYC, update kyc.level2 status
-        await User.findByIdAndUpdate(user._id, {
-          $set: {
-            'kyc.status': 'pending',
-            'kyc.updatedAt': new Date(),
-            'kyc.latestKycId': kycDoc._id
+        const userUpdate = {
+          'kyc.status': finalStatus,
+          'kyc.updatedAt': new Date(),
+          'kyc.latestKycId': kycDoc._id,
+          'kyc.level2.status': finalStatus,
+          'kycStatus': finalStatus
+        };
+
+        // Add approval/rejection details
+        if (verification.allValidationPassed === true) {
+          userUpdate['kyc.level2.documentSubmitted'] = true;
+          userUpdate['kyc.level2.documentType'] = idType;
+          userUpdate['kyc.level2.documentNumber'] = idNumber;
+          userUpdate['kyc.level2.approvedAt'] = new Date();
+          userUpdate['kyc.level2.rejectionReason'] = null;
+        } else if (verification.allValidationPassed === false) {
+          userUpdate['kyc.level2.rejectionReason'] = 'Incorrect data provided. Please ensure your selfie clearly shows your face and matches your ID document.';
+        }
+
+        await User.findByIdAndUpdate(user._id, { $set: userUpdate });
+
+        // If approved, trigger the user's identity document verified hook
+        if (verification.allValidationPassed === true) {
+          try {
+            const updatedUser = await User.findById(user._id);
+            await updatedUser.onIdentityDocumentVerified(idType, idNumber);
+            logger.info('User KYC level upgraded after verification', { userId: user._id });
+          } catch (upgradeError) {
+            logger.warn('Error during KYC upgrade after verification', {
+              error: upgradeError.message,
+              userId: user._id
+            });
           }
-        });
+        }
       }
 
       // Return immediate response to frontend
