@@ -290,7 +290,21 @@ router.get('/list', async (req, res) => {
           from: 'users',
           localField: 'userId',
           foreignField: '_id',
-          as: 'user'
+          as: 'user',
+          // Only fetch necessary user fields for better performance
+          pipeline: [
+            {
+              $project: {
+                _id: 1,
+                firstname: 1,
+                lastname: 1,
+                email: 1,
+                phonenumber: 1,
+                kycLevel: 1,
+                kycStatus: 1
+              }
+            }
+          ]
         }
       },
       { $unwind: '$user' }
@@ -329,7 +343,7 @@ router.get('/list', async (req, res) => {
       { $limit: parseInt(limit) }
     );
 
-    // Project fields
+    // Project fields (exclude images for performance)
     pipeline.push({
       $project: {
         _id: 1,
@@ -350,7 +364,8 @@ router.get('/list', async (req, res) => {
         verificationDate: 1,
         createdAt: 1,
         lastUpdated: 1,
-        imageLinks: 1,
+        // Exclude imageLinks for performance (use /details endpoint to get images)
+        hasImages: { $cond: [{ $ifNull: ['$imageLinks', false] }, true, false] },
         'user._id': 1,
         'user.firstname': 1,
         'user.lastname': 1,
@@ -368,7 +383,12 @@ router.get('/list', async (req, res) => {
     const hasNextPage = parseInt(page) < totalPages;
     const hasPrevPage = parseInt(page) > 1;
 
-    logger.info('KYC entries retrieved', { total, page: parseInt(page), limit: parseInt(limit) });
+    logger.info('KYC entries retrieved', {
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      resultsCount: kycEntries.length
+    });
 
     return res.status(200).json({
       success: true,

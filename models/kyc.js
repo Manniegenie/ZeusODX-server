@@ -126,6 +126,11 @@ KYCSchema.index({ userId: 1, createdAt: -1 });
 KYCSchema.index({ userId: 1, status: 1 });
 KYCSchema.index({ idNumber: 1, status: 1 }, { sparse: true });
 
+// Admin route performance indexes
+KYCSchema.index({ status: 1, createdAt: -1 });
+KYCSchema.index({ frontendIdType: 1, createdAt: -1 });
+KYCSchema.index({ status: 1, frontendIdType: 1, createdAt: -1 });
+
 // Instance Methods
 KYCSchema.methods.isApproved = function() {
   return this.status === 'APPROVED';
