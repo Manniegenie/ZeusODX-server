@@ -542,24 +542,14 @@ router.post(
         // Send email notification based on verification result
         if (verification.allValidationPassed !== undefined) {
           try {
-            const isNIN = ['nin', 'nin_slip', 'national_id'].includes(idType.toLowerCase());
-
             if (verification.allValidationPassed === true) {
               // Send approval email
-              if (isNIN) {
-                await sendNINVerificationEmail(user.email, user.firstname, 'approved', user.kycLevel);
-              } else {
-                await sendKycEmail(user.email, user.firstname, 'APPROVED', 'Your identity verification has been successfully completed.');
-              }
+              await sendKycEmail(user.email, user.firstname, 'APPROVED', 'Your identity verification has been successfully completed.');
               logger.info('KYC approval email sent', { userId: user._id, kycId: kycDoc._id });
             } else {
               // Send rejection email with generic reason
               const rejectionReason = 'Incorrect data provided. Please ensure your selfie clearly shows your face and matches your ID document.';
-              if (isNIN) {
-                await sendNINVerificationEmail(user.email, user.firstname, 'rejected', user.kycLevel);
-              } else {
-                await sendKycEmail(user.email, user.firstname, 'REJECTED', rejectionReason);
-              }
+              await sendKycEmail(user.email, user.firstname, 'REJECTED', rejectionReason);
               logger.info('KYC rejection email sent', { userId: user._id, kycId: kycDoc._id });
             }
           } catch (emailErr) {
