@@ -191,22 +191,35 @@ async function submitToYouverify({
       });
     }
 
-    // Extract verification result details
+    // Extract verification result details from response
+    // According to Youverify docs, the structure is: response.data.data
+    const dataObj = response.data?.data || response.data;
+
+    // Extract validation messages if available
+    const validationMessages = dataObj?.validations?.validationMessages || '';
+
     const verificationResult = {
-      allValidationPassed: response.data?.allValidationPassed,
-      status: response.data?.status,
-      firstName: response.data?.firstName,
-      lastName: response.data?.lastName,
-      dateOfBirth: response.data?.dateOfBirth,
-      gender: response.data?.gender,
-      idNumber: response.data?.idNumber
+      allValidationPassed: dataObj?.allValidationPassed,
+      status: dataObj?.status,
+      firstName: dataObj?.firstName,
+      lastName: dataObj?.lastName,
+      dateOfBirth: dataObj?.dateOfBirth,
+      gender: dataObj?.gender,
+      idNumber: dataObj?.idNumber,
+      validationMessages: validationMessages,
+      // Extract selfie validation details if available
+      selfieMatch: dataObj?.validations?.selfie?.selfieVerification?.match,
+      selfieConfidence: dataObj?.validations?.selfie?.selfieVerification?.confidenceLevel
     };
 
     logger.info('Youverify verification result', {
       jobId: partnerJobId,
       youverifyId,
       allValidationPassed: verificationResult.allValidationPassed,
-      status: verificationResult.status
+      status: verificationResult.status,
+      validationMessages: validationMessages,
+      selfieMatch: verificationResult.selfieMatch,
+      hasVerificationData: verificationResult.allValidationPassed !== undefined
     });
 
     return {
@@ -500,7 +513,13 @@ router.post(
             kycUpdateData.status = 'REJECTED';
             kycUpdateData.jobSuccess = false;
             kycUpdateData.allValidationPassed = false;
+            // Use generic rejection message
             kycUpdateData.resultText = 'Verification failed - incorrect data provided';
+            // Store detailed validation messages in payload for admin review
+            if (verification.validationMessages) {
+              kycUpdateData.payload = kycUpdateData.payload || {};
+              kycUpdateData.payload.validationMessages = verification.validationMessages;
+            }
           }
 
           // Add personal info if available

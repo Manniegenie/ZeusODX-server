@@ -215,11 +215,12 @@ app.use((req, res, next) => {
 });
 
 // Raw Body Parser for Webhook Routes (including kyc-webhook)
-app.use('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+// Increased limit to 10mb for webhooks that contain base64 images
+app.use('/webhook', express.raw({ type: 'application/json', limit: '10mb' }), (req, res, next) => {
   req.rawBody = req.body.toString('utf8');
   next();
 });
-app.use('/kyc-webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+app.use('/kyc-webhook', express.raw({ type: 'application/json', limit: '10mb' }), (req, res, next) => {
   req.rawBody = req.body.toString('utf8');
   next();
 });
