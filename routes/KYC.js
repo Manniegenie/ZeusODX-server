@@ -8,6 +8,7 @@ const User = require("../models/user");
 const KYC = require("../models/kyc");
 const config = require("./config");
 const logger = require("../utils/logger");
+const { classifyOutcome } = require("../utils/kycHelpers");
 
 // Youverify Configuration
 const YOUVERIFY_CONFIG = {
@@ -63,87 +64,7 @@ const validateYouverifyConfig = () => {
   }
 };
 
-// Updated result codes to match webhook
-const APPROVED_CODES = new Set([
-  '0810', '0820', '0830', '0840', // Enhanced KYC approved
-  '1012', '1020', '1021', // Basic KYC approved
-  '1210', '1220', '1230', '1240', // Biometric KYC approved
-  '2302' // Job completed successfully
-]);
-
-const PROVISIONAL_CODES = new Set([
-  '0812', '0814', '0815', '0816', '0817', // Enhanced KYC provisional
-  '0822', '0824', '0825', // Enhanced KYC under review
-  '1212', '1213', '1214', '1215', // Biometric KYC provisional
-  '1222', '1223', '1224', '1225'  // Biometric KYC under review
-]);
-
-const REJECTED_CODES = new Set([
-  '0813', '0826', '0827', // Enhanced KYC rejected
-  '1011', '1013', '1014', '1015', '1016', // Basic KYC rejected
-  '1216', '1217', '1218', '1226', '1227', '1228' // Biometric KYC rejected
-]);
-
-// Classify outcome function (same as webhook)
-function classifyOutcome({ job_success, code, text, actions }) {
-  // First check explicit job_success flag
-  if (typeof job_success === 'boolean') {
-    return job_success ? 'APPROVED' : 'REJECTED';
-  }
-
-  // Check result codes FIRST - this is most reliable
-  const codeStr = String(code || '');
-  if (APPROVED_CODES.has(codeStr)) return 'APPROVED';
-  if (REJECTED_CODES.has(codeStr)) return 'REJECTED';
-  if (PROVISIONAL_CODES.has(codeStr)) return 'PROVISIONAL';
-
-  // More strict text-based classification - check for explicit failures first
-  const t = (text || '').toLowerCase();
-
-  // Explicit failure indicators - check these FIRST
-  if (/(fail|rejected|no.?match|unable|unsupported|error|invalid|not.?found|not.?enabled|cannot|declined)/.test(t)) {
-    return 'REJECTED';
-  }
-
-  // Provisional indicators
-  if (/(provisional|pending|awaiting|under.?review|partial.?match)/.test(t)) {
-    return 'PROVISIONAL';
-  }
-
-  // Success indicators - only after ruling out failures
-  if (/(pass|approved|verified|valid|exact.?match|enroll.?user|id.?validated|success)/.test(t)) {
-    return 'APPROVED';
-  }
-
-  // Actions-based classification
-  if (actions && typeof actions === 'object') {
-    const vals = Object.values(actions).map(v => String(v).toLowerCase());
-    const criticalActions = ['verify_id_number', 'selfie_to_id_authority_compare', 'human_review_compare'];
-
-    // Check critical actions first
-    const criticalFailed = criticalActions.some(action => {
-      const actionValue = actions[action] || actions[action.replace(/_/g, '_')];
-      return actionValue && /(fail|rejected|unable|not.applicable)/.test(String(actionValue).toLowerCase());
-    });
-
-    if (criticalFailed) return 'REJECTED';
-
-    // Check all actions
-    const anyFail = vals.some(v => /(fail|rejected|unable)/.test(v));
-    const mostPass = vals.filter(v => /(pass|approved|verified|returned|completed)/.test(v)).length > vals.length / 2;
-
-    if (anyFail && !mostPass) return 'REJECTED';
-    if (mostPass) return 'APPROVED';
-  }
-
-  // Default to REJECTED for unknown cases (security-first approach)
-  logger.warn('Unknown verification outcome - defaulting to REJECTED', {
-    code: codeStr,
-    text: t,
-    job_success
-  });
-  return 'REJECTED';
-}
+// Classification logic now in utils/kycHelpers.js
 
 /**
  * Submit verification request to Youverify API
