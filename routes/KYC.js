@@ -127,10 +127,15 @@ async function submitToYouverify({
 
     // Add selfie validation if image provided
     if (selfieImage) {
-      // Remove base64 prefix if present
-      const base64Image = selfieImage.replace(/^data:image\/\w+;base64,/, '');
+      // Youverify expects a data URI, not raw base64
+      // If it already has the data URI prefix, use as-is
+      // Otherwise, add the data URI prefix (default to JPEG)
+      let imageUri = selfieImage;
+      if (!selfieImage.startsWith('data:image/')) {
+        imageUri = `data:image/jpeg;base64,${selfieImage}`;
+      }
       validations.selfie = {
-        image: base64Image
+        image: imageUri
       };
     }
 
