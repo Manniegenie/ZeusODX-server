@@ -144,10 +144,21 @@ async function submitToYouverify({
     }
 
     logger.info('Youverify API request', {
+      endpoint: apiUrl,
       idType,
+      idNumber: idNumber,
       hasData: !!validations.data,
       hasSelfie: !!validations.selfie,
-      jobId: partnerJobId
+      hasFirstName: !!firstName,
+      hasLastName: !!lastName,
+      hasDob: !!dob,
+      jobId: partnerJobId,
+      payloadStructure: {
+        hasId: !!payload.id,
+        hasValidations: !!payload.validations,
+        validationKeys: Object.keys(validations),
+        dataValidationKeys: validations.data ? Object.keys(validations.data) : []
+      }
     });
 
     // Make API request to Youverify
@@ -160,24 +171,38 @@ async function submitToYouverify({
       timeout: 30000 // 30 second timeout
     });
 
+    // Log detailed response for debugging
     logger.info('Youverify response', {
       status: response.status,
       success: !!response.data?.id,
-      jobId: partnerJobId
+      jobId: partnerJobId,
+      responseData: JSON.stringify(response.data) // Full response body
     });
+
+    // Check if we got a Youverify ID
+    const youverifyId = response.data?.id || response.data?.data?.id;
+    if (!youverifyId) {
+      logger.warn('Youverify returned no ID', {
+        jobId: partnerJobId,
+        responseStatus: response.status,
+        responseBody: JSON.stringify(response.data),
+        message: response.data?.message || 'No message provided'
+      });
+    }
 
     return {
       success: true,
       data: response.data,
-      youverifyId: response.data?.id || response.data?.data?.id
+      youverifyId
     };
 
   } catch (error) {
     logger.error('Youverify API error', {
       message: error.message,
       status: error.response?.status,
-      error: error.response?.data,
-      jobId: partnerJobId
+      errorData: JSON.stringify(error.response?.data || {}),
+      jobId: partnerJobId,
+      endpoint: apiUrl
     });
 
     // Return error details
@@ -445,7 +470,11 @@ router.post(
       } else {
         logger.warn("Youverify submission failed", {
           kycId: kycDoc._id,
-          status: youverifyResult.status
+          userId: user._id,
+          status: youverifyResult.status,
+          error: JSON.stringify(youverifyResult.error),
+          hasYouverifyId: !!youverifyResult.youverifyId,
+          responseData: JSON.stringify(youverifyResult.data || {})
         });
 
         // If Youverify submission completely fails, we might want to mark as provisional

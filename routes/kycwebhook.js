@@ -148,7 +148,11 @@ router.post('/callback', async (req, res) => {
       youverifyId: norm.youverifyId,
       partnerJobId: norm.partnerJobId,
       idType: norm.idType,
-      status: norm.status
+      status: norm.status,
+      allValidationPassed: norm.allValidationPassed,
+      jobSuccess: norm.jobSuccess,
+      reason: norm.reason,
+      fullPayload: JSON.stringify(req.body)
     });
 
     // 3. Find KYC Record - IMPROVED MATCHING
