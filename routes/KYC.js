@@ -272,49 +272,86 @@ router.post(
       const isBvnVerification = idType === 'bvn';
 
       if (isBvnVerification) {
-        // Check for existing pending BVN verification
-        const existingPendingBvn = await KYC.findOne({
+        // Check for existing BVN verification (pending OR approved)
+        const existingBvn = await KYC.findOne({
           userId: user._id,
           frontendIdType: 'bvn',
-          status: 'PENDING'
-        });
-        if (existingPendingBvn) {
-          logger.info("BVN verification already in progress", {
-            userId: user._id,
-            kycId: existingPendingBvn._id
-          });
-          return res.status(400).json({
-            success: false,
-            message: "BVN verification already in progress",
-            data: {
-              kycId: existingPendingBvn._id,
-              status: existingPendingBvn.status,
-              submittedAt: existingPendingBvn.createdAt
-            }
-          });
+          status: { $in: ['PENDING', 'PROVISIONAL', 'APPROVED'] }
+        }).sort({ createdAt: -1 });
+
+        if (existingBvn) {
+          if (existingBvn.status === 'APPROVED') {
+            logger.info("BVN already verified", {
+              userId: user._id,
+              kycId: existingBvn._id
+            });
+            return res.status(400).json({
+              success: false,
+              message: "BVN already verified",
+              data: {
+                kycId: existingBvn._id,
+                status: existingBvn.status,
+                verifiedAt: existingBvn.verificationDate
+              }
+            });
+          } else {
+            logger.info("BVN verification already in progress", {
+              userId: user._id,
+              kycId: existingBvn._id
+            });
+            return res.status(400).json({
+              success: false,
+              message: "BVN verification already in progress. Please wait for the current verification to complete.",
+              data: {
+                kycId: existingBvn._id,
+                status: existingBvn.status,
+                submittedAt: existingBvn.createdAt
+              }
+            });
+          }
         }
       } else {
-        // Check for existing pending document KYC (NIN, Passport, Driver's License)
-        const existingPendingKyc = await KYC.findOne({
+        // Check for existing document KYC (pending OR approved)
+        const existingKyc = await KYC.findOne({
           userId: user._id,
           frontendIdType: { $in: ['national_id', 'passport', 'drivers_license', 'nin', 'nin_slip', 'voter_id'] },
-          status: 'PENDING'
-        });
-        if (existingPendingKyc) {
-          logger.info("KYC verification already in progress", {
-            userId: user._id,
-            kycId: existingPendingKyc._id,
-            type: existingPendingKyc.frontendIdType
-          });
-          return res.status(400).json({
-            success: false,
-            message: "KYC verification already in progress",
-            data: {
-              kycId: existingPendingKyc._id,
-              status: existingPendingKyc.status,
-              submittedAt: existingPendingKyc.createdAt
-            }
-          });
+          status: { $in: ['PENDING', 'PROVISIONAL', 'APPROVED'] }
+        }).sort({ createdAt: -1 });
+
+        if (existingKyc) {
+          if (existingKyc.status === 'APPROVED') {
+            logger.info("KYC already verified", {
+              userId: user._id,
+              kycId: existingKyc._id,
+              type: existingKyc.frontendIdType
+            });
+            return res.status(400).json({
+              success: false,
+              message: "Identity document already verified",
+              data: {
+                kycId: existingKyc._id,
+                status: existingKyc.status,
+                idType: existingKyc.frontendIdType,
+                verifiedAt: existingKyc.verificationDate
+              }
+            });
+          } else {
+            logger.info("KYC verification already in progress", {
+              userId: user._id,
+              kycId: existingKyc._id,
+              type: existingKyc.frontendIdType
+            });
+            return res.status(400).json({
+              success: false,
+              message: "KYC verification already in progress. Please wait for the current verification to complete.",
+              data: {
+                kycId: existingKyc._id,
+                status: existingKyc.status,
+                idType: existingKyc.frontendIdType,
+                submittedAt: existingKyc.createdAt
+              }
+            });
+          }
         }
       }
 
@@ -348,26 +385,59 @@ router.post(
       }
 
       // Generate unique job ID
-      const jobId = `${user._id}_${Date.now()}`;
+      const jobId = `${user._id}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
-      // Create pending KYC record
-      const kycDoc = await KYC.create({
-        userId: user._id,
-        provider: 'youverify',
-        environment: process.env.NODE_ENV || 'development',
-        partnerJobId: jobId,
-        jobType: 1,
-        status: 'PENDING',
-        idType: youverifyIdType,
-        frontendIdType: idType,
-        idNumber,
-        createdAt: new Date(),
-        lastUpdated: new Date(),
-        imageLinks: {
-          selfie_image: selfieImage,
-          liveness_images: livenessImages || []
+      // Create pending KYC record (with race condition protection via unique index)
+      let kycDoc;
+      try {
+        kycDoc = await KYC.create({
+          userId: user._id,
+          provider: 'youverify',
+          environment: process.env.NODE_ENV || 'development',
+          partnerJobId: jobId,
+          jobType: 1,
+          status: 'PENDING',
+          idType: youverifyIdType,
+          frontendIdType: idType,
+          idNumber,
+          createdAt: new Date(),
+          lastUpdated: new Date(),
+          imageLinks: {
+            selfie_image: selfieImage,
+            liveness_images: livenessImages || []
+          }
+        });
+      } catch (dbError) {
+        // If duplicate key error (race condition), find the existing record
+        if (dbError.code === 11000) {
+          logger.warn("Duplicate KYC submission detected (race condition)", {
+            userId: user._id,
+            idType,
+            error: dbError.message
+          });
+
+          const existing = await KYC.findOne({
+            userId: user._id,
+            frontendIdType: idType,
+            status: { $in: ['PENDING', 'PROVISIONAL', 'APPROVED'] }
+          }).sort({ createdAt: -1 });
+
+          if (existing) {
+            return res.status(400).json({
+              success: false,
+              message: "Verification already submitted. Please wait for processing.",
+              data: {
+                kycId: existing._id,
+                status: existing.status,
+                submittedAt: existing.createdAt
+              }
+            });
+          }
         }
-      });
+
+        // Re-throw other database errors
+        throw dbError;
+      }
 
       // Submit verification to Youverify API
       logger.info("Submitting to Youverify API", { userId: user._id, jobId, idType });
