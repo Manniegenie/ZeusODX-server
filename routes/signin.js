@@ -137,10 +137,16 @@ router.post(
       user.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
       if (user.refreshTokens.length > 5) user.refreshTokens = user.refreshTokens.slice(-5);
 
+      // Check if we should send login email (15 min cooldown)
+      const shouldEmailLogin = user.email && user.shouldSendLoginEmail();
+      if (shouldEmailLogin) {
+        user.lastLoginEmailSent = new Date();
+      }
+
       await user.save();
 
       // Fire-and-forget login email (doesn't block response)
-      if (user.email) {
+      if (shouldEmailLogin) {
         const deviceInfo = req.get('User-Agent') || 'Unknown device';
         const clientIP = (req.headers['x-forwarded-for']?.split(',')[0]?.trim())
           || req.ip
@@ -156,22 +162,15 @@ router.post(
           locationInfo,
           loginTime
         ).then(() => {
-          logger.info('Login notification email sent', {
+          logger.info('Login email sent', {
             userId: user._id,
-            email: user.email,
             ip: clientIP
           });
         }).catch((emailError) => {
-          logger.error('Failed to send login notification email', {
+          logger.error('Login email failed', {
             userId: user._id,
-            email: user.email,
             error: emailError.message
           });
-        });
-      } else {
-        logger.warn('User has no email on record for login notification', {
-          userId: user._id,
-          phonenumber
         });
       }
 
