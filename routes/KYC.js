@@ -82,7 +82,6 @@ async function submitToYouverify({
   partnerJobId
 }) {
   try {
-    logger.info('Submitting verification to Youverify', { idType, userId, partnerJobId });
 
     // Map idType to Youverify-specific endpoint paths
     const endpointMap = {
@@ -145,14 +144,10 @@ async function submitToYouverify({
     }
 
     logger.info('Youverify API request', {
-      endpoint: apiUrl,
       idType,
-      hasDataValidation: !!validations.data,
-      hasSelfieValidation: !!validations.selfie,
-      partnerJobId,
-      hasApiKey: !!YOUVERIFY_CONFIG.publicMerchantKey,
-      apiKeyLength: YOUVERIFY_CONFIG.publicMerchantKey?.length,
-      apiKeyPrefix: YOUVERIFY_CONFIG.publicMerchantKey?.substring(0, 10) + '...'
+      hasData: !!validations.data,
+      hasSelfie: !!validations.selfie,
+      jobId: partnerJobId
     });
 
     // Make API request to Youverify
@@ -165,10 +160,10 @@ async function submitToYouverify({
       timeout: 30000 // 30 second timeout
     });
 
-    logger.info('Youverify API response received', {
+    logger.info('Youverify response', {
       status: response.status,
-      data: response.data,
-      partnerJobId
+      success: !!response.data?.id,
+      jobId: partnerJobId
     });
 
     return {
@@ -180,12 +175,9 @@ async function submitToYouverify({
   } catch (error) {
     logger.error('Youverify API error', {
       message: error.message,
-      response: error.response?.data,
-      responseHeaders: error.response?.headers,
       status: error.response?.status,
-      requestUrl: error.config?.url,
-      requestHeaders: error.config?.headers,
-      partnerJobId
+      error: error.response?.data,
+      jobId: partnerJobId
     });
 
     // Return error details
@@ -245,10 +237,6 @@ router.post(
   ],
   async (req, res) => {
     const startTime = Date.now();
-    logger.info("Biometric verification request initiated", {
-      userId: req.user.id,
-      idType: req.body.idType
-    });
 
     // Validate input
     const errors = validationResult(req);
@@ -293,10 +281,6 @@ router.post(
 
         if (existingBvn) {
           if (existingBvn.status === 'APPROVED') {
-            logger.info("BVN already verified", {
-              userId: user._id,
-              kycId: existingBvn._id
-            });
             return res.status(400).json({
               success: false,
               message: "BVN already verified",
@@ -307,10 +291,6 @@ router.post(
               }
             });
           } else {
-            logger.info("BVN verification already in progress", {
-              userId: user._id,
-              kycId: existingBvn._id
-            });
             return res.status(400).json({
               success: false,
               message: "BVN verification already in progress. Please wait for the current verification to complete.",
@@ -332,11 +312,6 @@ router.post(
 
         if (existingKyc) {
           if (existingKyc.status === 'APPROVED') {
-            logger.info("KYC already verified", {
-              userId: user._id,
-              kycId: existingKyc._id,
-              type: existingKyc.frontendIdType
-            });
             return res.status(400).json({
               success: false,
               message: "Identity document already verified",
@@ -348,11 +323,6 @@ router.post(
               }
             });
           } else {
-            logger.info("KYC verification already in progress", {
-              userId: user._id,
-              kycId: existingKyc._id,
-              type: existingKyc.frontendIdType
-            });
             return res.status(400).json({
               success: false,
               message: "KYC verification already in progress. Please wait for the current verification to complete.",
@@ -452,7 +422,6 @@ router.post(
       }
 
       // Submit verification to Youverify API
-      logger.info("Submitting to Youverify API", { userId: user._id, jobId, idType });
 
       const youverifyResult = await submitToYouverify({
         idType: youverifyIdType,
@@ -473,15 +442,9 @@ router.post(
             lastUpdated: new Date()
           }
         });
-        logger.info("Youverify submission successful", {
-          kycId: kycDoc._id,
-          youverifyId: youverifyResult.youverifyId
-        });
       } else {
-        // Log error but don't fail the request - webhook might still work
-        logger.warn("Youverify API submission failed, but KYC record created", {
+        logger.warn("Youverify submission failed", {
           kycId: kycDoc._id,
-          error: youverifyResult.error,
           status: youverifyResult.status
         });
 
@@ -520,13 +483,11 @@ router.post(
       }
 
       // Return immediate response to frontend
-      logger.info("Biometric verification submitted successfully", {
+      logger.info("KYC submitted", {
         userId: user._id,
-        jobId,
         kycId: kycDoc._id,
-        idType,
-        verificationType: isBvnVerification ? 'BVN' : 'Document KYC',
-        processingTime: Date.now() - startTime
+        type: isBvnVerification ? 'BVN' : idType,
+        time: `${Date.now() - startTime}ms`
       });
 
       const successMessage = isBvnVerification
@@ -550,11 +511,9 @@ router.post(
       });
 
     } catch (error) {
-      logger.error("Error during biometric verification submission", {
+      logger.error("KYC submission error", {
         userId: req.user.id,
-        error: error.message,
-        stack: error.stack,
-        processingTime: Date.now() - startTime
+        error: error.message
       });
 
       // Handle specific Youverify errors
