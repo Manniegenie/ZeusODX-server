@@ -144,14 +144,18 @@ async function submitToYouverify({
       idType,
       hasDataValidation: !!validations.data,
       hasSelfieValidation: !!validations.selfie,
-      partnerJobId
+      partnerJobId,
+      hasApiKey: !!YOUVERIFY_CONFIG.publicMerchantKey,
+      apiKeyLength: YOUVERIFY_CONFIG.publicMerchantKey?.length,
+      apiKeyPrefix: YOUVERIFY_CONFIG.publicMerchantKey?.substring(0, 10) + '...'
     });
 
     // Make API request to Youverify
+    // Note: Youverify v2 API uses capitalized 'Token' header with API key (NOT public merchant key)
     const response = await axios.post(apiUrl, payload, {
       headers: {
         'Content-Type': 'application/json',
-        'token': YOUVERIFY_CONFIG.publicMerchantKey // Note: lowercase 'token' per docs
+        'Token': YOUVERIFY_CONFIG.secretKey || YOUVERIFY_CONFIG.publicMerchantKey
       },
       timeout: 30000 // 30 second timeout
     });
@@ -172,7 +176,10 @@ async function submitToYouverify({
     logger.error('Youverify API error', {
       message: error.message,
       response: error.response?.data,
+      responseHeaders: error.response?.headers,
       status: error.response?.status,
+      requestUrl: error.config?.url,
+      requestHeaders: error.config?.headers,
       partnerJobId
     });
 
