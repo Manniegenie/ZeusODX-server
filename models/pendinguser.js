@@ -3,12 +3,13 @@ const mongoose = require('mongoose');
 const pendingUserSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   firstname: { type: String, required: true },
+  middlename: { type: String, default: '' },
   lastname: { type: String, required: true },
   phonenumber: { type: String, required: true, unique: true },
   verificationCode: { type: String, required: true },
   verificationCodeCreatedAt: { type: Date, required: true },
   verificationCodeExpiresAt: { type: Date, required: true, index: { expires: 0 } }, // TTL index
-  
+
   // OTP verification status fields
   otpVerified: { type: Boolean, default: false },
   otpVerifiedAt: { type: Date, default: null }

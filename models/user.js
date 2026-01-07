@@ -30,6 +30,7 @@ const userSchema = new mongoose.Schema({
 
   // Personal Info
   firstname: { type: String },
+  middlename: { type: String, default: '' },
   lastname: { type: String },
   phonenumber: { type: String },
   bvn: { type: String },
@@ -185,6 +186,9 @@ userSchema.index({ kycLevel: 1, kycStatus: 1 });
 // Virtuals
 userSchema.virtual('id').get(function () { return this._id.toHexString(); });
 userSchema.virtual('fullName').get(function () {
+  if (this.firstname && this.middlename && this.lastname) {
+    return `${this.firstname} ${this.middlename} ${this.lastname}`;
+  }
   return this.firstname && this.lastname ? `${this.firstname} ${this.lastname}` : this.firstname || this.lastname || '';
 });
 

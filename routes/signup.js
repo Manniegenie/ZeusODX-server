@@ -24,7 +24,7 @@ function sanitizeInput(input) {
 
 // POST: /add-user
 router.post('/add-user', async (req, res) => {
-  let { email, firstname, lastname, phonenumber } = req.body;
+  let { email, firstname, middlename, lastname, phonenumber } = req.body;
 
   // Validate presence of all required fields
   if (!email || !firstname || !lastname || !phonenumber) {
@@ -35,6 +35,7 @@ router.post('/add-user', async (req, res) => {
   // Sanitize inputs
   email = sanitizeInput(email.toLowerCase());
   firstname = sanitizeInput(firstname);
+  middlename = middlename ? sanitizeInput(middlename) : '';
   lastname = sanitizeInput(lastname);
   phonenumber = sanitizeInput(phonenumber);
 
@@ -93,6 +94,7 @@ router.post('/add-user', async (req, res) => {
     const pendingUser = new PendingUser({
       email,
       firstname,
+      middlename,
       lastname,
       phonenumber, // Store original format
       verificationCode: otp,
@@ -105,7 +107,7 @@ router.post('/add-user', async (req, res) => {
 
     // Send welcome email (non-blocking - don't fail signup if email fails)
     try {
-      const fullName = `${firstname} ${lastname}`;
+      const fullName = middlename ? `${firstname} ${middlename} ${lastname}` : `${firstname} ${lastname}`;
       const emailResult = await sendSignupEmail(email, fullName);
       logger.info('Welcome email sent successfully', { 
         email: email.slice(0, 3) + '****',

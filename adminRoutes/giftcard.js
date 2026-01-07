@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
+const GiftCard = require('../models/giftcard');
 const GiftCardPrice = require('../models/giftcardPrice');
+const User = require('../models/user');
+const Transaction = require('../models/transaction');
 const logger = require('../utils/logger');
+const validator = require('validator');
 
 // Validation function for rate data (updated for NGN rates)
 function validateRateData(data) {
@@ -545,6 +549,367 @@ router.get('/rates', async (req, res) => {
       success: false,
       message: 'Failed to fetch gift card rates'
     });
+  }
+});
+
+// ==================== GIFT CARD SUBMISSION REVIEW ENDPOINTS ====================
+
+// GET /admin/giftcard/submissions - List all gift card submissions with filtering
+router.get('/submissions', async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      cardType,
+      country,
+      searchTerm,
+      dateFrom,
+      dateTo,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Build filter object
+    const filter = {};
+
+    if (status) {
+      filter.status = status.toUpperCase();
+    }
+
+    if (cardType) {
+      filter.cardType = cardType.toUpperCase();
+    }
+
+    if (country) {
+      filter.country = country.toUpperCase();
+    }
+
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) {
+        filter.createdAt.$gte = new Date(dateFrom);
+      }
+      if (dateTo) {
+        filter.createdAt.$lte = new Date(dateTo);
+      }
+    }
+
+    // Build aggregation pipeline
+    const pipeline = [
+      { $match: filter },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'user',
+          pipeline: [
+            {
+              $project: {
+                _id: 1,
+                firstname: 1,
+                lastname: 1,
+                email: 1,
+                phonenumber: 1,
+                username: 1
+              }
+            }
+          ]
+        }
+      },
+      { $unwind: '$user' }
+    ];
+
+    // Add search functionality
+    if (searchTerm) {
+      pipeline.push({
+        $match: {
+          $or: [
+            { eCode: { $regex: searchTerm, $options: 'i' } },
+            { cardRange: { $regex: searchTerm, $options: 'i' } },
+            { 'user.firstname': { $regex: searchTerm, $options: 'i' } },
+            { 'user.lastname': { $regex: searchTerm, $options: 'i' } },
+            { 'user.email': { $regex: searchTerm, $options: 'i' } },
+            { 'user.phonenumber': { $regex: searchTerm, $options: 'i' } }
+          ]
+        }
+      });
+    }
+
+    // Add sorting
+    const sortObj = {};
+    sortObj[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    pipeline.push({ $sort: sortObj });
+
+    // Get total count
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const totalResult = await GiftCard.aggregate(countPipeline);
+    const total = totalResult.length > 0 ? totalResult[0].total : 0;
+
+    // Add pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    pipeline.push(
+      { $skip: skip },
+      { $limit: parseInt(limit) }
+    );
+
+    const submissions = await GiftCard.aggregate(pipeline);
+
+    // Calculate pagination
+    const totalPages = Math.ceil(total / parseInt(limit));
+    const hasNextPage = parseInt(page) < totalPages;
+    const hasPrevPage = parseInt(page) > 1;
+
+    logger.info('Gift card submissions retrieved', {
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      resultsCount: submissions.length
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        submissions,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages,
+          total,
+          hasNextPage,
+          hasPrevPage,
+          limit: parseInt(limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error retrieving gift card submissions', { error: error.message, stack: error.stack });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// GET /admin/giftcard/submissions/:id - Get gift card submission details
+router.get('/submissions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!validator.isMongoId(id)) {
+      return res.status(400).json({ success: false, error: 'Valid submission ID is required.' });
+    }
+
+    const submission = await GiftCard.findById(id)
+      .populate('userId', 'firstname lastname email phonenumber username createdAt')
+      .populate('giftCardRateId')
+      .populate('transactionId');
+
+    if (!submission) {
+      return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: { submission }
+    });
+
+  } catch (error) {
+    logger.error('Error retrieving gift card submission details', { error: error.message });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST /admin/giftcard/submissions/:id/approve - Approve gift card submission and fund user
+router.post('/submissions/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvedValue, paymentRate, notes } = req.body;
+
+    if (!validator.isMongoId(id)) {
+      return res.status(400).json({ success: false, error: 'Valid submission ID is required.' });
+    }
+
+    const submission = await GiftCard.findById(id).populate('userId');
+    if (!submission) {
+      return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
+    }
+
+    if (submission.status !== 'PENDING' && submission.status !== 'REVIEWING') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot approve submission with status: ${submission.status}`
+      });
+    }
+
+    const now = new Date();
+
+    // Calculate payment amount
+    const finalApprovedValue = approvedValue || submission.cardValue;
+    const finalPaymentRate = paymentRate || submission.expectedRate;
+    const paymentAmount = finalApprovedValue * finalPaymentRate;
+
+    // Update submission
+    submission.status = 'APPROVED';
+    submission.approvedValue = finalApprovedValue;
+    submission.paymentRate = finalPaymentRate;
+    submission.paymentAmount = paymentAmount;
+    submission.reviewedAt = now;
+    submission.reviewNotes = notes || null;
+
+    await submission.save();
+
+    // Create and process transaction to fund user
+    const transaction = await Transaction.create({
+      userId: submission.userId._id,
+      type: 'GIFTCARD_PAYOUT',
+      currency: 'NGN',
+      amount: paymentAmount,
+      status: 'SUCCESSFUL',
+      description: `Gift card approved: ${submission.cardType} ${submission.cardFormat}`,
+      metadata: {
+        giftCardId: submission._id,
+        cardType: submission.cardType,
+        cardValue: finalApprovedValue,
+        paymentRate: finalPaymentRate,
+        approvedBy: 'admin'
+      }
+    });
+
+    // Update submission with transaction reference
+    submission.transactionId = transaction._id;
+    submission.paidAt = now;
+    submission.status = 'PAID';
+    await submission.save();
+
+    // Fund user's NGNZ balance
+    const user = await User.findById(submission.userId._id);
+    if (!user.ngnzBalance) {
+      user.ngnzBalance = 0;
+    }
+    user.ngnzBalance += paymentAmount;
+    await user.save();
+
+    logger.info('Gift card submission approved and user funded', {
+      submissionId: id,
+      userId: submission.userId._id,
+      paymentAmount,
+      ngnzBalance: user.ngnzBalance,
+      transactionId: transaction._id
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Gift card approved and user funded successfully.',
+      data: {
+        submissionId: submission._id,
+        status: submission.status,
+        paymentAmount,
+        transactionId: transaction._id,
+        userBalance: user.ngnzBalance
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error approving gift card submission', { error: error.message, stack: error.stack });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST /admin/giftcard/submissions/:id/reject - Reject gift card submission
+router.post('/submissions/:id/reject', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rejectionReason, notes } = req.body;
+
+    if (!validator.isMongoId(id)) {
+      return res.status(400).json({ success: false, error: 'Valid submission ID is required.' });
+    }
+
+    if (!rejectionReason) {
+      return res.status(400).json({ success: false, error: 'Rejection reason is required.' });
+    }
+
+    const validReasons = ['INVALID_IMAGE', 'ALREADY_USED', 'INSUFFICIENT_BALANCE', 'FAKE_CARD', 'UNREADABLE', 'WRONG_TYPE', 'EXPIRED', 'INVALID_ECODE', 'DUPLICATE_ECODE', 'OTHER'];
+    if (!validReasons.includes(rejectionReason)) {
+      return res.status(400).json({ success: false, error: 'Invalid rejection reason.' });
+    }
+
+    const submission = await GiftCard.findById(id);
+    if (!submission) {
+      return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
+    }
+
+    if (submission.status !== 'PENDING' && submission.status !== 'REVIEWING') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot reject submission with status: ${submission.status}`
+      });
+    }
+
+    // Update submission
+    submission.status = 'REJECTED';
+    submission.rejectionReason = rejectionReason;
+    submission.reviewNotes = notes || null;
+    submission.reviewedAt = new Date();
+
+    await submission.save();
+
+    logger.info('Gift card submission rejected', {
+      submissionId: id,
+      userId: submission.userId,
+      rejectionReason
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Gift card submission rejected successfully.',
+      data: {
+        submissionId: submission._id,
+        status: submission.status,
+        rejectionReason
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error rejecting gift card submission', { error: error.message, stack: error.stack });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+// POST /admin/giftcard/submissions/:id/review - Mark submission as under review
+router.post('/submissions/:id/review', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!validator.isMongoId(id)) {
+      return res.status(400).json({ success: false, error: 'Valid submission ID is required.' });
+    }
+
+    const submission = await GiftCard.findById(id);
+    if (!submission) {
+      return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
+    }
+
+    if (submission.status !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot mark submission as reviewing with status: ${submission.status}`
+      });
+    }
+
+    submission.status = 'REVIEWING';
+    await submission.save();
+
+    logger.info('Gift card submission marked as reviewing', { submissionId: id });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Gift card submission marked as under review.',
+      data: { submissionId: submission._id, status: submission.status }
+    });
+
+  } catch (error) {
+    logger.error('Error marking gift card as reviewing', { error: error.message });
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
 

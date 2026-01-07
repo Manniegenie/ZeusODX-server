@@ -106,11 +106,12 @@ router.post('/password-pin', async (req, res) => {
     
     // Create user document with KYC Level 1
     // Only use fields that exist in pendingUser model
-    const { 
-      email, 
-      firstname, 
-      lastname, 
-      phonenumber 
+    const {
+      email,
+      firstname,
+      middlename,
+      lastname,
+      phonenumber
     } = pendingUser;
 
     // Generate unique username from first name (placeholder - can be changed once via username endpoint)
@@ -119,6 +120,7 @@ router.post('/password-pin', async (req, res) => {
     const userFields = {
       email,
       firstname,
+      middlename,
       lastname,
       phonenumber,
       username: generatedUsername, // Auto-generated placeholder (can be changed once via username endpoint)
@@ -325,6 +327,7 @@ router.post('/password-pin', async (req, res) => {
         email: newUser.email,
         phonenumber: newUser.phonenumber,
         firstname: newUser.firstname,
+        middlename: newUser.middlename,
         lastname: newUser.lastname,
         username: newUser.username, // Now includes generated username
         kycLevel: newUser.kycLevel,

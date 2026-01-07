@@ -44,6 +44,7 @@ router.post("/verify-otp", async (req, res) => {
       pendingUserId: pendingUser._id,
       email: pendingUser.email,
       firstname: pendingUser.firstname,
+      middlename: pendingUser.middlename,
       lastname: pendingUser.lastname,
       phonenumber: pendingUser.phonenumber
     });
