@@ -155,45 +155,58 @@ router.post(
       // Reset login attempts on successful authentication
       await admin.resetLoginAttempts();
 
-      // Check if 2FA is enabled for this admin
-      if (admin.is2FAEnabled && admin.is2FAVerified && admin.twoFASecret) {
-        if (!twoFAToken) {
-          logger.info("2FA token required for admin sign-in", {
-            adminId: admin._id,
-            email: admin.email
-          });
-          return res.status(200).json({
-            success: true,
-            requires2FA: true,
-            message: "2FA token required. Please provide your 6-digit authentication code.",
-            adminId: admin._id
-          });
-        }
-
-        // Verify 2FA token
-        const verified = speakeasy.totp.verify({
-          secret: admin.twoFASecret,
-          encoding: 'base32',
-          token: twoFAToken,
-          window: 2, // Allow for clock drift
+      // Check if 2FA is set up
+      if (!admin.is2FAEnabled || !admin.is2FAVerified || !admin.twoFASecret) {
+        logger.info("2FA not set up for admin, requiring setup", {
+          adminId: admin._id,
+          email: admin.email
         });
-
-        if (!verified) {
-          logger.warn("Invalid 2FA token during admin sign-in", {
-            adminId: admin._id,
-            email: admin.email
-          });
-          return res.status(401).json({
-            success: false,
-            message: "Invalid 2FA token. Please check your authenticator app and try again."
-          });
-        }
-
-        logger.info("2FA verification successful during admin sign-in", {
+        return res.status(200).json({
+          success: true,
+          requires2FASetup: true,
+          message: "Two-factor authentication is required. Please set up 2FA to continue.",
           adminId: admin._id,
           email: admin.email
         });
       }
+
+      // 2FA is enabled, check if token is provided
+      if (!twoFAToken) {
+        logger.info("2FA token required for admin sign-in", {
+          adminId: admin._id,
+          email: admin.email
+        });
+        return res.status(200).json({
+          success: true,
+          requires2FA: true,
+          message: "2FA token required. Please provide your 6-digit authentication code.",
+          adminId: admin._id
+        });
+      }
+
+      // Verify 2FA token
+      const verified = speakeasy.totp.verify({
+        secret: admin.twoFASecret,
+        encoding: 'base32',
+        token: twoFAToken,
+        window: 2, // Allow for clock drift
+      });
+
+      if (!verified) {
+        logger.warn("Invalid 2FA token during admin sign-in", {
+          adminId: admin._id,
+          email: admin.email
+        });
+        return res.status(401).json({
+          success: false,
+          message: "Invalid 2FA token. Please check your authenticator app and try again."
+        });
+      }
+
+      logger.info("2FA verification successful during admin sign-in", {
+        adminId: admin._id,
+        email: admin.email
+      });
 
       // Validate JWT configuration
       let adminJwtSecrets;
