@@ -49,11 +49,22 @@ router.post('/setup-2fa', async (req, res) => {
     await admin.save();
 
     const otpAuthUrl = secret.otpauth_url;
-    const qrCodeDataURL = await qrcode.toDataURL(otpAuthUrl);
 
-    logger.info('Admin 2FA setup initiated', { 
-      adminId: admin._id, 
-      email: admin.email 
+    // Generate QR code with explicit settings to avoid rendering issues
+    const qrCodeDataURL = await qrcode.toDataURL(otpAuthUrl, {
+      errorCorrectionLevel: 'M',
+      type: 'image/png',
+      width: 300,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+      }
+    });
+
+    logger.info('Admin 2FA setup initiated', {
+      adminId: admin._id,
+      email: admin.email
     });
 
     res.json({
