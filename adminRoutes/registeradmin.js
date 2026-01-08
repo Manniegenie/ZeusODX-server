@@ -4,6 +4,7 @@ const router = express.Router();
 
 const AdminUser = require("../models/admin");
 const logger = require("../utils/logger");
+const { sendAdminWelcomeEmail } = require("../services/EmailService");
 
 // POST: /admin/register - Register new admin
 router.post(
@@ -89,10 +90,26 @@ router.post(
         timestamp: new Date().toISOString()
       });
 
+      // Send welcome email with 2FA setup link
+      try {
+        await sendAdminWelcomeEmail(newAdmin.email, newAdmin.adminName, newAdmin.role);
+        logger.info("Admin welcome email sent", {
+          adminId: newAdmin._id,
+          email: newAdmin.email
+        });
+      } catch (emailError) {
+        // Log email error but don't fail registration
+        logger.error("Failed to send admin welcome email", {
+          adminId: newAdmin._id,
+          email: newAdmin.email,
+          error: emailError.message
+        });
+      }
+
       // Return success response (excluding sensitive data)
       res.status(201).json({
         success: true,
-        message: "Admin registered successfully.",
+        message: "Admin registered successfully. A welcome email with 2FA setup instructions has been sent.",
         data: {
           adminId: newAdmin._id,
           adminName: newAdmin.adminName,

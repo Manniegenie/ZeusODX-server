@@ -1,5 +1,6 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
+const speakeasy = require("speakeasy");
 const { body, validationResult } = require("express-validator");
 const router = express.Router();
 
@@ -41,6 +42,13 @@ router.post(
         if (!/^\d{6}$/.test(value)) throw new Error("Password PIN must be exactly 6 digits.");
         return true;
       }),
+    body("twoFAToken")
+      .optional()
+      .trim()
+      .isLength({ min: 6, max: 6 })
+      .withMessage("2FA token must be exactly 6 digits.")
+      .isNumeric()
+      .withMessage("2FA token must contain only numbers."),
   ],
   async (req, res) => {
     const startTime = Date.now();
@@ -60,7 +68,7 @@ router.post(
       });
     }
 
-    const { email, passwordPin } = req.body;
+    const { email, passwordPin, twoFAToken } = req.body;
 
     try {
       // Find admin user
@@ -147,15 +155,55 @@ router.post(
       // Reset login attempts on successful authentication
       await admin.resetLoginAttempts();
 
+      // Check if 2FA is enabled for this admin
+      if (admin.is2FAEnabled && admin.is2FAVerified && admin.twoFASecret) {
+        if (!twoFAToken) {
+          logger.info("2FA token required for admin sign-in", {
+            adminId: admin._id,
+            email: admin.email
+          });
+          return res.status(200).json({
+            success: true,
+            requires2FA: true,
+            message: "2FA token required. Please provide your 6-digit authentication code.",
+            adminId: admin._id
+          });
+        }
+
+        // Verify 2FA token
+        const verified = speakeasy.totp.verify({
+          secret: admin.twoFASecret,
+          encoding: 'base32',
+          token: twoFAToken,
+          window: 2, // Allow for clock drift
+        });
+
+        if (!verified) {
+          logger.warn("Invalid 2FA token during admin sign-in", {
+            adminId: admin._id,
+            email: admin.email
+          });
+          return res.status(401).json({
+            success: false,
+            message: "Invalid 2FA token. Please check your authenticator app and try again."
+          });
+        }
+
+        logger.info("2FA verification successful during admin sign-in", {
+          adminId: admin._id,
+          email: admin.email
+        });
+      }
+
       // Validate JWT configuration
       let adminJwtSecrets;
       try {
         adminJwtSecrets = validateAdminJWTSecrets();
       } catch (jwtError) {
         logger.error("Admin JWT configuration error", { error: jwtError.message });
-        return res.status(500).json({ 
-          success: false, 
-          message: "Authentication configuration error. Please contact support." 
+        return res.status(500).json({
+          success: false,
+          message: "Authentication configuration error. Please contact support."
         });
       }
 

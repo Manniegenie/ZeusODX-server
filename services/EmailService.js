@@ -398,8 +398,8 @@ async function sendSignupEmail(to, name) {
 
     return await sendEmail({
       to, name, templateId,
-      params: { 
-        username: String(name || 'User'), 
+      params: {
+        username: String(name || 'User'),
         companyName: String(COMPANY_NAME),
         signupDate: formatDate(new Date())
       }
@@ -410,16 +410,53 @@ async function sendSignupEmail(to, name) {
   }
 }
 
+async function sendAdminWelcomeEmail(to, adminName, role) {
+  try {
+    const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_ADMIN_WELCOME);
+    if (!templateId) throw new Error('Admin welcome email template ID not configured');
+
+    const ADMIN_BASE_URL = process.env.ADMIN_BASE_URL || 'https://www.zeusodx.online';
+    const setup2FAUrl = `${ADMIN_BASE_URL}/admin-2fa-setup?email=${encodeURIComponent(to)}`;
+
+    const roleDescriptions = {
+      super_admin: 'Super Administrator - Full system access',
+      admin: 'Administrator - Manage wallets, fees, and notifications',
+      moderator: 'Moderator - View transactions and manage user accounts'
+    };
+
+    return await sendEmail({
+      to,
+      name: adminName,
+      templateId,
+      params: {
+        adminName: String(adminName || 'Admin'),
+        email: String(to),
+        role: String(role || 'admin'),
+        roleDescription: String(roleDescriptions[role] || roleDescriptions.admin),
+        setup2FAUrl: String(setup2FAUrl),
+        loginUrl: String(`${ADMIN_BASE_URL}/login`),
+        companyName: String(COMPANY_NAME),
+        supportEmail: String(SUPPORT_EMAIL),
+        registrationDate: formatDate(new Date())
+      }
+    });
+  } catch (error) {
+    console.error('Failed to send admin welcome email:', error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
-  sendUtilityEmail,              
-  sendUtilityTransactionEmail,   
+  sendUtilityEmail,
+  sendUtilityTransactionEmail,
   sendGiftcardEmail,
-  sendGiftcardSubmissionEmail,   
+  sendGiftcardSubmissionEmail,
   sendKycEmail,
   sendLoginEmail,
   sendSignupEmail,
   sendEmailVerificationOTP,
-  sendNINVerificationEmail
+  sendNINVerificationEmail,
+  sendAdminWelcomeEmail
 };
