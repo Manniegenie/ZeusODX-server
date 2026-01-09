@@ -176,4 +176,121 @@ router.get("/register", async (req, res) => {
   }
 });
 
+// DELETE: /admin/register/:adminId - Delete an admin (requires super admin authentication)
+router.delete("/register/:adminId", [
+  body("email")
+    .trim()
+    .notEmpty()
+    .withMessage("Email is required.")
+    .isEmail()
+    .withMessage("Invalid email format."),
+
+  body("passwordPin")
+    .trim()
+    .notEmpty()
+    .withMessage("Password PIN is required.")
+    .customSanitizer((value) => String(value).padStart(6, '0'))
+    .custom((value) => {
+      if (!/^\d{6}$/.test(value)) {
+        throw new Error("Password PIN must be exactly 6 digits.");
+      }
+      return true;
+    })
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed.",
+        errors: errors.array()
+      });
+    }
+
+    const { adminId } = req.params;
+    const { email, passwordPin } = req.body;
+
+    // Find requesting admin (must be super admin)
+    const requestingAdmin = await AdminUser.findOne({ email });
+    if (!requestingAdmin) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin not found."
+      });
+    }
+
+    // Verify password PIN
+    const isValidPin = await requestingAdmin.comparePasswordPin(passwordPin);
+    if (!isValidPin) {
+      logger.warn("Invalid PIN during admin delete attempt", {
+        requestingAdminId: requestingAdmin._id,
+        email: requestingAdmin.email
+      });
+      return res.status(401).json({
+        success: false,
+        message: "Invalid password PIN."
+      });
+    }
+
+    // Check if requesting admin is super admin
+    if (requestingAdmin.role !== 'super_admin') {
+      logger.warn("Non-super admin attempted to delete admin", {
+        requestingAdminId: requestingAdmin._id,
+        role: requestingAdmin.role
+      });
+      return res.status(403).json({
+        success: false,
+        message: "Only super admins can delete other admins."
+      });
+    }
+
+    // Find target admin to delete
+    const targetAdmin = await AdminUser.findById(adminId);
+    if (!targetAdmin) {
+      return res.status(404).json({
+        success: false,
+        message: "Target admin not found."
+      });
+    }
+
+    // Prevent self-deletion
+    if (requestingAdmin._id.toString() === targetAdmin._id.toString()) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot delete your own admin account."
+      });
+    }
+
+    // Delete the admin
+    await AdminUser.findByIdAndDelete(adminId);
+
+    logger.info("Admin deleted by super admin", {
+      superAdminId: requestingAdmin._id,
+      superAdminEmail: requestingAdmin.email,
+      deletedAdminId: targetAdmin._id,
+      deletedAdminEmail: targetAdmin.email,
+      deletedAdminName: targetAdmin.adminName,
+      timestamp: new Date().toISOString()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Admin ${targetAdmin.adminName} has been deleted successfully.`
+    });
+
+  } catch (error) {
+    logger.error("Error deleting admin", {
+      error: error.message,
+      adminId: req.params.adminId,
+      timestamp: new Date().toISOString()
+    });
+
+    res.status(500).json({
+      success: false,
+      message: "Server error while deleting admin. Please try again."
+    });
+  }
+});
+
 module.exports = router;
