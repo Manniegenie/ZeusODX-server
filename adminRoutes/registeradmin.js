@@ -144,4 +144,36 @@ router.post(
   }
 );
 
+// GET: /admin/register - Get all admins
+router.get("/register", async (req, res) => {
+  try {
+    // Fetch all admins, excluding sensitive fields
+    const admins = await AdminUser.find({})
+      .select('-passwordPin -refreshTokens -twoFASecret')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    logger.info("Fetched all admins", {
+      count: admins.length,
+      timestamp: new Date().toISOString()
+    });
+
+    res.status(200).json({
+      success: true,
+      data: admins
+    });
+
+  } catch (error) {
+    logger.error("Error fetching admins", {
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching admins. Please try again."
+    });
+  }
+});
+
 module.exports = router;

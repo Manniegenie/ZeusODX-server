@@ -57,6 +57,10 @@ const adminUserSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  is2FASetupCompleted: {
+    type: Boolean,
+    default: false
+  },
   lockUntil: { 
     type: Date, 
     default: null 

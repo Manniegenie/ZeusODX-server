@@ -29,13 +29,25 @@ router.post('/setup-2fa', async (req, res) => {
     // Verify password PIN before allowing 2FA setup
     const isValidPin = await admin.comparePasswordPin(passwordPin);
     if (!isValidPin) {
-      logger.warn('Invalid PIN during admin 2FA setup attempt', { 
-        adminId: admin._id, 
-        email: admin.email 
+      logger.warn('Invalid PIN during admin 2FA setup attempt', {
+        adminId: admin._id,
+        email: admin.email
       });
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid password PIN' 
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid password PIN'
+      });
+    }
+
+    // Check if 2FA has already been set up (completed)
+    if (admin.is2FASetupCompleted) {
+      logger.warn('Admin attempted to setup 2FA again after completion', {
+        adminId: admin._id,
+        email: admin.email
+      });
+      return res.status(400).json({
+        success: false,
+        message: '2FA has already been set up for this account. To change it, please disable 2FA first.'
       });
     }
 
@@ -150,13 +162,15 @@ router.post('/verify-2fa', async (req, res) => {
 
     admin.is2FAEnabled = true;
     admin.is2FAVerified = true;
+    admin.is2FASetupCompleted = true;
     await admin.save();
 
-    logger.info('Admin 2FA enabled successfully', { 
+    logger.info('Admin 2FA enabled successfully', {
       adminId: admin._id,
       email: admin.email,
       is2FAEnabled: admin.is2FAEnabled,
-      is2FAVerified: admin.is2FAVerified
+      is2FAVerified: admin.is2FAVerified,
+      is2FASetupCompleted: admin.is2FASetupCompleted
     });
 
     res.json({ 
@@ -207,6 +221,7 @@ router.post('/2fa-status', async (req, res) => {
       success: true,
       is2FAEnabled: admin.is2FAEnabled || false,
       is2FAVerified: admin.is2FAVerified || false,
+      is2FASetupCompleted: admin.is2FASetupCompleted || false,
       hasSecret: !!admin.twoFASecret,
     });
   } catch (err) {
@@ -267,10 +282,11 @@ router.post('/disable-2fa', async (req, res) => {
 
     targetAdmin.is2FAEnabled = false;
     targetAdmin.is2FAVerified = false;
+    targetAdmin.is2FASetupCompleted = false;
     targetAdmin.twoFASecret = null;
     await targetAdmin.save();
 
-    logger.info('Admin 2FA disabled by super admin', { 
+    logger.info('Admin 2FA disabled by super admin', {
       superAdminId: requestingAdmin._id,
       targetAdminId: targetAdmin._id,
       targetAdminEmail: targetAdmin.email
