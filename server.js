@@ -469,6 +469,7 @@ const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotification
 const notificationRoutes = require("./routes/notifications");
 const Fetchnetworktestttt = require("./routes/FetchnetworkTestttt");
 const bannerRoutes = require("./routes/Banners");
+const tokenPricesRoutes = require("./routes/tokenPrices");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -520,6 +521,7 @@ app.use("/analytics", authenticateAdminToken, requireModerator, analyticsRoutes)
 app.use("/naira-price", nairaPriceRouter);
 app.use("/onramp", onrampRoutes);
 app.use("/offramp", offrampRoutes);
+app.use("/api/token-prices", tokenPricesRoutes);
 
 // Protected User Routes
 app.use("/logout", authenticateToken, logoutRoutes);
