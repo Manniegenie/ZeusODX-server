@@ -6,6 +6,7 @@ const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const logger = require('../utils/logger');
 const validator = require('validator');
+const { SendGiftcardMail } = require('../services/EmailService');
 
 // Validation function for rate data (updated for NGN rates)
 function validateRateData(data) {
@@ -796,6 +797,41 @@ router.post('/submissions/:id/approve', async (req, res) => {
       transactionId: transaction._id
     });
 
+    // Send approval email to user
+    try {
+      await SendGiftcardMail(
+        submission.userId.email,
+        submission.userId.firstname || submission.userId.username || 'User',
+        {
+          status: 'APPROVED',
+          submissionId: submission._id.toString(),
+          giftcardType: submission.cardType,
+          cardFormat: submission.cardFormat,
+          country: submission.country,
+          cardValue: submission.cardValue,
+          approvedValue: finalApprovedValue,
+          paymentAmount: paymentAmount,
+          paymentCurrency: 'NGN',
+          paymentRate: finalPaymentRate,
+          rateDisplay: `₦${finalPaymentRate}/USD`,
+          transactionId: transaction._id.toString(),
+          reference: transaction._id.toString(),
+          reviewNotes: notes,
+          reviewedAt: now
+        }
+      );
+      logger.info('Approval email sent to user', {
+        userId: submission.userId._id,
+        email: submission.userId.email
+      });
+    } catch (emailError) {
+      logger.error('Failed to send approval email', {
+        error: emailError.message,
+        userId: submission.userId._id
+      });
+      // Don't fail the request if email fails
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Gift card approved and user funded successfully.',
@@ -833,7 +869,7 @@ router.post('/submissions/:id/reject', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid rejection reason.' });
     }
 
-    const submission = await GiftCard.findById(id);
+    const submission = await GiftCard.findById(id).populate('userId');
     if (!submission) {
       return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
     }
@@ -858,6 +894,35 @@ router.post('/submissions/:id/reject', async (req, res) => {
       userId: submission.userId,
       rejectionReason
     });
+
+    // Send rejection email to user
+    try {
+      await SendGiftcardMail(
+        submission.userId.email,
+        submission.userId.firstname || submission.userId.username || 'User',
+        {
+          status: 'REJECTED',
+          submissionId: submission._id.toString(),
+          giftcardType: submission.cardType,
+          cardFormat: submission.cardFormat,
+          country: submission.country,
+          cardValue: submission.cardValue,
+          rejectionReason: rejectionReason,
+          reviewNotes: notes,
+          reviewedAt: submission.reviewedAt
+        }
+      );
+      logger.info('Rejection email sent to user', {
+        userId: submission.userId._id,
+        email: submission.userId.email
+      });
+    } catch (emailError) {
+      logger.error('Failed to send rejection email', {
+        error: emailError.message,
+        userId: submission.userId._id
+      });
+      // Don't fail the request if email fails
+    }
 
     return res.status(200).json({
       success: true,

@@ -446,6 +446,103 @@ async function sendAdminWelcomeEmail(to, adminName, role) {
   }
 }
 
+/**
+ * Send giftcard response email (approved or rejected)
+ */
+async function SendGiftcardMail(to, name, options = {}) {
+  try {
+    const {
+      status, // 'APPROVED' or 'REJECTED'
+      submissionId,
+      giftcardType,
+      cardFormat,
+      country,
+      cardValue,
+      paymentAmount,
+      paymentCurrency = 'NGN',
+      rejectionReason,
+      rejectionReasonText,
+      reviewNotes,
+      approvedValue,
+      paymentRate,
+      rateDisplay,
+      transactionId,
+      reference,
+      reviewedAt
+    } = options;
+
+    // Use different templates for approved vs rejected
+    let templateId;
+    if (status === 'APPROVED' || status === 'PAID') {
+      templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_APPROVED);
+      if (!templateId) throw new Error('Giftcard approved email template ID not configured');
+    } else if (status === 'REJECTED') {
+      templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_REJECTED);
+      if (!templateId) throw new Error('Giftcard rejected email template ID not configured');
+    } else {
+      throw new Error(`Invalid status for giftcard email: ${status}`);
+    }
+
+    // Build rejection reason text
+    const rejectionReasons = {
+      'INVALID_IMAGE': 'The uploaded image(s) were invalid or unclear',
+      'ALREADY_USED': 'This gift card has already been used',
+      'INSUFFICIENT_BALANCE': 'The gift card has insufficient balance',
+      'FAKE_CARD': 'The gift card appears to be fake or counterfeit',
+      'UNREADABLE': 'The gift card code is unreadable',
+      'WRONG_TYPE': 'The gift card type does not match what was submitted',
+      'EXPIRED': 'The gift card has expired',
+      'INVALID_ECODE': 'The e-code provided is invalid',
+      'DUPLICATE_ECODE': 'This e-code has already been submitted',
+      'OTHER': 'Other reason (see notes below)'
+    };
+
+    const params = {
+      username: String(name || 'User'),
+      submissionId: String(submissionId || ''),
+      giftcardType: String(giftcardType || ''),
+      cardFormat: String(cardFormat || ''),
+      country: String(country || ''),
+      cardValue: formatNumber(cardValue || 0, 'USD'),
+      status: String(status || ''),
+      date: formatDate(reviewedAt || new Date()),
+      submissionUrl: String(submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL),
+      appDeepLink: String(submissionId ? `${APP_DEEP_LINK}/giftcards/${submissionId}` : APP_DEEP_LINK),
+      companyName: String(COMPANY_NAME),
+      supportEmail: String(SUPPORT_EMAIL)
+    };
+
+    // Add approval-specific params
+    if (status === 'APPROVED' || status === 'PAID') {
+      params.approvedValue = formatNumber(approvedValue || cardValue || 0, 'USD');
+      params.paymentAmount = formatNumber(paymentAmount || 0, paymentCurrency);
+      params.paymentCurrency = String(paymentCurrency || 'NGN');
+      params.paymentAmountFormatted = formatCurrency(paymentAmount || 0, paymentCurrency);
+      params.paymentRate = formatNumber(paymentRate || 0, paymentCurrency);
+      params.rateDisplay = String(rateDisplay || `₦${formatNumber(paymentRate || 0, paymentCurrency)}/USD`);
+      params.transactionId = String(transactionId || reference || '');
+      params.reference = String(reference || transactionId || '');
+      if (reviewNotes) {
+        params.reviewNotes = String(reviewNotes);
+      }
+    }
+
+    // Add rejection-specific params
+    if (status === 'REJECTED') {
+      params.rejectionReason = String(rejectionReason || 'OTHER');
+      params.rejectionReasonText = String(rejectionReasonText || rejectionReasons[rejectionReason] || 'Your submission was rejected');
+      if (reviewNotes) {
+        params.additionalNotes = String(reviewNotes);
+      }
+    }
+
+    return await sendEmail({ to, name, templateId, params });
+  } catch (error) {
+    console.error('Failed to send giftcard response email:', error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
@@ -453,6 +550,7 @@ module.exports = {
   sendUtilityTransactionEmail,
   sendGiftcardEmail,
   sendGiftcardSubmissionEmail,
+  SendGiftcardMail,
   sendKycEmail,
   sendLoginEmail,
   sendSignupEmail,
