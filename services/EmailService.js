@@ -493,17 +493,14 @@ async function SendGiftcardMail(to, name, options = {}) {
       paymentAmount,
       paymentCurrency = 'NGN',
       rejectionReason,
-      rejectionReasonText,
       reviewNotes,
       approvedValue,
       paymentRate,
-      rateDisplay,
       transactionId,
-      reference,
       reviewedAt
     } = options;
 
-    // Use different templates for approved vs rejected
+    // Determine template based on status
     let templateId;
     if (status === 'APPROVED' || status === 'PAID') {
       templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_APPROVED);
@@ -515,7 +512,7 @@ async function SendGiftcardMail(to, name, options = {}) {
       throw new Error(`Invalid status for giftcard email: ${status}`);
     }
 
-    // Build rejection reason text
+    // Rejection reason mapping
     const rejectionReasons = {
       'INVALID_IMAGE': 'The uploaded image(s) were invalid or unclear',
       'ALREADY_USED': 'This gift card has already been used',
@@ -526,47 +523,35 @@ async function SendGiftcardMail(to, name, options = {}) {
       'EXPIRED': 'The gift card has expired',
       'INVALID_ECODE': 'The e-code provided is invalid',
       'DUPLICATE_ECODE': 'This e-code has already been submitted',
-      'OTHER': 'Other reason (see notes below)'
+      'OTHER': 'Other reason'
     };
 
+    // Build generic parameters for email template
     const params = {
       username: String(name || 'User'),
       submissionId: String(submissionId || ''),
       giftcardType: String(giftcardType || ''),
       cardFormat: String(cardFormat || ''),
       country: String(country || ''),
-      cardValue: formatNumber(cardValue || 0, 'USD'),
+      cardValue: String(cardValue || '0'),
       status: String(status || ''),
       date: formatDate(reviewedAt || new Date()),
       submissionUrl: String(submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL),
       appDeepLink: String(submissionId ? `${APP_DEEP_LINK}/giftcards/${submissionId}` : APP_DEEP_LINK),
       companyName: String(COMPANY_NAME),
-      supportEmail: String(SUPPORT_EMAIL)
+      supportEmail: String(SUPPORT_EMAIL),
+
+      // Approval fields
+      approvedValue: String(approvedValue || cardValue || '0'),
+      paymentAmount: String(paymentAmount || '0'),
+      paymentCurrency: String(paymentCurrency || 'NGN'),
+      paymentRate: String(paymentRate || '0'),
+      transactionId: String(transactionId || ''),
+
+      // Rejection fields
+      rejectionReason: String(rejectionReasons[rejectionReason] || rejectionReasons['OTHER']),
+      additionalNotes: String(reviewNotes || '')
     };
-
-    // Add approval-specific params
-    if (status === 'APPROVED' || status === 'PAID') {
-      params.approvedValue = formatNumber(approvedValue || cardValue || 0, 'USD');
-      params.paymentAmount = formatNumber(paymentAmount || 0, paymentCurrency);
-      params.paymentCurrency = String(paymentCurrency || 'NGN');
-      params.paymentAmountFormatted = formatCurrency(paymentAmount || 0, paymentCurrency);
-      params.paymentRate = formatNumber(paymentRate || 0, paymentCurrency);
-      params.rateDisplay = String(rateDisplay || `₦${formatNumber(paymentRate || 0, paymentCurrency)}/USD`);
-      params.transactionId = String(transactionId || reference || '');
-      params.reference = String(reference || transactionId || '');
-      if (reviewNotes) {
-        params.reviewNotes = String(reviewNotes);
-      }
-    }
-
-    // Add rejection-specific params
-    if (status === 'REJECTED') {
-      params.rejectionReason = String(rejectionReason || 'OTHER');
-      params.rejectionReasonText = String(rejectionReasonText || rejectionReasons[rejectionReason] || 'Your submission was rejected');
-      if (reviewNotes) {
-        params.additionalNotes = String(reviewNotes);
-      }
-    }
 
     return await sendEmail({ to, name, templateId, params });
   } catch (error) {

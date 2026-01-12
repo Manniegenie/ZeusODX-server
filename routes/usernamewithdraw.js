@@ -6,6 +6,8 @@ const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
+const { sendTransferNotification } = require('../services/notificationService');
+const { sendDepositEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
 
 // Supported tokens configuration
@@ -738,6 +740,39 @@ router.post('/internal', async (req, res) => {
       processingTime,
       security_validations: 'All passed (2FA + PIN + KYC + Balance)',
       balance_update_method: 'direct_atomic'
+    });
+
+    // Send push notification to recipient (non-blocking)
+    sendTransferNotification(
+      recipient.id,
+      amount,
+      currency,
+      'received',
+      `@${senderUser.username}`,
+      {
+        transactionId: recipientTransaction._id,
+        reference: transactionResult.transferReference,
+        memo: memo
+      }
+    ).catch(error => {
+      logger.error('Failed to send recipient push notification', {
+        recipientUserId: recipient.id,
+        error: error.message
+      });
+    });
+
+    // Send email notification to recipient (non-blocking)
+    sendDepositEmail(
+      recipient.email,
+      recipient.fullName,
+      amount,
+      currency,
+      transactionResult.transferReference
+    ).catch(error => {
+      logger.error('Failed to send recipient email notification', {
+        recipientEmail: recipient.email,
+        error: error.message
+      });
     });
 
     res.status(200).json({
