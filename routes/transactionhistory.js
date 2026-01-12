@@ -200,8 +200,8 @@ function formatTransactionType(type) {
   const typeMap = {
     'DEPOSIT': 'Deposit',
     'WITHDRAWAL': 'Withdrawal',
-    'INTERNAL_TRANSFER_SENT': 'Username Transfer (Sent)',
-    'INTERNAL_TRANSFER_RECEIVED': 'Username Transfer (Received)',
+    'INTERNAL_TRANSFER_SENT': 'Transfer',
+    'INTERNAL_TRANSFER_RECEIVED': 'Transfer',
     'SWAP': 'Swap',
     'GIFTCARD': 'Gift Card'
   };
