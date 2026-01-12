@@ -57,6 +57,17 @@ function shapeTokenDetails(tx) {
     baseDetails.exchangeRate = tx.exchangeRate;
   }
 
+  // Add internal transfer fields
+  if (tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED') {
+    baseDetails.category = 'transfer';
+    baseDetails.recipientUsername = tx.recipientUsername;
+    baseDetails.recipientFullName = tx.recipientUserId?.fullName || tx.recipientFullName;
+    baseDetails.senderUsername = tx.senderUsername;
+    baseDetails.senderFullName = tx.senderUserId?.fullName || tx.senderFullName;
+    baseDetails.transferReference = tx.reference || tx.transferReference;
+    baseDetails.memo = tx.memo;
+  }
+
   // Enhanced details for NGNZ withdrawals
   if (tx.isNGNZWithdrawal && tx.type === 'WITHDRAWAL') {
     return {
@@ -189,8 +200,8 @@ function formatTransactionType(type) {
   const typeMap = {
     'DEPOSIT': 'Deposit',
     'WITHDRAWAL': 'Withdrawal',
-    'INTERNAL_TRANSFER_SENT': 'Withdrawal',
-    'INTERNAL_TRANSFER_RECEIVED': 'Deposit',
+    'INTERNAL_TRANSFER_SENT': 'Username Transfer (Sent)',
+    'INTERNAL_TRANSFER_RECEIVED': 'Username Transfer (Received)',
     'SWAP': 'Swap',
     'GIFTCARD': 'Gift Card'
   };
@@ -723,7 +734,10 @@ router.post('/complete-history', async (req, res) => {
 
     if ((transactionType === 'all' || transactionType === 'token') && shouldFetchTokens) {
       const [tokenTxs, tokenCount] = await Promise.all([
-        Transaction.find(tokenFilter).populate('giftCardId'),
+        Transaction.find(tokenFilter)
+          .populate('giftCardId')
+          .populate('recipientUserId', 'fullName')
+          .populate('senderUserId', 'fullName'),
         Transaction.countDocuments(tokenFilter)
       ]);
       const formattedTokens = tokenTxs.map(tx => {
