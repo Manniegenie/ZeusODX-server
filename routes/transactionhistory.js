@@ -92,25 +92,32 @@ function shapeTokenDetails(tx) {
 }
 
 function shapeGiftCardDetails(tx) {
+  // Extract giftcard-specific data if the giftCardId is populated
+  const giftcard = tx.giftCardId;
+
   return {
     category: 'giftcard',
-    giftCardId: tx.giftCardId,
-    cardType: tx.cardType,
-    cardFormat: tx.cardFormat,
-    cardRange: tx.cardRange,
-    country: tx.country,
-    description: tx.description,
-    expectedRate: tx.expectedRate,
-    expectedRateDisplay: tx.expectedRateDisplay,
-    expectedAmountToReceive: tx.expectedAmountToReceive,
-    expectedSourceCurrency: tx.expectedSourceCurrency,
-    expectedTargetCurrency: tx.expectedTargetCurrency,
-    eCode: tx.eCode,
-    totalImages: tx.totalImages,
-    imageUrls: tx.imageUrls,
-    imagePublicIds: tx.imagePublicIds,
+    giftCardId: giftcard?._id || tx.giftCardId,
+    cardType: tx.cardType || giftcard?.cardType,
+    cardFormat: tx.cardFormat || giftcard?.cardFormat,
+    cardRange: tx.cardRange || giftcard?.cardRange,
+    country: tx.country || giftcard?.country,
+    description: tx.description || giftcard?.description,
+    expectedRate: tx.expectedRate || giftcard?.expectedRate,
+    expectedRateDisplay: tx.expectedRateDisplay || giftcard?.expectedRateDisplay,
+    expectedAmountToReceive: tx.expectedAmountToReceive || giftcard?.expectedAmountToReceive,
+    expectedSourceCurrency: tx.expectedSourceCurrency || giftcard?.expectedSourceCurrency,
+    expectedTargetCurrency: tx.expectedTargetCurrency || giftcard?.expectedTargetCurrency,
+    eCode: tx.eCode || giftcard?.eCode,
+    totalImages: tx.totalImages || giftcard?.totalImages,
+    imageUrls: tx.imageUrls || giftcard?.imageUrls,
+    imagePublicIds: tx.imagePublicIds || giftcard?.imagePublicIds,
     transactionId: firstTruthy(tx.transactionId, tx.reference, tx.externalId, tx.id, tx._id),
     createdAt: tx.createdAt,
+    // Include the actual giftcard status for reference
+    giftcardStatus: giftcard?.status,
+    rejectionReason: giftcard?.rejectionReason,
+    reviewNotes: giftcard?.reviewNotes
   };
 }
 
@@ -594,17 +601,20 @@ router.post('/gift-cards', async (req, res) => {
     const sort = {}; sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
     const [transactions, totalCount] = await Promise.all([
-      Transaction.find(filter).sort(sort).skip(skip).limit(parseInt(limit)).lean(),
+      Transaction.find(filter).populate('giftCardId').sort(sort).skip(skip).limit(parseInt(limit)).lean(),
       Transaction.countDocuments(filter)
     ]);
 
     const formattedGiftCards = transactions.map(tx => {
       const amount = Math.abs(tx.amount);
       const createdAtISO = new Date(tx.createdAt).toISOString();
+      // Use the populated GiftCard status if available, otherwise fall back to transaction status
+      const giftcardStatus = tx.giftCardId?.status || tx.status;
+
       return {
         id: tx._id,
         type: 'Gift Card',
-        status: formatStatus(tx.status),
+        status: formatStatus(giftcardStatus),
         amount: formatAmount(amount, tx.currency, tx.type, true),
         date: formatDate(tx.createdAt),
         createdAt: createdAtISO,
@@ -613,6 +623,7 @@ router.post('/gift-cards', async (req, res) => {
         cardFormat: tx.cardFormat,
         cardRange: tx.cardRange,
         country: tx.country,
+        giftcardStatus: giftcardStatus, // Include the actual giftcard status for debugging
         details: shapeGiftCardDetails(tx)
       };
     });
@@ -712,7 +723,7 @@ router.post('/complete-history', async (req, res) => {
 
     if ((transactionType === 'all' || transactionType === 'token') && shouldFetchTokens) {
       const [tokenTxs, tokenCount] = await Promise.all([
-        Transaction.find(tokenFilter),
+        Transaction.find(tokenFilter).populate('giftCardId'),
         Transaction.countDocuments(tokenFilter)
       ]);
       const formattedTokens = tokenTxs.map(tx => {
@@ -720,15 +731,19 @@ router.post('/complete-history', async (req, res) => {
         const createdAtISO = new Date(tx.createdAt).toISOString();
         
         if (tx.type === 'GIFTCARD') {
+          // Use the populated GiftCard status if available, otherwise fall back to transaction status
+          const giftcardStatus = tx.giftCardId?.status || tx.status;
+
           return {
             id: tx._id,
             type: 'Gift Card',
-            status: formatStatus(tx.status),
+            status: formatStatus(giftcardStatus),
             amount: formatAmount(Math.abs(tx.amount), tx.currency, tx.type, true),
             date: formatDate(tx.createdAt),
             createdAt: createdAtISO,
             currency: tx.currency,
             cardType: tx.cardType,
+            giftcardStatus: giftcardStatus, // Include the actual giftcard status for debugging
             details: shapeGiftCardDetails(tx.toObject())
           };
         }
