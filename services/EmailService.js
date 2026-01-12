@@ -113,7 +113,23 @@ function formatDate(date, includeTime = true) {
 async function sendEmail({ to, name, templateId, params = {}, options = {} }) {
   try {
     if (!templateId || isNaN(templateId)) {
-      throw new Error(`Invalid template ID: ${templateId}`);
+      const error = new Error(`Invalid template ID: ${templateId}`);
+      console.error('❌ Email sending failed - Invalid template ID:', {
+        templateId,
+        to,
+        error: error.message
+      });
+      throw error;
+    }
+
+    if (!process.env.BREVO_API_KEY) {
+      const error = new Error('BREVO_API_KEY is not configured');
+      console.error('❌ Email sending failed - Missing API key:', {
+        to,
+        templateId,
+        error: error.message
+      });
+      throw error;
     }
 
     const email = new brevo.SendSmtpEmail();
@@ -125,12 +141,28 @@ async function sendEmail({ to, name, templateId, params = {}, options = {} }) {
     if (options.replyTo) email.replyTo = options.replyTo;
     if (options.headers) email.headers = options.headers;
 
-    console.log(`Sending email to ${to} [Template: ${templateId}]`);
+    console.log(`📧 Sending email to ${to} [Template: ${templateId}]`);
 
     const response = await apiInstance.sendTransacEmail(email);
+
+    console.log('✅ Email sent successfully:', {
+      to,
+      templateId,
+      messageId: response.body?.messageId || response.messageId
+    });
+
     return { success: true, messageId: response.body?.messageId || response.messageId };
   } catch (error) {
-    console.error(`Error sending email to ${to}:`, error.message);
+    console.error(`❌ Error sending email to ${to}:`, {
+      templateId,
+      error: error.message,
+      stack: error.stack,
+      statusCode: error.statusCode || error.status,
+      response: error.response?.body || error.response,
+      brevoApiKeyConfigured: !!process.env.BREVO_API_KEY,
+      senderEmail: SENDER_EMAIL,
+      senderName: SENDER_NAME
+    });
     throw error;
   }
 }

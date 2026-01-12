@@ -26,6 +26,8 @@ const allowedOrigins = [
   "http://localhost:5173", // Local development
   "https://www.zeusodx.online", // Admin frontend production
   "https://zeusodx.online", // Admin frontend (without www)
+  "https://www.zeusodx.com", // Main website
+  "https://zeusodx.com", // Main website (without www)
   "https://zeusadminxyz.online", // Server domain
 ].filter(Boolean); // Remove undefined values
 

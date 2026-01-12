@@ -799,6 +799,15 @@ router.post('/submissions/:id/approve', async (req, res) => {
 
     // Send approval email to user
     try {
+      logger.info('Attempting to send approval email', {
+        userId: submission.userId._id,
+        email: submission.userId.email,
+        submissionId: submission._id,
+        paymentAmount,
+        hasBrevoTemplateApproved: !!process.env.BREVO_TEMPLATE_GIFTCARD_APPROVED,
+        hasBrevoApiKey: !!process.env.BREVO_API_KEY
+      });
+
       await SendGiftcardMail(
         submission.userId.email,
         submission.userId.firstname || submission.userId.username || 'User',
@@ -820,16 +829,27 @@ router.post('/submissions/:id/approve', async (req, res) => {
           reviewedAt: now
         }
       );
-      logger.info('Approval email sent to user', {
+
+      logger.info('✅ Approval email sent successfully to user', {
         userId: submission.userId._id,
-        email: submission.userId.email
+        email: submission.userId.email,
+        submissionId: submission._id
       });
     } catch (emailError) {
-      logger.error('Failed to send approval email', {
+      logger.error('❌ Failed to send approval email - CRITICAL', {
         error: emailError.message,
-        userId: submission.userId._id
+        stack: emailError.stack,
+        statusCode: emailError.statusCode || emailError.status,
+        response: emailError.response?.body || emailError.response,
+        userId: submission.userId._id,
+        email: submission.userId.email,
+        submissionId: submission._id,
+        paymentAmount,
+        brevoTemplateApproved: process.env.BREVO_TEMPLATE_GIFTCARD_APPROVED,
+        brevoApiKeyConfigured: !!process.env.BREVO_API_KEY,
+        senderEmail: process.env.SENDER_EMAIL || process.env.SUPPORT_EMAIL
       });
-      // Don't fail the request if email fails
+      // Don't fail the request if email fails, but log extensively for debugging
     }
 
     return res.status(200).json({
@@ -897,6 +917,15 @@ router.post('/submissions/:id/reject', async (req, res) => {
 
     // Send rejection email to user
     try {
+      logger.info('Attempting to send rejection email', {
+        userId: submission.userId._id,
+        email: submission.userId.email,
+        submissionId: submission._id,
+        rejectionReason,
+        hasBrevoTemplateRejected: !!process.env.BREVO_TEMPLATE_GIFTCARD_REJECTED,
+        hasBrevoApiKey: !!process.env.BREVO_API_KEY
+      });
+
       await SendGiftcardMail(
         submission.userId.email,
         submission.userId.firstname || submission.userId.username || 'User',
@@ -912,16 +941,27 @@ router.post('/submissions/:id/reject', async (req, res) => {
           reviewedAt: submission.reviewedAt
         }
       );
-      logger.info('Rejection email sent to user', {
+
+      logger.info('✅ Rejection email sent successfully to user', {
         userId: submission.userId._id,
-        email: submission.userId.email
+        email: submission.userId.email,
+        submissionId: submission._id
       });
     } catch (emailError) {
-      logger.error('Failed to send rejection email', {
+      logger.error('❌ Failed to send rejection email - CRITICAL', {
         error: emailError.message,
-        userId: submission.userId._id
+        stack: emailError.stack,
+        statusCode: emailError.statusCode || emailError.status,
+        response: emailError.response?.body || emailError.response,
+        userId: submission.userId._id,
+        email: submission.userId.email,
+        submissionId: submission._id,
+        rejectionReason,
+        brevoTemplateRejected: process.env.BREVO_TEMPLATE_GIFTCARD_REJECTED,
+        brevoApiKeyConfigured: !!process.env.BREVO_API_KEY,
+        senderEmail: process.env.SENDER_EMAIL || process.env.SUPPORT_EMAIL
       });
-      // Don't fail the request if email fails
+      // Don't fail the request if email fails, but log extensively for debugging
     }
 
     return res.status(200).json({
