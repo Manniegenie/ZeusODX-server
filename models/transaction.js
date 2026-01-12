@@ -144,8 +144,10 @@ const transactionSchema = new mongoose.Schema({
   /** ========= Internal transfer ========= **/
   recipientUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   recipientUsername: { type: String },
+  recipientFullName: { type: String },
   senderUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   senderUsername: { type: String },
+  senderFullName: { type: String },
 
   /** ========= Swap - UPDATED FOR ENHANCED COMPATIBILITY ========= **/
   fromCurrency: { type: String },

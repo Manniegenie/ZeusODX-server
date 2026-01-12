@@ -311,6 +311,7 @@ async function createInternalTransferTransactions(transferData) {
       amount,
       recipientUserId,
       recipientUsername,
+      recipientFullName: recipient.fullName,
       status: 'PENDING',
       fee: 0,
       reference: transferReference,
@@ -331,7 +332,8 @@ async function createInternalTransferTransactions(transferData) {
         },
         recipientInfo: {
           userId: recipientUserId,
-          username: recipientUsername
+          username: recipientUsername,
+          fullName: recipient.fullName
         }
       }
     });
@@ -344,6 +346,7 @@ async function createInternalTransferTransactions(transferData) {
       amount,
       senderUserId,
       senderUsername,
+      senderFullName: senderUser.fullName,
       status: 'PENDING',
       fee: 0,
       reference: transferReference,
@@ -355,7 +358,8 @@ async function createInternalTransferTransactions(transferData) {
         sender_security_validated: true,
         senderInfo: {
           userId: senderUserId,
-          username: senderUsername
+          username: senderUsername,
+          fullName: senderUser.fullName
         }
       }
     });
