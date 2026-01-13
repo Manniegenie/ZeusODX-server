@@ -60,11 +60,13 @@ function shapeTokenDetails(tx) {
   // Add internal transfer fields
   if (tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED') {
     baseDetails.category = 'transfer';
+    baseDetails.rawType = tx.type; // Preserve raw type for frontend detection
     baseDetails.recipientUsername = tx.recipientUsername;
     baseDetails.recipientFullName = tx.recipientUserId?.fullName || tx.recipientFullName;
     baseDetails.senderUsername = tx.senderUsername;
     baseDetails.senderFullName = tx.senderUserId?.fullName || tx.senderFullName;
     baseDetails.transferReference = tx.reference || tx.transferReference;
+    baseDetails.reference = tx.reference;
     baseDetails.memo = tx.memo;
   }
 
