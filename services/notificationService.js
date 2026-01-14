@@ -783,6 +783,115 @@ async function sendUtilityPaymentNotification(userId, utilityType, amount, provi
   }
 }
 
+/**
+ * Send giftcard submission confirmation notification
+ */
+async function sendGiftcardSubmissionNotification(userId, cardType, cardValue, expectedAmount, submissionId) {
+  try {
+    const notificationData = {
+      title: 'Gift Card Submitted',
+      body: `Your ${cardType} gift card ($${cardValue}) has been submitted for review. Expected payout: ₦${expectedAmount.toLocaleString('en-NG')}`,
+      data: {
+        type: 'giftcard_submission',
+        cardType,
+        cardValue,
+        expectedAmount,
+        submissionId,
+        timestamp: new Date().toISOString()
+      },
+      sound: 'default',
+      priority: 'high'
+    };
+
+    return await sendPushNotification(userId, notificationData);
+  } catch (error) {
+    logger.error('Error sending giftcard submission notification', {
+      userId,
+      cardType,
+      submissionId,
+      error: error.message
+    });
+    return { success: false, message: 'Failed to send giftcard submission notification' };
+  }
+}
+
+/**
+ * Send giftcard approval notification
+ */
+async function sendGiftcardApprovalNotification(userId, cardType, paymentAmount, submissionId) {
+  try {
+    const notificationData = {
+      title: 'Gift Card Approved! 🎉',
+      body: `Your ${cardType} gift card has been approved! ₦${Math.round(paymentAmount).toLocaleString('en-NG')} has been credited to your account.`,
+      data: {
+        type: 'giftcard_approval',
+        cardType,
+        paymentAmount,
+        submissionId,
+        timestamp: new Date().toISOString()
+      },
+      sound: 'default',
+      priority: 'high'
+    };
+
+    return await sendPushNotification(userId, notificationData);
+  } catch (error) {
+    logger.error('Error sending giftcard approval notification', {
+      userId,
+      cardType,
+      submissionId,
+      error: error.message
+    });
+    return { success: false, message: 'Failed to send giftcard approval notification' };
+  }
+}
+
+/**
+ * Send giftcard rejection notification
+ */
+async function sendGiftcardRejectionNotification(userId, cardType, rejectionReason, submissionId) {
+  try {
+    const reasonMap = {
+      'INVALID_IMAGE': 'Invalid or unclear image',
+      'ALREADY_USED': 'Card has already been used',
+      'INSUFFICIENT_BALANCE': 'Insufficient card balance',
+      'FAKE_CARD': 'Card appears to be fake',
+      'UNREADABLE': 'Card details are unreadable',
+      'WRONG_TYPE': 'Wrong card type submitted',
+      'EXPIRED': 'Card has expired',
+      'INVALID_ECODE': 'Invalid e-code provided',
+      'DUPLICATE_ECODE': 'Duplicate e-code detected',
+      'OTHER': 'Review failed'
+    };
+
+    const reason = reasonMap[rejectionReason] || 'Review failed';
+
+    const notificationData = {
+      title: 'Gift Card Rejected',
+      body: `Your ${cardType} gift card was rejected. Reason: ${reason}`,
+      data: {
+        type: 'giftcard_rejection',
+        cardType,
+        rejectionReason,
+        submissionId,
+        timestamp: new Date().toISOString()
+      },
+      sound: 'default',
+      priority: 'high'
+    };
+
+    return await sendPushNotification(userId, notificationData);
+  } catch (error) {
+    logger.error('Error sending giftcard rejection notification', {
+      userId,
+      cardType,
+      submissionId,
+      error: error.message
+    });
+    return { success: false, message: 'Failed to send giftcard rejection notification' };
+  }
+}
+
 module.exports = {
   sendPushNotification,
   sendDepositNotification,
@@ -798,5 +907,8 @@ module.exports = {
   sendKycCompletionNotification,
   sendSwapCompletionNotification,
   sendUtilityPaymentNotification,
+  sendGiftcardSubmissionNotification,
+  sendGiftcardApprovalNotification,
+  sendGiftcardRejectionNotification,
   NOTIFICATION_TEMPLATES
 };

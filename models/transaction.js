@@ -94,7 +94,8 @@ const transactionSchema = new mongoose.Schema({
       'INTERNAL_TRANSFER_RECEIVED',
       'SWAP',
       'OBIEX_SWAP',
-      'GIFTCARD'
+      'GIFTCARD',
+      'GIFTCARD_PAYOUT'
     ],
     required: true
   },

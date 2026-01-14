@@ -9,6 +9,7 @@ const Transaction = require('../models/transaction');
 const GiftCardPrice = require('../models/giftcardPrice');
 const logger = require('../utils/logger');
 const { sendGiftcardSubmissionEmail } = require('../services/EmailService');
+const { sendGiftcardSubmissionNotification } = require('../services/notificationService');
 
 // Cloudinary configuration
 cloudinary.config({
@@ -423,14 +424,15 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
       responseData.vanillaTypeName = VANILLA_TYPES[normalizedVanillaType];
     }
 
-    // Send email asynchronously
+    // Send email and push notification asynchronously
     setImmediate(async () => {
+      // Send email notification
       logger.debug('Sending gift card submission email', { userId, giftCardId: giftCard._id });
       const emailResult = await safelySendGiftcardEmail(user, giftCard, transaction, rateCalculation, imageUrls);
-      
+
       if (emailResult.success) {
-        logger.info('Async: Giftcard submission email sent successfully', { 
-          userId: user._id, 
+        logger.info('Async: Giftcard submission email sent successfully', {
+          userId: user._id,
           submissionId: giftCard._id,
           email: user.email
         });
@@ -440,6 +442,27 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
           submissionId: giftCard._id,
           email: user.email,
           reason: emailResult.reason
+        });
+      }
+
+      // Send push notification
+      try {
+        await sendGiftcardSubmissionNotification(
+          userId,
+          normalizedCardType,
+          cardVal,
+          rateCalculation.amountToReceive,
+          giftCard._id.toString()
+        );
+        logger.info('Giftcard submission notification sent', {
+          userId: user._id,
+          submissionId: giftCard._id
+        });
+      } catch (error) {
+        logger.error('Failed to send giftcard submission push notification', {
+          userId: user._id,
+          submissionId: giftCard._id,
+          error: error.message
         });
       }
     });

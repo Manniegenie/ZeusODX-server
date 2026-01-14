@@ -7,6 +7,7 @@ const Transaction = require('../models/transaction');
 const logger = require('../utils/logger');
 const validator = require('validator');
 const { SendGiftcardMail } = require('../services/EmailService');
+const { sendGiftcardApprovalNotification, sendGiftcardRejectionNotification } = require('../services/notificationService');
 
 // Validation function for rate data (updated for NGN rates)
 function validateRateData(data) {
@@ -748,16 +749,6 @@ router.post('/submissions/:id/approve', async (req, res) => {
     const finalPaymentRate = paymentRate || submission.expectedRate;
     const paymentAmount = finalApprovedValue * finalPaymentRate;
 
-    // Update submission
-    submission.status = 'APPROVED';
-    submission.approvedValue = finalApprovedValue;
-    submission.paymentRate = finalPaymentRate;
-    submission.paymentAmount = paymentAmount;
-    submission.reviewedAt = now;
-    submission.reviewNotes = notes || null;
-
-    await submission.save();
-
     // Create and process transaction to fund user
     const transaction = await Transaction.create({
       userId: submission.userId._id,
@@ -765,6 +756,11 @@ router.post('/submissions/:id/approve', async (req, res) => {
       currency: 'NGN',
       amount: paymentAmount,
       status: 'SUCCESSFUL',
+      giftCardId: submission._id,
+      cardType: submission.cardType,
+      cardFormat: submission.cardFormat,
+      cardRange: submission.cardRange,
+      country: submission.country,
       description: `Gift card approved: ${submission.cardType} ${submission.cardFormat}`,
       metadata: {
         giftCardId: submission._id,
@@ -775,10 +771,15 @@ router.post('/submissions/:id/approve', async (req, res) => {
       }
     });
 
-    // Update submission with transaction reference
-    submission.transactionId = transaction._id;
-    submission.paidAt = now;
+    // Update submission to PAID status (single save, no intermediate APPROVED state)
     submission.status = 'PAID';
+    submission.approvedValue = finalApprovedValue;
+    submission.paymentRate = finalPaymentRate;
+    submission.paymentAmount = paymentAmount;
+    submission.reviewedAt = now;
+    submission.paidAt = now;
+    submission.reviewNotes = notes || null;
+    submission.transactionId = transaction._id;
     await submission.save();
 
     // Fund user's NGNZ balance
@@ -850,6 +851,26 @@ router.post('/submissions/:id/approve', async (req, res) => {
         senderEmail: process.env.SENDER_EMAIL || process.env.SUPPORT_EMAIL
       });
       // Don't fail the request if email fails, but log extensively for debugging
+    }
+
+    // Send push notification
+    try {
+      await sendGiftcardApprovalNotification(
+        submission.userId._id,
+        submission.cardType,
+        paymentAmount,
+        submission._id.toString()
+      );
+      logger.info('Giftcard approval notification sent', {
+        userId: submission.userId._id,
+        submissionId: submission._id
+      });
+    } catch (error) {
+      logger.error('Failed to send giftcard approval push notification', {
+        userId: submission.userId._id,
+        submissionId: submission._id,
+        error: error.message
+      });
     }
 
     return res.status(200).json({
@@ -962,6 +983,26 @@ router.post('/submissions/:id/reject', async (req, res) => {
         senderEmail: process.env.SENDER_EMAIL || process.env.SUPPORT_EMAIL
       });
       // Don't fail the request if email fails, but log extensively for debugging
+    }
+
+    // Send push notification
+    try {
+      await sendGiftcardRejectionNotification(
+        submission.userId._id,
+        submission.cardType,
+        rejectionReason,
+        submission._id.toString()
+      );
+      logger.info('Giftcard rejection notification sent', {
+        userId: submission.userId._id,
+        submissionId: submission._id
+      });
+    } catch (error) {
+      logger.error('Failed to send giftcard rejection push notification', {
+        userId: submission.userId._id,
+        submissionId: submission._id,
+        error: error.message
+      });
     }
 
     return res.status(200).json({

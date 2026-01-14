@@ -238,12 +238,14 @@ function formatStatus(status, type = 'token') {
     switch (status) {
       case 'SUCCESSFUL':
       case 'COMPLETED':
-      case 'CONFIRMED': return 'Successful';
+      case 'CONFIRMED':
+      case 'PAID': return 'Successful';
       case 'FAILED':
       case 'REJECTED': return 'Failed';
       case 'PENDING':
       case 'PROCESSING':
-      case 'APPROVED': return 'Pending';
+      case 'REVIEWING': return 'Pending';
+      case 'APPROVED': return 'Approved';
       default: return 'Pending';
     }
   }
