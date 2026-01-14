@@ -39,6 +39,9 @@ const notificationSchema = new mongoose.Schema({
       'AIRTIME_PURCHASE',
       'SECURITY_ALERT',
       'KYC_VERIFICATION',
+      'GIFTCARD_SUBMISSION',
+      'GIFTCARD_APPROVAL',
+      'GIFTCARD_REJECTION',
       'CUSTOM'
     ],
     default: 'CUSTOM',

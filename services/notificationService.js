@@ -792,7 +792,7 @@ async function sendGiftcardSubmissionNotification(userId, cardType, cardValue, e
       title: 'Gift Card Submitted',
       body: `Your ${cardType} gift card ($${cardValue}) has been submitted for review. Expected payout: ₦${expectedAmount.toLocaleString('en-NG')}`,
       data: {
-        type: 'giftcard_submission',
+        type: 'GIFTCARD_SUBMISSION',
         cardType,
         cardValue,
         expectedAmount,
@@ -824,7 +824,7 @@ async function sendGiftcardApprovalNotification(userId, cardType, paymentAmount,
       title: 'Gift Card Approved! 🎉',
       body: `Your ${cardType} gift card has been approved! ₦${Math.round(paymentAmount).toLocaleString('en-NG')} has been credited to your account.`,
       data: {
-        type: 'giftcard_approval',
+        type: 'GIFTCARD_APPROVAL',
         cardType,
         paymentAmount,
         submissionId,
@@ -870,7 +870,7 @@ async function sendGiftcardRejectionNotification(userId, cardType, rejectionReas
       title: 'Gift Card Rejected',
       body: `Your ${cardType} gift card was rejected. Reason: ${reason}`,
       data: {
-        type: 'giftcard_rejection',
+        type: 'GIFTCARD_REJECTION',
         cardType,
         rejectionReason,
         submissionId,
