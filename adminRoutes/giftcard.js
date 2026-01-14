@@ -709,9 +709,13 @@ router.get('/submissions/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
     }
 
+    // Transform to match list API format - move populated userId to user field
+    const submissionObj = submission.toObject();
+    submissionObj.user = submissionObj.userId;
+
     return res.status(200).json({
       success: true,
-      data: { submission }
+      data: submissionObj
     });
 
   } catch (error) {
@@ -735,6 +739,18 @@ router.post('/submissions/:id/approve', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
     }
 
+    // Validate userId is populated
+    if (!submission.userId || !submission.userId._id) {
+      logger.error('Gift card submission missing userId', {
+        submissionId: id,
+        userId: submission.userId
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'Gift card submission has invalid user reference.'
+      });
+    }
+
     if (submission.status !== 'PENDING' && submission.status !== 'REVIEWING') {
       return res.status(400).json({
         success: false,
@@ -748,6 +764,14 @@ router.post('/submissions/:id/approve', async (req, res) => {
     const finalApprovedValue = approvedValue || submission.cardValue;
     const finalPaymentRate = paymentRate || submission.expectedRate;
     const paymentAmount = finalApprovedValue * finalPaymentRate;
+
+    // Validate payment amount
+    if (!paymentAmount || paymentAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment amount calculated.'
+      });
+    }
 
     // Create and process transaction to fund user
     const transaction = await Transaction.create({
@@ -886,8 +910,17 @@ router.post('/submissions/:id/approve', async (req, res) => {
     });
 
   } catch (error) {
-    logger.error('Error approving gift card submission', { error: error.message, stack: error.stack });
-    return res.status(500).json({ success: false, error: 'Internal server error.' });
+    logger.error('Error approving gift card submission', {
+      error: error.message,
+      stack: error.stack,
+      submissionId: req.params.id,
+      requestBody: req.body
+    });
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to approve submission',
+      message: error.message
+    });
   }
 });
 
