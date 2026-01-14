@@ -123,13 +123,14 @@ router.post('/calculate-rate', async (req, res) => {
       });
     }
 
-    if (!giftCardRate.isValidAmount(amount)) {
+    // Validate amount range ($25 - $1000)
+    if (amount < 25 || amount > 1000) {
       return res.status(400).json({
         success: false,
-        message: `Amount must be between ${giftCardRate.minAmount} and ${giftCardRate.maxAmount} for ${giftcard} in ${country}`,
+        message: `Amount must be between $25 and $1000 for ${giftcard} in ${country}`,
         limits: {
-          minAmount: giftCardRate.minAmount,
-          maxAmount: giftCardRate.maxAmount
+          minAmount: 25,
+          maxAmount: 1000
         }
       });
     }

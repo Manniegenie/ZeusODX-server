@@ -80,13 +80,13 @@ const giftCardPriceSchema = new mongoose.Schema({
   // Minimum and maximum amounts
   minAmount: {
     type: Number,
-    default: 5,
+    default: 25,
     min: 0
   },
 
   maxAmount: {
     type: Number,
-    default: 2000,
+    default: 1000,
     min: 0
   },
 
