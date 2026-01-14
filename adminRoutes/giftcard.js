@@ -773,15 +773,21 @@ router.post('/submissions/:id/approve', async (req, res) => {
       });
     }
 
-    if (submission.status !== 'PENDING' && submission.status !== 'REVIEWING') {
+    // Only allow approval of PENDING submissions
+    if (submission.status !== 'PENDING') {
       logger.warn('Cannot approve submission with current status', {
         submissionId: id,
-        currentStatus: submission.status
+        currentStatus: submission.status,
+        allowedStatus: 'PENDING'
       });
       return res.status(400).json({
         success: false,
         error: `Cannot approve submission with status: ${submission.status}`,
-        message: `Invalid status: ${submission.status}`
+        message: submission.status === 'REJECTED'
+          ? 'Cannot approve rejected submissions'
+          : submission.status === 'PAID'
+          ? 'Submission has already been paid'
+          : `Only PENDING submissions can be approved`
       });
     }
 
