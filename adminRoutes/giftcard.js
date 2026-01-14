@@ -730,31 +730,58 @@ router.post('/submissions/:id/approve', async (req, res) => {
     const { id } = req.params;
     const { approvedValue, paymentRate, notes } = req.body;
 
+    logger.info('Gift card approval request received', {
+      submissionId: id,
+      approvedValue,
+      paymentRate,
+      hasNotes: !!notes
+    });
+
     if (!validator.isMongoId(id)) {
-      return res.status(400).json({ success: false, error: 'Valid submission ID is required.' });
+      logger.warn('Invalid submission ID format', { id });
+      return res.status(400).json({ success: false, error: 'Valid submission ID is required.', message: 'Invalid ID format' });
     }
 
     const submission = await GiftCard.findById(id).populate('userId');
     if (!submission) {
-      return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
+      logger.warn('Submission not found', { id });
+      return res.status(404).json({ success: false, error: 'Gift card submission not found.', message: 'Submission not found' });
     }
+
+    logger.info('Submission found', {
+      submissionId: id,
+      status: submission.status,
+      cardType: submission.cardType,
+      cardValue: submission.cardValue,
+      expectedRate: submission.expectedRate,
+      hasUserId: !!submission.userId,
+      userIdType: typeof submission.userId,
+      userIdHasId: submission.userId && !!submission.userId._id
+    });
 
     // Validate userId is populated
     if (!submission.userId || !submission.userId._id) {
       logger.error('Gift card submission missing userId', {
         submissionId: id,
-        userId: submission.userId
+        userId: submission.userId,
+        userIdType: typeof submission.userId
       });
       return res.status(400).json({
         success: false,
-        error: 'Gift card submission has invalid user reference.'
+        error: 'Gift card submission has invalid user reference.',
+        message: 'User reference is missing or invalid'
       });
     }
 
     if (submission.status !== 'PENDING' && submission.status !== 'REVIEWING') {
+      logger.warn('Cannot approve submission with current status', {
+        submissionId: id,
+        currentStatus: submission.status
+      });
       return res.status(400).json({
         success: false,
-        error: `Cannot approve submission with status: ${submission.status}`
+        error: `Cannot approve submission with status: ${submission.status}`,
+        message: `Invalid status: ${submission.status}`
       });
     }
 
@@ -765,11 +792,29 @@ router.post('/submissions/:id/approve', async (req, res) => {
     const finalPaymentRate = paymentRate || submission.expectedRate;
     const paymentAmount = finalApprovedValue * finalPaymentRate;
 
+    logger.info('Payment calculation', {
+      submissionId: id,
+      approvedValue,
+      cardValue: submission.cardValue,
+      finalApprovedValue,
+      paymentRate,
+      expectedRate: submission.expectedRate,
+      finalPaymentRate,
+      paymentAmount
+    });
+
     // Validate payment amount
-    if (!paymentAmount || paymentAmount <= 0) {
+    if (!paymentAmount || paymentAmount <= 0 || !Number.isFinite(paymentAmount)) {
+      logger.error('Invalid payment amount calculated', {
+        submissionId: id,
+        paymentAmount,
+        finalApprovedValue,
+        finalPaymentRate
+      });
       return res.status(400).json({
         success: false,
-        error: 'Invalid payment amount calculated.'
+        error: 'Invalid payment amount calculated.',
+        message: `Payment amount is invalid: ${paymentAmount}`
       });
     }
 
@@ -806,13 +851,19 @@ router.post('/submissions/:id/approve', async (req, res) => {
     submission.transactionId = transaction._id;
     await submission.save();
 
-    // Fund user's NGNZ balance
-    const user = await User.findById(submission.userId._id);
-    if (!user.ngnzBalance) {
-      user.ngnzBalance = 0;
+    // Fund user's NGNZ balance ATOMICALLY using $inc (like funduser.js)
+    const user = await User.findByIdAndUpdate(
+      submission.userId._id,
+      {
+        $inc: { ngnzBalance: paymentAmount }
+      },
+      { new: true, runValidators: true }
+    ).select('email ngnzBalance');
+
+    if (!user) {
+      // This should never happen since we validated earlier, but handle it
+      throw new Error('User not found when funding');
     }
-    user.ngnzBalance += paymentAmount;
-    await user.save();
 
     logger.info('Gift card submission approved and user funded', {
       submissionId: id,
