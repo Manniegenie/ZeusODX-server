@@ -96,6 +96,12 @@ const userSchema = new mongoose.Schema({
   lastFailedLogin: { type: Date },
   lastLoginEmailSent: { type: Date, default: null },
 
+  // Block status (for admin blocking users from withdrawals/utilities)
+  isBlocked: { type: Boolean, default: false },
+  blockReason: { type: String, default: null },
+  blockedAt: { type: Date, default: null },
+  unblockedAt: { type: Date, default: null },
+
   // Wallets (expanded to include canonical network variants)
   wallets: {
     // Bitcoin variants
@@ -182,6 +188,7 @@ userSchema.index({ username: 1 }, { unique: true, sparse: true });
 userSchema.index({ phonenumber: 1 }, { unique: true, sparse: true });
 userSchema.index({ bvn: 1 }, { unique: true, sparse: true });
 userSchema.index({ kycLevel: 1, kycStatus: 1 });
+userSchema.index({ isBlocked: 1 }); // Index for blocked user queries
 
 // Virtuals
 userSchema.virtual('id').get(function () { return this._id.toHexString(); });
