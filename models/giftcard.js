@@ -68,7 +68,6 @@ const giftCardSchema = new mongoose.Schema({
   // Payment processing
   approvedValue: { type: Number, min: 0, default: null },
   paymentRate: { type: Number, min: 0, max: 1, default: null },
-  paymentRate: { type: Number, min: 0, default: null },
   paymentAmount: { type: Number, min: 0, default: null },
   paidAt: { type: Date, default: null },
   paymentReference: { type: String, trim: true, default: null },

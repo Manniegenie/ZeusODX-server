@@ -306,7 +306,7 @@ router.post(
       });
     }
 
-    const { idType, idNumber, selfieImage, livenessImages, dob } = req.body;
+    const { idType, idNumber, selfieImage, livenessImages, dob, firstName: reqFirstName, lastName: reqLastName } = req.body;
 
     try {
       // Validate Youverify configuration
@@ -481,11 +481,15 @@ router.post(
 
       // Submit verification to Youverify API
 
+      // Use firstName/lastName from request body if provided, otherwise fall back to user profile
+      const verifyFirstName = reqFirstName || user.firstname;
+      const verifyLastName = reqLastName || user.lastname;
+
       const youverifyResult = await submitToYouverify({
         idType: youverifyIdType,
         idNumber,
-        firstName: user.firstname,
-        lastName: user.lastname,
+        firstName: verifyFirstName,
+        lastName: verifyLastName,
         selfieImage,
         dob,
         userId: user._id,
