@@ -1016,7 +1016,7 @@ router.post('/verify', async (req, res) => {
       }
       
       // Use PayBeta's customer verification endpoint
-      const response = await payBetaAuth.makeRequest('POST', '/v2/cable/verify', {
+      const response = await payBetaAuth.makeRequest('POST', '/v2/cable/validate', {
         service: service_id.toLowerCase(),
         smartCardNumber: customer_id.trim()
       });
