@@ -908,4 +908,345 @@ router.get('/swap-pairs', async (req, res) => {
   }
 });
 
+/**
+ * GET /analytics/platform-stats
+ * Comprehensive platform statistics:
+ * 1. Total user wallet balances (USD and Naira)
+ * 2. Total utility spending
+ * 3. Profit from markdowns (withdrawals and swaps)
+ */
+router.get('/platform-stats', async (req, res) => {
+  try {
+    console.log('=== Platform Stats Request Started ===');
+
+    // Get offramp rate for Naira conversion
+    const nairaMarkdown = await NairaMarkdown.findOne();
+    const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
+
+    // Get current crypto prices
+    const cryptoTokens = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX'];
+    let prices = {};
+    try {
+      prices = await getPricesWithCache(cryptoTokens) || {};
+    } catch (e) {
+      console.warn('getPricesWithCache failed, using fallback prices:', e.message);
+      prices = { BTC: 65000, ETH: 3200, SOL: 200, USDT: 1, USDC: 1, BNB: 580, MATIC: 0.85, TRX: 0.14 };
+    }
+
+    // Calculate NGNZ price in USD
+    const ngnzPriceUsd = 1 / offrampRate;
+
+    // 1. AGGREGATE TOTAL USER WALLET BALANCES
+    const walletBalances = await User.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalBtc: { $sum: { $ifNull: ['$btcBalance', 0] } },
+          totalEth: { $sum: { $ifNull: ['$ethBalance', 0] } },
+          totalSol: { $sum: { $ifNull: ['$solBalance', 0] } },
+          totalUsdt: { $sum: { $ifNull: ['$usdtBalance', 0] } },
+          totalUsdc: { $sum: { $ifNull: ['$usdcBalance', 0] } },
+          totalBnb: { $sum: { $ifNull: ['$bnbBalance', 0] } },
+          totalMatic: { $sum: { $ifNull: ['$maticBalance', 0] } },
+          totalTrx: { $sum: { $ifNull: ['$trxBalance', 0] } },
+          totalNgnz: { $sum: { $ifNull: ['$ngnzBalance', 0] } },
+          // Pending balances
+          totalBtcPending: { $sum: { $ifNull: ['$btcPendingBalance', 0] } },
+          totalEthPending: { $sum: { $ifNull: ['$ethPendingBalance', 0] } },
+          totalSolPending: { $sum: { $ifNull: ['$solPendingBalance', 0] } },
+          totalUsdtPending: { $sum: { $ifNull: ['$usdtPendingBalance', 0] } },
+          totalUsdcPending: { $sum: { $ifNull: ['$usdcPendingBalance', 0] } },
+          totalBnbPending: { $sum: { $ifNull: ['$bnbPendingBalance', 0] } },
+          totalMaticPending: { $sum: { $ifNull: ['$maticPendingBalance', 0] } },
+          totalTrxPending: { $sum: { $ifNull: ['$trxPendingBalance', 0] } },
+          totalNgnzPending: { $sum: { $ifNull: ['$ngnzPendingBalance', 0] } },
+          userCount: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const balances = walletBalances[0] || {};
+
+    // Calculate USD values for each token
+    const balanceBreakdown = {
+      BTC: {
+        amount: balances.totalBtc || 0,
+        pendingAmount: balances.totalBtcPending || 0,
+        price: prices.BTC || 0,
+        usdValue: (balances.totalBtc || 0) * (prices.BTC || 0),
+        pendingUsdValue: (balances.totalBtcPending || 0) * (prices.BTC || 0)
+      },
+      ETH: {
+        amount: balances.totalEth || 0,
+        pendingAmount: balances.totalEthPending || 0,
+        price: prices.ETH || 0,
+        usdValue: (balances.totalEth || 0) * (prices.ETH || 0),
+        pendingUsdValue: (balances.totalEthPending || 0) * (prices.ETH || 0)
+      },
+      SOL: {
+        amount: balances.totalSol || 0,
+        pendingAmount: balances.totalSolPending || 0,
+        price: prices.SOL || 0,
+        usdValue: (balances.totalSol || 0) * (prices.SOL || 0),
+        pendingUsdValue: (balances.totalSolPending || 0) * (prices.SOL || 0)
+      },
+      USDT: {
+        amount: balances.totalUsdt || 0,
+        pendingAmount: balances.totalUsdtPending || 0,
+        price: prices.USDT || 1,
+        usdValue: (balances.totalUsdt || 0) * (prices.USDT || 1),
+        pendingUsdValue: (balances.totalUsdtPending || 0) * (prices.USDT || 1)
+      },
+      USDC: {
+        amount: balances.totalUsdc || 0,
+        pendingAmount: balances.totalUsdcPending || 0,
+        price: prices.USDC || 1,
+        usdValue: (balances.totalUsdc || 0) * (prices.USDC || 1),
+        pendingUsdValue: (balances.totalUsdcPending || 0) * (prices.USDC || 1)
+      },
+      BNB: {
+        amount: balances.totalBnb || 0,
+        pendingAmount: balances.totalBnbPending || 0,
+        price: prices.BNB || 0,
+        usdValue: (balances.totalBnb || 0) * (prices.BNB || 0),
+        pendingUsdValue: (balances.totalBnbPending || 0) * (prices.BNB || 0)
+      },
+      MATIC: {
+        amount: balances.totalMatic || 0,
+        pendingAmount: balances.totalMaticPending || 0,
+        price: prices.MATIC || 0,
+        usdValue: (balances.totalMatic || 0) * (prices.MATIC || 0),
+        pendingUsdValue: (balances.totalMaticPending || 0) * (prices.MATIC || 0)
+      },
+      TRX: {
+        amount: balances.totalTrx || 0,
+        pendingAmount: balances.totalTrxPending || 0,
+        price: prices.TRX || 0,
+        usdValue: (balances.totalTrx || 0) * (prices.TRX || 0),
+        pendingUsdValue: (balances.totalTrxPending || 0) * (prices.TRX || 0)
+      },
+      NGNZ: {
+        amount: balances.totalNgnz || 0,
+        pendingAmount: balances.totalNgnzPending || 0,
+        price: ngnzPriceUsd,
+        usdValue: (balances.totalNgnz || 0) * ngnzPriceUsd,
+        pendingUsdValue: (balances.totalNgnzPending || 0) * ngnzPriceUsd,
+        nairaValue: balances.totalNgnz || 0, // NGNZ is 1:1 with Naira
+        pendingNairaValue: balances.totalNgnzPending || 0
+      }
+    };
+
+    // Calculate totals
+    const totalUsdValue = Object.values(balanceBreakdown).reduce((sum, token) => sum + token.usdValue, 0);
+    const totalPendingUsdValue = Object.values(balanceBreakdown).reduce((sum, token) => sum + token.pendingUsdValue, 0);
+    const totalNairaValue = totalUsdValue * offrampRate;
+    const totalPendingNairaValue = totalPendingUsdValue * offrampRate;
+
+    // 2. AGGREGATE TOTAL UTILITY SPENDING (from BillTransaction)
+    const BillTransaction = require('../models/billstransaction');
+    const utilityStats = await BillTransaction.aggregate([
+      {
+        $match: {
+          status: 'completed'
+        }
+      },
+      {
+        $group: {
+          _id: '$billType',
+          totalAmount: { $sum: { $ifNull: ['$amountNaira', 0] } },
+          totalAmountNGNZ: { $sum: { $ifNull: ['$amountNGNZ', 0] } },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const utilityBreakdown = {};
+    let totalUtilitySpent = 0;
+    let totalUtilityCount = 0;
+
+    for (const stat of utilityStats) {
+      utilityBreakdown[stat._id] = {
+        totalNaira: stat.totalAmount,
+        totalNGNZ: stat.totalAmountNGNZ,
+        count: stat.count,
+        usdValue: stat.totalAmount / offrampRate
+      };
+      totalUtilitySpent += stat.totalAmount;
+      totalUtilityCount += stat.count;
+    }
+
+    // 3. CALCULATE PROFIT FROM MARKDOWNS
+    // Get global markdown settings
+    const GlobalMarkdown = require('../models/pricemarkdown');
+    const SwapMarkdown = require('../models/swapmarkdown');
+
+    let globalMarkdown = null;
+    let swapMarkdown = null;
+
+    try {
+      globalMarkdown = await GlobalMarkdown.getCurrentMarkdown();
+    } catch (e) {
+      console.warn('Could not fetch global markdown:', e.message);
+    }
+
+    try {
+      swapMarkdown = await SwapMarkdown.findOne();
+    } catch (e) {
+      console.warn('Could not fetch swap markdown:', e.message);
+    }
+
+    // Calculate profit from NGNZ withdrawals (fee retained)
+    const withdrawalProfitStats = await Transaction.aggregate([
+      {
+        $match: {
+          isNGNZWithdrawal: true,
+          status: { $in: ['SUCCESSFUL', 'COMPLETED'] }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalWithdrawalFees: { $sum: { $ifNull: ['$withdrawalFee', 0] } },
+          totalWithdrawals: { $sum: 1 },
+          totalAmountWithdrawn: { $sum: { $abs: '$amount' } },
+          totalBankAmount: { $sum: { $ifNull: ['$bankAmount', 0] } }
+        }
+      }
+    ]);
+
+    const withdrawalProfit = withdrawalProfitStats[0] || {
+      totalWithdrawalFees: 0,
+      totalWithdrawals: 0,
+      totalAmountWithdrawn: 0,
+      totalBankAmount: 0
+    };
+
+    // Calculate profit from swaps (markdown difference)
+    // For swaps, profit = fromAmount * fromPrice - toAmount * toPrice (when markdown is applied)
+    const swapProfitStats = await Transaction.aggregate([
+      {
+        $match: {
+          type: { $in: ['SWAP', 'OBIEX_SWAP'] },
+          status: 'SUCCESSFUL',
+          swapDirection: 'OUT' // Only count OUT side to avoid double counting
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalSwaps: { $sum: 1 },
+          totalFromAmount: { $sum: { $ifNull: ['$fromAmount', 0] } },
+          totalToAmount: { $sum: { $ifNull: ['$toAmount', 0] } },
+          totalFees: { $sum: { $ifNull: ['$fee', 0] } },
+          totalObiexFees: { $sum: { $ifNull: ['$obiexFee', 0] } }
+        }
+      }
+    ]);
+
+    const swapProfit = swapProfitStats[0] || {
+      totalSwaps: 0,
+      totalFromAmount: 0,
+      totalToAmount: 0,
+      totalFees: 0,
+      totalObiexFees: 0
+    };
+
+    // Calculate estimated markdown profit from swaps
+    // This is an approximation based on markdown percentage
+    const swapMarkdownPercentage = swapMarkdown?.markdownPercentage || 0;
+    const estimatedSwapMarkdownProfit = swapMarkdownPercentage > 0
+      ? (swapProfit.totalFromAmount * (swapMarkdownPercentage / 100))
+      : 0;
+
+    // Calculate estimated markdown profit from crypto prices (price markdown)
+    const globalMarkdownPercentage = globalMarkdown?.markdownPercentage || 0;
+
+    // Build response
+    const response = {
+      success: true,
+      timestamp: new Date().toISOString(),
+      data: {
+        // 1. Total Wallet Balances
+        walletBalances: {
+          totalUsd: parseFloat(totalUsdValue.toFixed(2)),
+          totalNaira: parseFloat(totalNairaValue.toFixed(2)),
+          totalPendingUsd: parseFloat(totalPendingUsdValue.toFixed(2)),
+          totalPendingNaira: parseFloat(totalPendingNairaValue.toFixed(2)),
+          grandTotalUsd: parseFloat((totalUsdValue + totalPendingUsdValue).toFixed(2)),
+          grandTotalNaira: parseFloat((totalNairaValue + totalPendingNairaValue).toFixed(2)),
+          userCount: balances.userCount || 0,
+          breakdown: balanceBreakdown,
+          conversionRate: {
+            usdToNaira: offrampRate,
+            nairaToUsd: ngnzPriceUsd
+          }
+        },
+
+        // 2. Utility Spending
+        utilitySpending: {
+          totalNaira: totalUtilitySpent,
+          totalUsd: parseFloat((totalUtilitySpent / offrampRate).toFixed(2)),
+          totalTransactions: totalUtilityCount,
+          breakdown: utilityBreakdown
+        },
+
+        // 3. Profit & Revenue
+        profits: {
+          // Withdrawal fees (direct profit)
+          withdrawals: {
+            totalFeesCollected: withdrawalProfit.totalWithdrawalFees,
+            totalFeesUsd: parseFloat((withdrawalProfit.totalWithdrawalFees / offrampRate).toFixed(2)),
+            totalTransactions: withdrawalProfit.totalWithdrawals,
+            totalAmountProcessed: withdrawalProfit.totalAmountWithdrawn,
+            totalSentToBank: withdrawalProfit.totalBankAmount
+          },
+
+          // Swap markdown profit (estimated)
+          swaps: {
+            totalSwaps: swapProfit.totalSwaps,
+            markdownPercentage: swapMarkdownPercentage,
+            estimatedMarkdownProfit: parseFloat(estimatedSwapMarkdownProfit.toFixed(2)),
+            estimatedMarkdownProfitUsd: parseFloat((estimatedSwapMarkdownProfit / offrampRate).toFixed(2)),
+            totalFeesCollected: swapProfit.totalFees,
+            totalObiexFees: swapProfit.totalObiexFees
+          },
+
+          // Price markdown (affects displayed prices)
+          priceMarkdown: {
+            percentage: globalMarkdownPercentage,
+            isActive: globalMarkdown?.isActive || false,
+            description: 'Applied to crypto prices (reduces displayed price to user)'
+          },
+
+          // Combined totals
+          summary: {
+            totalDirectFeesNaira: withdrawalProfit.totalWithdrawalFees + swapProfit.totalFees,
+            totalDirectFeesUsd: parseFloat(((withdrawalProfit.totalWithdrawalFees + swapProfit.totalFees) / offrampRate).toFixed(2)),
+            totalEstimatedMarkdownProfit: parseFloat(estimatedSwapMarkdownProfit.toFixed(2)),
+            totalEstimatedMarkdownProfitUsd: parseFloat((estimatedSwapMarkdownProfit / offrampRate).toFixed(2))
+          }
+        },
+
+        // Current settings
+        currentSettings: {
+          offrampRate: offrampRate,
+          globalMarkdownPercentage: globalMarkdownPercentage,
+          swapMarkdownPercentage: swapMarkdownPercentage
+        }
+      }
+    };
+
+    console.log('=== Platform Stats Request Complete ===');
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error fetching platform stats:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch platform statistics',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
