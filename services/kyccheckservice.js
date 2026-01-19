@@ -84,7 +84,7 @@ class KYCLimitService {
    */
   async validateTransactionLimit(userId, amount, currency = 'NGNZ', transactionType = 'WITHDRAWAL') {
     try {
-      logger.info(`[KYC] Validation for ${userId}: ${amount} ${currency}`);
+      logger.info(`[KYC] Validation for ${userId}: ${amount} ${currency} (type: ${transactionType})`);
 
       const user = await this.getUser(userId);
       if (!user) return this.createErrorResponse('USER_NOT_FOUND', 'User not found');
@@ -95,7 +95,7 @@ class KYCLimitService {
       // Logic Mapping: NGNZ vs Crypto
       let amountInNaira;
       const upperCurrency = currency.toUpperCase();
-      
+
       if (upperCurrency === 'NGNZ' || upperCurrency === 'NGN') {
         amountInNaira = amount; // NGNZ service bypasses conversion
       } else {
@@ -106,8 +106,11 @@ class KYCLimitService {
         return this.createErrorResponse('KYC_REQUIRED', 'KYC Level 1 required');
       }
 
-      const currentSpending = await this.getCurrentSpending(userId);
+      // Get spending filtered by transaction type category
+      const currentSpending = await this.getCurrentSpending(userId, transactionType);
       const newDailyTotal = currentSpending.daily + amountInNaira;
+
+      logger.info(`[KYC] Spending check for ${userId}: current=${currentSpending.daily}, requested=${amountInNaira}, limit=${kycLimits.daily}, type=${transactionType}`);
 
       // Validation
       if (newDailyTotal > kycLimits.daily) {
@@ -176,8 +179,16 @@ class KYCLimitService {
     return prices[currency] * rate.finalPrice;
   }
 
-  async getCurrentSpending(userId) {
-    const cacheKey = `spending_${userId}`;
+  async getCurrentSpending(userId, transactionType = 'WITHDRAWAL') {
+    // Determine the spending category based on transaction type
+    const isUtilityTransaction = ['AIRTIME', 'BILL_PAYMENT', 'UTILITY'].includes(transactionType);
+    const isCryptoTransaction = ['WITHDRAWAL', 'SWAP', 'CRYPTO'].includes(transactionType);
+    const isNgnzTransaction = ['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType);
+
+    // Use category-specific cache key
+    const category = isUtilityTransaction ? 'utility' : (isCryptoTransaction ? 'crypto' : 'ngnz');
+    const cacheKey = `spending_${userId}_${category}`;
+
     if (this.cache.userSpending.has(cacheKey) && Date.now() < this.cache.cacheExpiry.get(cacheKey)) {
       return this.cache.userSpending.get(cacheKey);
     }
@@ -186,15 +197,35 @@ class KYCLimitService {
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const [regularTransactions, billTransactions] = await Promise.all([
-      this.getSuccessfulTransactions(userId, startOfMonth),
-      this.getSuccessfulBillTransactions(userId, startOfMonth)
-    ]);
+    let dailyTotal = 0;
+    let monthlyTotal = 0;
 
-    const dailyTotal = (await this.sumTransactionsByDate(regularTransactions, startOfDay)) + 
-                        this.sumBillTransactionsByDate(billTransactions, startOfDay);
-    const monthlyTotal = (await this.sumTransactionsByDate(regularTransactions, startOfMonth)) + 
-                          this.sumBillTransactionsByDate(billTransactions, startOfMonth);
+    if (isUtilityTransaction) {
+      // For utility transactions, only count bill transactions (airtime, data, electricity, etc.)
+      const billTransactions = await this.getSuccessfulBillTransactions(userId, startOfMonth);
+      dailyTotal = this.sumBillTransactionsByDate(billTransactions, startOfDay);
+      monthlyTotal = this.sumBillTransactionsByDate(billTransactions, startOfMonth);
+
+      logger.info(`[KYC] Utility spending for ${userId}: daily=${dailyTotal}, monthly=${monthlyTotal}, billCount=${billTransactions.length}`);
+    } else if (isCryptoTransaction) {
+      // For crypto transactions, only count withdrawal transactions
+      const regularTransactions = await this.getSuccessfulTransactions(userId, startOfMonth);
+      dailyTotal = await this.sumTransactionsByDate(regularTransactions, startOfDay);
+      monthlyTotal = await this.sumTransactionsByDate(regularTransactions, startOfMonth);
+
+      logger.info(`[KYC] Crypto spending for ${userId}: daily=${dailyTotal}, monthly=${monthlyTotal}, txCount=${regularTransactions.length}`);
+    } else {
+      // For NGNZ/other transactions, count both (original behavior as fallback)
+      const [regularTransactions, billTransactions] = await Promise.all([
+        this.getSuccessfulTransactions(userId, startOfMonth),
+        this.getSuccessfulBillTransactions(userId, startOfMonth)
+      ]);
+
+      dailyTotal = (await this.sumTransactionsByDate(regularTransactions, startOfDay)) +
+                   this.sumBillTransactionsByDate(billTransactions, startOfDay);
+      monthlyTotal = (await this.sumTransactionsByDate(regularTransactions, startOfMonth)) +
+                     this.sumBillTransactionsByDate(billTransactions, startOfMonth);
+    }
 
     const spending = { daily: dailyTotal, monthly: monthlyTotal };
     this.cache.userSpending.set(cacheKey, spending);
