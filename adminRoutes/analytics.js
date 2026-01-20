@@ -8,6 +8,7 @@ const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const NairaMarkdown = require('../models/offramp');
 const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
+const GiftCard = require('../models/giftcard'); // Add this if not already present
 
 /**
  * Optional base unit map for tokens stored in smallest units.
@@ -188,7 +189,9 @@ router.get('/dashboard', async (req, res) => {
       recentActivity,
       tokenStats,
       transactionVolumeResult,
-      pendingTradesStats
+      pendingTradesStats,
+      approvedGiftCardsCount,
+      rejectedGiftCardsCount
     ] = await Promise.all([
       User.aggregate([
         {
@@ -328,7 +331,10 @@ router.get('/dashboard', async (req, res) => {
             pendingGiftcards: { $sum: { $cond: [{ $eq: ['$type', 'GIFTCARD'] }, 1, 0] } }
           }
         }
-      ])
+      ]),
+
+      GiftCard.countDocuments({ status: 'APPROVED' }),
+      GiftCard.countDocuments({ status: 'REJECTED' })
     ]);
 
     const response = {
@@ -412,7 +418,11 @@ router.get('/dashboard', async (req, res) => {
         tokenStats: tokenStats,
         transactionVolume: transactionVolumeResult?.totalVolumeUSD ?? 0,
         transactionVolumeBreakdown: transactionVolumeResult?.breakdown ?? {},
-        transactionVolumeCounts: transactionVolumeResult?.counts ?? { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 }
+        transactionVolumeCounts: transactionVolumeResult?.counts ?? { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 },
+        giftCardStats: {
+          approved: approvedGiftCardsCount,
+          rejected: rejectedGiftCardsCount
+        }
       }
     };
 
