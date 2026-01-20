@@ -1264,7 +1264,7 @@ router.get('/platform-stats', async (req, res) => {
 
 /**
  * GET /analytics/volumes
- * Returns total deposit and withdrawal volumes (in NGN and USD if possible)
+ * Returns total deposit and withdrawal volumes (USD, using trade volume logic)
  */
 router.get('/volumes', async (req, res) => {
   try {
@@ -1338,29 +1338,18 @@ router.get('/volumes', async (req, res) => {
     // Sum all deposits and withdrawals in USD
     let totalDepositUSD = 0;
     let totalWithdrawalUSD = 0;
-    let totalDepositNGN = 0;
-    let totalWithdrawalNGN = 0;
-
     for (const d of depositAgg) {
-      const usd = toUSD(d._id, d.totalAmount);
-      totalDepositUSD += usd;
-      if (d._id === 'NGNZ') totalDepositNGN += d.totalAmount;
+      totalDepositUSD += toUSD(d._id, d.totalAmount);
     }
     for (const w of withdrawalAgg) {
-      const usd = toUSD(w._id, w.totalAmount);
-      totalWithdrawalUSD += usd;
-      if (w._id === 'NGNZ') totalWithdrawalNGN += w.totalAmount;
+      totalWithdrawalUSD += toUSD(w._id, w.totalAmount);
     }
 
     res.json({
       success: true,
       data: {
-        deposits: depositAgg,
-        withdrawals: withdrawalAgg,
         totalDepositUSD: Number(totalDepositUSD.toFixed(2)),
-        totalWithdrawalUSD: Number(totalWithdrawalUSD.toFixed(2)),
-        totalDepositNGN,
-        totalWithdrawalNGN
+        totalWithdrawalUSD: Number(totalWithdrawalUSD.toFixed(2))
       }
     });
   } catch (error) {
