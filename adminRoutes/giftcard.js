@@ -9,99 +9,23 @@ const validator = require('validator');
 const { SendGiftcardMail } = require('../services/EmailService');
 const { sendGiftcardApprovalNotification, sendGiftcardRejectionNotification } = require('../services/notificationService');
 
-// Validation function for rate data (updated for NGN rates)
+// Validation function for rate data - essential checks only
 function validateRateData(data) {
   const { cardType, country, rate, physicalRate, ecodeRate, sourceCurrency, targetCurrency, minAmount, maxAmount, vanillaType } = data;
   const errors = [];
 
-  // Updated allowed gift card types
-  const allowedCardTypes = [
-    'APPLE',
-    'STEAM',
-    'NORDSTROM',
-    'MACY',
-    'NIKE',
-    'GOOGLE_PLAY',
-    'AMAZON',
-    'VISA',
-    'VANILLA',
-    'RAZOR_GOLD',
-    'AMERICAN_EXPRESS',
-    'SEPHORA',
-    'FOOTLOCKER',
-    'XBOX',
-    'EBAY'
-  ];
+  // Required fields only
+  if (!cardType) errors.push('cardType is required');
+  if (!country) errors.push('country is required');
+  if (rate === undefined || rate === null) errors.push('rate is required');
+  else if (typeof rate !== 'number' || rate < 0) errors.push('rate must be a positive number');
 
-  const allowedCountries = ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'];
-  const allowedCurrencies = ['USD', 'NGN', 'GBP', 'EUR', 'CAD'];
-  const allowedVanillaTypes = ['4097', '4118'];
-
-  // Required fields
-  if (!cardType) {
-    errors.push('cardType is required');
-  } else if (!allowedCardTypes.includes(cardType.toUpperCase())) {
-    errors.push(`Invalid cardType: ${cardType}`);
+  // Vanilla cards need vanillaType
+  if (cardType && cardType.toUpperCase() === 'VANILLA' && !vanillaType) {
+    errors.push('vanillaType is required for VANILLA cards');
   }
 
-  if (!country) {
-    errors.push('country is required');
-  } else if (!allowedCountries.includes(country.toUpperCase())) {
-    errors.push(`Invalid country: ${country}`);
-  }
-
-  if (!rate && rate !== 0) {
-    errors.push('rate is required');
-  } else if (typeof rate !== 'number' || rate < 0) {
-    errors.push('rate must be a positive number');
-  } else if (rate < 100) {
-    errors.push('rate seems too low for NGN conversion (expected range: 1000-2000)');
-  }
-
-  // Validate vanillaType for VANILLA cards
-  if (cardType && cardType.toUpperCase() === 'VANILLA') {
-    if (!vanillaType) {
-      errors.push('vanillaType is required for VANILLA gift cards');
-    } else if (!allowedVanillaTypes.includes(vanillaType)) {
-      errors.push(`vanillaType must be one of: ${allowedVanillaTypes.join(', ')}`);
-    }
-  } else if (vanillaType) {
-    errors.push('vanillaType can only be specified for VANILLA gift cards');
-  }
-
-  // Optional field validations
-  if (physicalRate !== undefined && physicalRate !== null) {
-    if (typeof physicalRate !== 'number' || physicalRate < 0) {
-      errors.push('physicalRate must be a positive number');
-    } else if (physicalRate < 100) {
-      errors.push('physicalRate seems too low for NGN conversion (expected range: 1000-2000)');
-    }
-  }
-
-  if (ecodeRate !== undefined && ecodeRate !== null) {
-    if (typeof ecodeRate !== 'number' || ecodeRate < 0) {
-      errors.push('ecodeRate must be a positive number');
-    } else if (ecodeRate < 100) {
-      errors.push('ecodeRate seems too low for NGN conversion (expected range: 1000-2000)');
-    }
-  }
-
-  if (sourceCurrency && !allowedCurrencies.includes(sourceCurrency.toUpperCase())) {
-    errors.push('Invalid sourceCurrency');
-  }
-
-  if (targetCurrency && !allowedCurrencies.includes(targetCurrency.toUpperCase())) {
-    errors.push('Invalid targetCurrency');
-  }
-
-  if (minAmount !== undefined && minAmount !== null && (typeof minAmount !== 'number' || minAmount < 0)) {
-    errors.push('minAmount must be a positive number');
-  }
-
-  if (maxAmount !== undefined && maxAmount !== null && (typeof maxAmount !== 'number' || maxAmount < 0)) {
-    errors.push('maxAmount must be a positive number');
-  }
-
+  // minAmount/maxAmount sanity check
   if (minAmount && maxAmount && minAmount > maxAmount) {
     errors.push('minAmount cannot be greater than maxAmount');
   }
@@ -113,12 +37,12 @@ function validateRateData(data) {
       cardType: cardType.toUpperCase(),
       country: country.toUpperCase(),
       rate: parseFloat(rate),
-      physicalRate: physicalRate ? parseFloat(physicalRate) : null,
-      ecodeRate: ecodeRate ? parseFloat(ecodeRate) : null,
+      physicalRate: physicalRate != null ? parseFloat(physicalRate) : null,
+      ecodeRate: ecodeRate != null ? parseFloat(ecodeRate) : null,
       sourceCurrency: sourceCurrency ? sourceCurrency.toUpperCase() : 'USD',
       targetCurrency: targetCurrency ? targetCurrency.toUpperCase() : 'NGN',
-      minAmount: minAmount ? parseFloat(minAmount) : 5,
-      maxAmount: maxAmount ? parseFloat(maxAmount) : 2000,
+      minAmount: minAmount != null ? parseFloat(minAmount) : 5,
+      maxAmount: maxAmount != null ? parseFloat(maxAmount) : 2000,
       vanillaType: vanillaType || null
     } : null
   };
@@ -317,60 +241,19 @@ router.put('/rates/:id', async (req, res) => {
       });
     }
 
-    // Validate only provided fields
+    // Build update data from allowed fields
     const updateData = {};
     const fieldsToUpdate = ['rate', 'physicalRate', 'ecodeRate', 'minAmount', 'maxAmount', 'isActive', 'notes'];
-    
-    // Note: cardType, country, and vanillaType should not be updated after creation
-    // as they define the unique identity of the rate
-    
+
     for (const field of fieldsToUpdate) {
       if (req.body[field] !== undefined) {
         updateData[field] = req.body[field];
       }
     }
 
-    // Validate rates if provided (updated for NGN ranges)
-    if (updateData.rate !== undefined) {
-      if (typeof updateData.rate !== 'number' || updateData.rate < 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'rate must be a positive number'
-        });
-      } else if (updateData.rate < 100) {
-        return res.status(400).json({
-          success: false,
-          message: 'rate seems too low for NGN conversion (expected range: 1000-2000)'
-        });
-      }
-    }
-
-    if (updateData.physicalRate !== undefined && updateData.physicalRate !== null) {
-      if (typeof updateData.physicalRate !== 'number' || updateData.physicalRate < 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'physicalRate must be a positive number'
-        });
-      } else if (updateData.physicalRate < 100) {
-        return res.status(400).json({
-          success: false,
-          message: 'physicalRate seems too low for NGN conversion (expected range: 1000-2000)'
-        });
-      }
-    }
-
-    if (updateData.ecodeRate !== undefined && updateData.ecodeRate !== null) {
-      if (typeof updateData.ecodeRate !== 'number' || updateData.ecodeRate < 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'ecodeRate must be a positive number'
-        });
-      } else if (updateData.ecodeRate < 100) {
-        return res.status(400).json({
-          success: false,
-          message: 'ecodeRate seems too low for NGN conversion (expected range: 1000-2000)'
-        });
-      }
+    // Basic rate validation
+    if (updateData.rate !== undefined && (typeof updateData.rate !== 'number' || updateData.rate < 0)) {
+      return res.status(400).json({ success: false, message: 'rate must be a positive number' });
     }
 
     updateData.lastUpdated = new Date();
@@ -468,36 +351,13 @@ router.delete('/rates/:id', async (req, res) => {
 router.get('/rates', async (req, res) => {
   try {
     const { country, cardType, vanillaType, isActive, page = 1, limit = 50 } = req.query;
-    
-    const query = {};
-    
-    if (country) {
-      if (!['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'].includes(country.toUpperCase())) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid country'
-        });
-      }
-      query.country = country.toUpperCase();
-    }
-    
-    if (cardType) {
-      query.cardType = cardType.toUpperCase();
-    }
 
-    if (vanillaType) {
-      if (!['4097', '4118'].includes(vanillaType)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid vanillaType. Must be 4097 or 4118'
-        });
-      }
-      query.vanillaType = vanillaType;
-    }
-    
-    if (isActive !== undefined) {
-      query.isActive = isActive === 'true';
-    }
+    const query = {};
+
+    if (country) query.country = country.toUpperCase();
+    if (cardType) query.cardType = cardType.toUpperCase();
+    if (vanillaType) query.vanillaType = vanillaType;
+    if (isActive !== undefined) query.isActive = isActive === 'true';
 
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
@@ -993,11 +853,6 @@ router.post('/submissions/:id/reject', async (req, res) => {
 
     if (!rejectionReason) {
       return res.status(400).json({ success: false, error: 'Rejection reason is required.' });
-    }
-
-    const validReasons = ['INVALID_IMAGE', 'ALREADY_USED', 'INSUFFICIENT_BALANCE', 'FAKE_CARD', 'UNREADABLE', 'WRONG_TYPE', 'EXPIRED', 'INVALID_ECODE', 'DUPLICATE_ECODE', 'OTHER'];
-    if (!validReasons.includes(rejectionReason)) {
-      return res.status(400).json({ success: false, error: 'Invalid rejection reason.' });
     }
 
     const submission = await GiftCard.findById(id).populate('userId');

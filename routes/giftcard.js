@@ -218,32 +218,25 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
     });
 
     const errors = [];
-
-    // --- Robust validation ---
-    if (!cardType || !GIFTCARD_CONFIG.SUPPORTED_TYPES.includes(String(cardType).toUpperCase())) {
-      errors.push(`Invalid or missing card type. Supported: ${GIFTCARD_CONFIG.SUPPORTED_TYPES.join(', ')}`);
-    }
-    if (!cardFormat || !GIFTCARD_CONFIG.SUPPORTED_FORMATS.includes(String(cardFormat).toUpperCase())) {
-      errors.push(`Invalid or missing card format. Supported: ${GIFTCARD_CONFIG.SUPPORTED_FORMATS.join(', ')}`);
-    }
-    if (!country || !GIFTCARD_CONFIG.SUPPORTED_COUNTRIES.includes(String(country).toUpperCase())) {
-      errors.push(`Invalid or missing country. Supported: ${GIFTCARD_CONFIG.SUPPORTED_COUNTRIES.join(', ')}`);
-    }
     const cardVal = parseFloat(cardValueRaw);
-    if (isNaN(cardVal) || cardVal <= 0) {
-      errors.push('Invalid or missing card value. Must be a positive number.');
+    const normalizedFormat = String(cardFormat || '').toUpperCase();
+    const normalizedType = String(cardType || '').toUpperCase();
+
+    // Essential validations only
+    if (!cardType) errors.push('Card type is required');
+    if (!cardFormat) errors.push('Card format is required');
+    if (!country) errors.push('Country is required');
+    if (isNaN(cardVal) || cardVal <= 0) errors.push('Valid card value is required');
+    if (normalizedFormat === 'PHYSICAL' && (!req.files || req.files.length === 0)) {
+      errors.push('Image required for physical cards');
     }
-    if (String(cardFormat).toUpperCase() === 'PHYSICAL' && (!req.files || req.files.length === 0)) {
-      errors.push('Physical cards require at least one image.');
+    if (normalizedFormat === 'E_CODE' && !eCode) {
+      errors.push('E-code is required');
     }
-    if (String(cardFormat).toUpperCase() === 'E_CODE' && !eCode) {
-      errors.push('E-codes require the code to be provided.');
+    if (normalizedType === 'VANILLA' && !vanillaType) {
+      errors.push('Vanilla type is required for Vanilla cards');
     }
-    if (String(cardType).toUpperCase() === 'VANILLA' && (!vanillaType || !GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.includes(vanillaType))) {
-      errors.push(`Vanilla cards require a valid vanillaType. Supported: ${GIFTCARD_CONFIG.SUPPORTED_VANILLA_TYPES.join(', ')}`);
-    }
-    // --- End of validation ---
-    
+
     if (errors.length > 0) return badRequest(errors);
 
     // Normalize - with Apple/iTunes handling
