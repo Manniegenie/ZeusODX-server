@@ -191,7 +191,8 @@ router.get('/dashboard', async (req, res) => {
       transactionVolumeResult,
       pendingTradesStats,
       approvedGiftCardsCount,
-      rejectedGiftCardsCount
+      rejectedGiftCardsCount,
+      paidGiftCardsCount
     ] = await Promise.all([
       User.aggregate([
         {
@@ -334,7 +335,8 @@ router.get('/dashboard', async (req, res) => {
       ]),
 
       GiftCard.countDocuments({ status: 'APPROVED' }),
-      GiftCard.countDocuments({ status: 'REJECTED' })
+      GiftCard.countDocuments({ status: 'REJECTED' }),
+      GiftCard.countDocuments({ status: 'PAID' })
     ]);
 
     const response = {
@@ -420,8 +422,9 @@ router.get('/dashboard', async (req, res) => {
         transactionVolumeBreakdown: transactionVolumeResult?.breakdown ?? {},
         transactionVolumeCounts: transactionVolumeResult?.counts ?? { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 },
         giftCardStats: {
-          approved: approvedGiftCardsCount,
-          rejected: rejectedGiftCardsCount
+          approved: (approvedGiftCardsCount || 0) + (paidGiftCardsCount || 0),
+          rejected: rejectedGiftCardsCount,
+          paid: paidGiftCardsCount
         }
       }
     };
