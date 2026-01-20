@@ -1262,4 +1262,58 @@ router.get('/platform-stats', async (req, res) => {
   }
 });
 
+/**
+ * GET /analytics/volumes
+ * Returns total deposit and withdrawal volumes (in NGN and USD if possible)
+ */
+router.get('/volumes', async (req, res) => {
+  try {
+    // Calculate total deposit volume
+    const depositAgg = await Transaction.aggregate([
+      {
+        $match: {
+          type: 'DEPOSIT',
+          status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
+          amount: { $gt: 0 }
+        }
+      },
+      {
+        $group: {
+          _id: '$currency',
+          totalAmount: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Calculate total withdrawal volume
+    const withdrawalAgg = await Transaction.aggregate([
+      {
+        $match: {
+          type: 'WITHDRAWAL',
+          status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
+          amount: { $lt: 0 }
+        }
+      },
+      {
+        $group: {
+          _id: '$currency',
+          totalAmount: { $sum: { $abs: '$amount' } },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        deposits: depositAgg,
+        withdrawals: withdrawalAgg
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
