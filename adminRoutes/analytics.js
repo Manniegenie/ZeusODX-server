@@ -1268,47 +1268,99 @@ router.get('/platform-stats', async (req, res) => {
  */
 router.get('/volumes', async (req, res) => {
   try {
-    // Calculate total deposit volume
+    // Get offramp rate for NGNZ
+    const nairaMarkdown = await NairaMarkdown.findOne();
+    let offrampRate = nairaMarkdown?.offrampRate || 1554.42;
+    if (!offrampRate || isNaN(offrampRate) || Number(offrampRate) === 0) {
+      offrampRate = 1554.42;
+    }
+
+    // Aggregate deposits
     const depositAgg = await Transaction.aggregate([
       {
         $match: {
           type: 'DEPOSIT',
           status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
-          amount: { $gt: 0 }
+          amount: { $gt: 0 },
+          currency: { $exists: true, $ne: null }
         }
       },
       {
         $group: {
-          _id: '$currency',
-          totalAmount: { $sum: '$amount' },
-          count: { $sum: 1 }
+          _id: { $toUpper: '$currency' },
+          totalAmount: { $sum: '$amount' }
         }
       }
     ]);
 
-    // Calculate total withdrawal volume
+    // Aggregate withdrawals
     const withdrawalAgg = await Transaction.aggregate([
       {
         $match: {
           type: 'WITHDRAWAL',
           status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
-          amount: { $lt: 0 }
+          amount: { $lt: 0 },
+          currency: { $exists: true, $ne: null }
         }
       },
       {
         $group: {
-          _id: '$currency',
-          totalAmount: { $sum: { $abs: '$amount' } },
-          count: { $sum: 1 }
+          _id: { $toUpper: '$currency' },
+          totalAmount: { $sum: { $abs: '$amount' } }
         }
       }
     ]);
+
+    // Get all unique currencies
+    const allCurrencies = Array.from(new Set([
+      ...depositAgg.map(d => d._id),
+      ...withdrawalAgg.map(w => w._id)
+    ])).filter(Boolean);
+
+    // Get prices for all currencies except NGNZ
+    const priceCurrencies = allCurrencies.filter(c => c !== 'NGNZ' && SUPPORTED_TOKENS[c]);
+    let prices = {};
+    try {
+      prices = await getPricesWithCache(priceCurrencies) || {};
+    } catch (e) {
+      prices = {};
+    }
+
+    // Helper to convert to USD
+    function toUSD(currency, amount) {
+      if (currency === 'NGNZ') {
+        return Number(offrampRate) ? Number(amount) / Number(offrampRate) : 0;
+      }
+      const price = prices[currency];
+      return price ? Number(amount) * Number(price) : 0;
+    }
+
+    // Sum all deposits and withdrawals in USD
+    let totalDepositUSD = 0;
+    let totalWithdrawalUSD = 0;
+    let totalDepositNGN = 0;
+    let totalWithdrawalNGN = 0;
+
+    for (const d of depositAgg) {
+      const usd = toUSD(d._id, d.totalAmount);
+      totalDepositUSD += usd;
+      if (d._id === 'NGNZ') totalDepositNGN += d.totalAmount;
+    }
+    for (const w of withdrawalAgg) {
+      const usd = toUSD(w._id, w.totalAmount);
+      totalWithdrawalUSD += usd;
+      if (w._id === 'NGNZ') totalWithdrawalNGN += w.totalAmount;
+    }
 
     res.json({
       success: true,
       data: {
         deposits: depositAgg,
-        withdrawals: withdrawalAgg
+        withdrawals: withdrawalAgg,
+        totalDepositUSD: Number(totalDepositUSD.toFixed(2)),
+        totalWithdrawalUSD: Number(totalWithdrawalUSD.toFixed(2)),
+        totalDepositNGN,
+        totalWithdrawalNGN
       }
     });
   } catch (error) {
