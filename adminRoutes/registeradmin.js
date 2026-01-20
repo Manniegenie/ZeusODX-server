@@ -176,6 +176,67 @@ router.get("/register", async (req, res) => {
   }
 });
 
+// GET: /admin/permissions - Get current admin's permissions and feature access
+router.get("/permissions", async (req, res) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: "Authorization token required."
+      });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const jwt = require('jsonwebtoken');
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid or expired token."
+      });
+    }
+
+    // Find admin by id from token
+    const admin = await AdminUser.findById(decoded.id).select('-passwordPin -refreshTokens -twoFASecret');
+    if (!admin) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin not found."
+      });
+    }
+
+    if (!admin.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: "Admin account is deactivated."
+      });
+    }
+
+    // Return only the role/permission type
+    res.status(200).json({
+      success: true,
+      data: {
+        role: admin.role
+      }
+    });
+
+  } catch (error) {
+    logger.error("Error fetching admin permissions", {
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching permissions. Please try again."
+    });
+  }
+});
+
 // DELETE: /admin/register/:adminId - Delete an admin (requires super admin authentication)
 router.delete("/register/:adminId", [
   body("email")
