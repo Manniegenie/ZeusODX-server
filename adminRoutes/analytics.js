@@ -422,9 +422,9 @@ router.get('/dashboard', async (req, res) => {
         transactionVolumeBreakdown: transactionVolumeResult?.breakdown ?? {},
         transactionVolumeCounts: transactionVolumeResult?.counts ?? { totalCurrencies: 0, processedCurrencies: 0, skippedCurrencies: 0 },
         giftCardStats: {
-          approved: (approvedGiftCardsCount || 0) + (paidGiftCardsCount || 0),
-          rejected: rejectedGiftCardsCount,
-          paid: paidGiftCardsCount
+          approved: (Number(approvedGiftCardsCount) || 0) + (Number(paidGiftCardsCount) || 0),
+          rejected: Number(rejectedGiftCardsCount) || 0,
+          paid: Number(paidGiftCardsCount) || 0
         }
       }
     };
