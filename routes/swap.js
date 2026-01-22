@@ -518,6 +518,7 @@ async function executeObiexSwapWithBalanceUpdate(userId, quote, correlationId, s
       exchangeRate: finalAmountReceived / amount,
       swapType,
       swapCategory: 'CRYPTO_EXCHANGE',
+      swapDirection: 'OUT', // Required for analytics volume calculation
       swapPair: `${sourceCurrency}-${targetCurrency}`,
       correlationId,
       executionTimestamp: new Date(),

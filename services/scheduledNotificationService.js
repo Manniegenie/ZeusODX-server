@@ -3,6 +3,7 @@ const CryptoPrice = require('../models/CryptoPrice');
 const { sendPushNotification } = require('./notificationService');
 const User = require('../models/user');
 const logger = require('../utils/logger');
+const { currencyService } = require('./onramppriceservice');
 
 class ScheduledNotificationService {
   constructor() {
@@ -19,9 +20,9 @@ class ScheduledNotificationService {
 
     logger.info('Starting scheduled notification service...');
 
-    // Schedule price notifications at 6am, 12pm, 6pm, and 9pm
+    // Schedule price notifications at 7am, 12pm, 6pm, and 9pm
     const schedules = [
-      { time: '6:00 AM', cron: '0 6 * * *' },
+      { time: '7:00 AM', cron: '0 7 * * *' },
       { time: '12:00 PM', cron: '0 12 * * *' },
       { time: '6:00 PM', cron: '0 18 * * *' },
       { time: '9:00 PM', cron: '0 21 * * *' }
@@ -66,32 +67,48 @@ class ScheduledNotificationService {
   async sendPriceNotification() {
     try {
       logger.info('Fetching latest crypto prices...');
-      
+
+      // Get NGNZ rate
+      let ngnzRate = null;
+      try {
+        const rateInfo = await currencyService.getUsdToNgnRate();
+        ngnzRate = {
+          symbol: 'NGNZ',
+          price: rateInfo.finalPrice,
+          hourly_change: 0
+        };
+      } catch (error) {
+        logger.warn('Failed to fetch NGNZ rate:', error.message);
+      }
+
       // Get latest prices for major tokens
       const latestPrices = await CryptoPrice.getLatestPrices();
-      
-      if (!latestPrices || latestPrices.length === 0) {
+
+      if ((!latestPrices || latestPrices.length === 0) && !ngnzRate) {
         logger.warn('No crypto prices found, skipping notification');
         return;
       }
 
-      // Filter for major tokens (BTC, ETH, BNB, SOL)
-      const majorTokens = ['BTC', 'ETH', 'BNB', 'SOL'];
-      const relevantPrices = latestPrices.filter(price => 
+      // Filter for major tokens (BTC, ETH, SOL)
+      const majorTokens = ['BTC', 'ETH', 'SOL'];
+      const relevantPrices = (latestPrices || []).filter(price =>
         majorTokens.includes(price.symbol)
       );
 
-      if (relevantPrices.length === 0) {
-        logger.warn('No major token prices found, skipping notification');
+      // Add NGNZ at the beginning if available
+      const allPrices = ngnzRate ? [ngnzRate, ...relevantPrices] : relevantPrices;
+
+      if (allPrices.length === 0) {
+        logger.warn('No prices found, skipping notification');
         return;
       }
 
       // Format the notification message
-      const notification = this.formatPriceNotification(relevantPrices);
+      const notification = this.formatPriceNotification(allPrices);
       
-      logger.info('Sending price notification to all users...', { 
+      logger.info('Sending price notification to all users...', {
         message: notification.title,
-        tokensCount: relevantPrices.length 
+        tokensCount: allPrices.length
       });
 
       // Get all users with push tokens
@@ -119,7 +136,7 @@ class ScheduledNotificationService {
             data: {
               type: 'price_update',
               timestamp: new Date().toISOString(),
-              tokens: relevantPrices.map(p => ({
+              tokens: allPrices.map(p => ({
                 symbol: p.symbol,
                 price: p.price,
                 change: p.hourly_change
@@ -149,7 +166,7 @@ class ScheduledNotificationService {
         totalUsers: users.length,
         successCount,
         errorCount,
-        tokensIncluded: relevantPrices.map(p => p.symbol)
+        tokensIncluded: allPrices.map(p => p.symbol)
       });
 
     } catch (error) {
@@ -159,22 +176,23 @@ class ScheduledNotificationService {
 
   // Format the price notification message
   formatPriceNotification(prices) {
-    const title = 'Latest Prices';
-    
-    // Sort prices by symbol for consistent ordering
-    const sortedPrices = prices.sort((a, b) => a.symbol.localeCompare(b.symbol));
-    
-    // Format each token price
-    const priceLines = sortedPrices.map(price => {
+    const title = 'Latest Rates';
+
+    // Format each token price (keep NGNZ first, then sort the rest)
+    const priceLines = prices.map(price => {
       const symbol = price.symbol;
+
+      // NGNZ shows as Naira rate
+      if (symbol === 'NGNZ') {
+        return `NGNZ: ₦${Math.round(price.price).toLocaleString()}/$`;
+      }
+
       const priceFormatted = this.formatPrice(price.price);
-      const changeFormatted = this.formatChange(price.hourly_change);
-      
-      return `${symbol} - ${priceFormatted} (${changeFormatted})`;
+      return `${symbol}: ${priceFormatted}`;
     });
 
-    // Join with commas and add "Trade now" at the end
-    const body = `${priceLines.join(', ')}. Trade now.`;
+    // Simple format: rates only, no change percentages
+    const body = priceLines.join(' | ');
 
     return {
       title,

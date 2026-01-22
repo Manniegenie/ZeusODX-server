@@ -343,6 +343,48 @@ const requireModerator = (req, res, next) => {
   next();
 };
 
+// One-time migration: Add swapDirection to existing swap transactions
+const migrateSwapDirections = async () => {
+  try {
+    const db = mongoose.connection.db;
+    const migrationsCollection = db.collection('migrations');
+
+    // Check if this migration has already run
+    const migrationId = 'add_swap_direction_to_transactions';
+    const existingMigration = await migrationsCollection.findOne({ _id: migrationId });
+
+    if (existingMigration) {
+      console.log("ℹ️  Swap direction migration already completed, skipping");
+      return;
+    }
+
+    console.log("🔄 Running swap direction migration...");
+
+    const transactionsCollection = db.collection('transactions');
+
+    // Update all SWAP and OBIEX_SWAP transactions that don't have swapDirection
+    const result = await transactionsCollection.updateMany(
+      {
+        type: { $in: ['SWAP', 'OBIEX_SWAP'] },
+        swapDirection: { $exists: false }
+      },
+      { $set: { swapDirection: 'OUT' } }
+    );
+
+    console.log(`✅ Swap direction migration completed: ${result.modifiedCount} transactions updated`);
+
+    // Mark migration as complete
+    await migrationsCollection.insertOne({
+      _id: migrationId,
+      completedAt: new Date(),
+      modifiedCount: result.modifiedCount
+    });
+
+  } catch (error) {
+    console.error("❌ Error running swap direction migration:", error.message);
+  }
+};
+
 // Database Index Fix Function
 const fixCryptoFeeIndexes = async () => {
   try {
@@ -602,7 +644,10 @@ const startServer = async () => {
     // Fix CryptoFeeMarkup indexes after database connection
     console.log("🔧 Fixing CryptoFeeMarkup database indexes...");
     await fixCryptoFeeIndexes();
-    
+
+    // Run one-time swap direction migration
+    await migrateSwapDirections();
+
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
       console.log('📦 Body parser limit: 100MB (for KYC image uploads, driver\'s license, etc.)');
@@ -611,7 +656,7 @@ const startServer = async () => {
       
       // Start scheduled notifications
       scheduledNotificationService.start();
-      console.log('📱 Scheduled price notifications started (6am, 12pm, 6pm, 9pm)');
+      console.log('📱 Scheduled price notifications started (7am, 12pm, 6pm, 9pm) - NGNZ, BTC, ETH, SOL');
       
       // Run price update immediately on startup
       setTimeout(async () => {
