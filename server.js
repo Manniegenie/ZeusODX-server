@@ -471,6 +471,7 @@ const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotification
 const notificationRoutes = require("./routes/notifications");
 const Fetchnetworktestttt = require("./routes/FetchnetworkTestttt");
 const bannerRoutes = require("./routes/Banners");
+const adminBannerRoutes = require("./adminRoutes/banners");
 const tokenPricesRoutes = require("./routes/tokenPrices");
 
 // Public Routes
@@ -503,6 +504,7 @@ app.use("/set-fee", authenticateAdminToken, requireAdmin, SetfeeRoutes);
 app.use("/updateuseraddress", authenticateAdminToken, requireAdmin, updateuseraddressRoutes);
 app.use("/marker", authenticateAdminToken, requireAdmin, pricemarkdownRoutes);
 app.use('/admingiftcard', authenticateAdminToken, requireAdmin, admingiftcardRoutes);
+app.use('/admin/banners', authenticateAdminToken, requireAdmin, adminBannerRoutes);
 // Public notification registration for users
 app.use('/notification', Pushnotification);
 // Admin notification management (requires auth)
