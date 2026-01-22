@@ -75,10 +75,7 @@ const validateYouverifyConfig = () => {
 async function submitToYouverify({
   idType,
   idNumber,
-  firstName,
-  lastName,
   selfieImage,
-  dob,
   userId,
   partnerJobId
 }) {
@@ -114,16 +111,10 @@ async function submitToYouverify({
       }
     };
 
-    // Build validations object for data matching and/or selfie
+    // Build validations object for selfie only
+    // Note: We don't send name validation to YouVerify - selfie/liveness is the real security
+    // If the person's face matches the government ID photo, they own that identity
     const validations = {};
-
-    // Add personal data validation if firstName, lastName, or DOB provided
-    if (firstName || lastName || dob) {
-      validations.data = {};
-      if (firstName) validations.data.firstName = firstName;
-      if (lastName) validations.data.lastName = lastName;
-      if (dob) validations.data.dateOfBirth = dob; // YYYY-MM-DD format
-    }
 
     // Add selfie validation if image provided
     if (selfieImage) {
@@ -148,17 +139,12 @@ async function submitToYouverify({
       endpoint: apiUrl,
       idType,
       idNumber: idNumber,
-      hasData: !!validations.data,
       hasSelfie: !!validations.selfie,
-      hasFirstName: !!firstName,
-      hasLastName: !!lastName,
-      hasDob: !!dob,
       jobId: partnerJobId,
       payloadStructure: {
         hasId: !!payload.id,
         hasValidations: !!payload.validations,
-        validationKeys: Object.keys(validations),
-        dataValidationKeys: validations.data ? Object.keys(validations.data) : []
+        validationKeys: Object.keys(validations)
       }
     });
 
@@ -288,10 +274,6 @@ router.post(
         }
         return true;
       }),
-    body("dob")
-      .optional()
-      .isISO8601()
-      .withMessage("Date of birth must be in YYYY-MM-DD format"),
   ],
   async (req, res) => {
     const startTime = Date.now();
@@ -306,7 +288,7 @@ router.post(
       });
     }
 
-    const { idType, idNumber, selfieImage, livenessImages, dob, firstName: reqFirstName, lastName: reqLastName } = req.body;
+    const { idType, idNumber, selfieImage, livenessImages } = req.body;
 
     try {
       // Validate Youverify configuration
@@ -480,18 +462,12 @@ router.post(
       }
 
       // Submit verification to Youverify API
-
-      // Use firstName/lastName from request body if provided, otherwise fall back to user profile
-      const verifyFirstName = reqFirstName || user.firstname;
-      const verifyLastName = reqLastName || user.lastname;
-
+      // Note: We only send ID + selfie - no name validation
+      // Selfie/liveness check is the real security measure
       const youverifyResult = await submitToYouverify({
         idType: youverifyIdType,
         idNumber,
-        firstName: verifyFirstName,
-        lastName: verifyLastName,
         selfieImage,
-        dob,
         userId: user._id,
         partnerJobId: jobId
       });
