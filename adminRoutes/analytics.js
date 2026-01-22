@@ -74,9 +74,18 @@ async function calculateTransactionVolume() {
       };
     }
 
+    // NOTE:
+    // - Keep NGNZ (priced via offramp rate)
+    // - Keep USD (giftcards often use USD as currency; USD/USD = 1)
+    // - Keep supported crypto tokens (priced via getPricesWithCache)
     const currencies = agg
-      .map(r => r._id)
-      .filter(c => c && c !== 'NGNZ' && SUPPORTED_TOKENS[c]);
+      .map(r => (r?._id ? String(r._id).toUpperCase() : null))
+      .filter((c) => {
+        if (!c) return false;
+        if (c === 'NGNZ') return true;
+        if (c === 'USD') return true;
+        return !!SUPPORTED_TOKENS[c];
+      });
 
     console.log('Currencies to fetch prices for:', currencies);
 
@@ -100,6 +109,19 @@ async function calculateTransactionVolume() {
       const currency = row._id;
       const divisor = BASE_UNIT_DIVISOR[currency] || new Decimal(1);
       const totalAmountDecimal = new Decimal(row.totalAmount || 0).div(divisor);
+
+      // Giftcards are often stored as USD face value; USD/USD = 1
+      if (currency === 'USD') {
+        const usdValue = totalAmountDecimal;
+        totalVolumeUSD = totalVolumeUSD.plus(usdValue);
+        breakdown[currency] = {
+          totalAmount: totalAmountDecimal.toString(),
+          usdValue: usdValue.toString(),
+          price: 1
+        };
+        processedCurrencies++;
+        continue;
+      }
 
       if (currency === 'NGNZ') {
         if (!offrampRate || isNaN(offrampRate) || Number(offrampRate) === 0) {
@@ -1275,31 +1297,35 @@ router.get('/volumes', async (req, res) => {
       offrampRate = 1554.42;
     }
 
-    // Aggregate deposits
+    // Aggregate deposits (some historical rows may have negative amounts; use abs for robustness)
     const depositAgg = await Transaction.aggregate([
       {
         $match: {
           type: 'DEPOSIT',
           status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
-          amount: { $gt: 0 },
+          amount: { $ne: 0 },
           currency: { $exists: true, $ne: null }
         }
       },
       {
         $group: {
           _id: { $toUpper: '$currency' },
-          totalAmount: { $sum: '$amount' }
+          totalAmount: { $sum: { $abs: '$amount' } }
         }
       }
     ]);
 
     // Aggregate withdrawals
+    // IMPORTANT:
+    // - NGNZ withdrawals use negative `amount` (by convention)
+    // - Crypto withdrawals in `routes/withdraw.js` currently save POSITIVE `amount`
+    // So we must use abs(amount) and not rely on sign.
     const withdrawalAgg = await Transaction.aggregate([
       {
         $match: {
           type: 'WITHDRAWAL',
           status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
-          amount: { $lt: 0 },
+          amount: { $ne: 0 },
           currency: { $exists: true, $ne: null }
         }
       },
@@ -1317,8 +1343,10 @@ router.get('/volumes', async (req, res) => {
       ...withdrawalAgg.map(w => w._id)
     ])).filter(Boolean);
 
-    // Get prices for all currencies except NGNZ
-    const priceCurrencies = allCurrencies.filter(c => c !== 'NGNZ' && SUPPORTED_TOKENS[c]);
+    // Get prices for all currencies that require market pricing
+    // - NGNZ is derived from offramp rate
+    // - USD is 1
+    const priceCurrencies = allCurrencies.filter((c) => c && c !== 'NGNZ' && c !== 'USD' && SUPPORTED_TOKENS[c]);
     let prices = {};
     try {
       prices = await getPricesWithCache(priceCurrencies) || {};
@@ -1328,11 +1356,15 @@ router.get('/volumes', async (req, res) => {
 
     // Helper to convert to USD
     function toUSD(currency, amount) {
-      if (currency === 'NGNZ') {
-        return Number(offrampRate) ? Number(amount) / Number(offrampRate) : 0;
+      const cur = String(currency || '').toUpperCase();
+      const amt = Number(amount) || 0;
+      if (!amt) return 0;
+      if (cur === 'USD') return amt;
+      if (cur === 'NGNZ') {
+        return Number(offrampRate) ? amt / Number(offrampRate) : 0;
       }
-      const price = prices[currency];
-      return price ? Number(amount) * Number(price) : 0;
+      const price = prices[cur];
+      return price ? amt * Number(price) : 0;
     }
 
     // Sum all deposits and withdrawals in USD
