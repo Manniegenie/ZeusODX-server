@@ -599,70 +599,11 @@ router.post('/internal', async (req, res) => {
 
     const recipient = recipientLookup.recipient;
 
-    // KYC validation
-    logger.info('Validating KYC limits for internal transfer', { senderUserId, amount, currency });
-    
-    try {
-      const kycValidation = await validateTransactionLimit(senderUserId, amount, currency, 'INTERNAL_TRANSFER');
-      
-      if (!kycValidation.allowed) {
-        logger.warn('Internal transfer blocked by KYC limits', {
-          senderUserId,
-          amount,
-          currency,
-          recipientUsername,
-          kycCode: kycValidation.code,
-          kycMessage: kycValidation.message,
-          kycData: kycValidation.data
-        });
-
-        return res.status(403).json({
-          success: false,
-          error: 'KYC_LIMIT_EXCEEDED',
-          message: kycValidation.message,
-          code: kycValidation.code,
-          kycDetails: {
-            kycLevel: kycValidation.data?.kycLevel,
-            limitType: kycValidation.data?.limitType,
-            requestedAmount: kycValidation.data?.requestedAmount,
-            currentLimit: kycValidation.data?.currentLimit,
-            currentSpent: kycValidation.data?.currentSpent,
-            availableAmount: kycValidation.data?.availableAmount,
-            upgradeRecommendation: kycValidation.data?.upgradeRecommendation,
-            amountInNaira: kycValidation.data?.amountInNaira,
-            currency: kycValidation.data?.currency,
-            transactionType: 'INTERNAL_TRANSFER'
-          }
-        });
-      }
-
-      logger.info('KYC validation passed for internal transfer', {
-        senderUserId,
-        amount,
-        currency,
-        recipientUsername,
-        kycLevel: kycValidation.data?.kycLevel,
-        dailyRemaining: kycValidation.data?.dailyRemaining,
-        monthlyRemaining: kycValidation.data?.monthlyRemaining,
-        amountInNaira: kycValidation.data?.amountInNaira
-      });
-
-    } catch (kycError) {
-      logger.error('KYC validation failed for internal transfer', {
-        senderUserId,
-        amount,
-        currency,
-        recipientUsername,
-        error: kycError.message,
-        stack: kycError.stack
-      });
-
-      return res.status(500).json({
-        success: false,
-        error: 'KYC_VALIDATION_ERROR',
-        message: 'Unable to validate transaction limits. Please try again or contact support.',
-        code: 'KYC_VALIDATION_ERROR'
-      });
+    // KYC / Transaction Limit Check
+    const kycCheck = await validateTransactionLimit(senderUserId, amount, currency, 'INTERNAL_TRANSFER');
+    if (!kycCheck.allowed) {
+      logger.warn(`KYC Limit Block: User ${senderUserId} attempted ${amount} ${currency}. Reason: ${kycCheck.message}`);
+      return res.status(403).json({ success: false, message: 'Transaction exceeds your current KYC limit.' });
     }
 
     // Check for duplicates

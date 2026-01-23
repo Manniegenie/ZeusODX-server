@@ -349,29 +349,33 @@ const migrateSwapDirections = async () => {
     const db = mongoose.connection.db;
     const migrationsCollection = db.collection('migrations');
 
-    // Check if this migration has already run
-    const migrationId = 'add_swap_direction_to_transactions';
+    // Check if this migration has already run (v2 includes null fix)
+    const migrationId = 'add_swap_direction_to_transactions_v2';
     const existingMigration = await migrationsCollection.findOne({ _id: migrationId });
 
     if (existingMigration) {
-      console.log("ℹ️  Swap direction migration already completed, skipping");
+      console.log("ℹ️  Swap direction migration v2 already completed, skipping");
       return;
     }
 
-    console.log("🔄 Running swap direction migration...");
+    console.log("🔄 Running swap direction migration v2...");
 
     const transactionsCollection = db.collection('transactions');
 
-    // Update all SWAP and OBIEX_SWAP transactions that don't have swapDirection
+    // Update all SWAP and OBIEX_SWAP transactions that don't have swapDirection OR have null
     const result = await transactionsCollection.updateMany(
       {
         type: { $in: ['SWAP', 'OBIEX_SWAP'] },
-        swapDirection: { $exists: false }
+        $or: [
+          { swapDirection: { $exists: false } },
+          { swapDirection: null },
+          { swapDirection: '' }
+        ]
       },
       { $set: { swapDirection: 'OUT' } }
     );
 
-    console.log(`✅ Swap direction migration completed: ${result.modifiedCount} transactions updated`);
+    console.log(`✅ Swap direction migration v2 completed: ${result.modifiedCount} transactions updated`);
 
     // Mark migration as complete
     await migrationsCollection.insertOne({

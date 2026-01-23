@@ -27,7 +27,7 @@ class KYCLimitService {
             return limits.utilities;
           }
           
-          if (['WITHDRAWAL', 'SWAP', 'CRYPTO'].includes(transactionType) && limits.crypto) {
+          if (['WITHDRAWAL', 'SWAP', 'CRYPTO', 'INTERNAL_TRANSFER'].includes(transactionType) && limits.crypto) {
             // Internally override the model's $2M value to 3B Naira for consistent math
             return { daily: 3000000000, monthly: 3000000000 };
           }
@@ -73,7 +73,7 @@ class KYCLimitService {
     const limitsForLevel = defaultLimitsByType[kycLevel] || defaultLimitsByType[0];
     
     if (['AIRTIME', 'BILL_PAYMENT', 'UTILITY'].includes(transactionType)) return limitsForLevel.utilities;
-    if (['WITHDRAWAL', 'SWAP', 'CRYPTO'].includes(transactionType)) return limitsForLevel.crypto;
+    if (['WITHDRAWAL', 'SWAP', 'CRYPTO', 'INTERNAL_TRANSFER'].includes(transactionType)) return limitsForLevel.crypto;
     if (['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType)) return limitsForLevel.ngnz;
     
     return limitsForLevel.utilities;
@@ -182,7 +182,7 @@ class KYCLimitService {
   async getCurrentSpending(userId, transactionType = 'WITHDRAWAL') {
     // Determine the spending category based on transaction type
     const isUtilityTransaction = ['AIRTIME', 'BILL_PAYMENT', 'UTILITY'].includes(transactionType);
-    const isCryptoTransaction = ['WITHDRAWAL', 'SWAP', 'CRYPTO'].includes(transactionType);
+    const isCryptoTransaction = ['WITHDRAWAL', 'SWAP', 'CRYPTO', 'INTERNAL_TRANSFER'].includes(transactionType);
     const isNgnzTransaction = ['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType);
 
     // Use category-specific cache key

@@ -41,9 +41,13 @@ async function calculateTransactionVolume() {
           status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
           currency: { $exists: true, $ne: null },
           // FIXED: Only count OUT side of swaps to avoid double-counting
+          // Include: GIFTCARD (all), SWAP/OBIEX_SWAP where swapDirection is OUT, missing, or null
+          // Exclude: SWAP/OBIEX_SWAP where swapDirection is IN
           $or: [
-            { type: 'GIFTCARD' }, // Include all giftcard transactions
-            { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: 'OUT' } // Only OUT swaps
+            { type: 'GIFTCARD' },
+            { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: 'OUT' },
+            { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: { $exists: false } },
+            { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: null }
           ]
         }
       },
@@ -245,12 +249,17 @@ router.get('/dashboard', async (req, res) => {
       ]),
 
       // FIXED: Only count OUT side of swaps for completed trades calculation
+      // Include legacy swaps without swapDirection, exclude IN swaps
       Transaction.aggregate([
         {
           $match: {
             type: { $in: ['SWAP', 'OBIEX_SWAP'] },
-            // FIXED: Only count OUT side of swaps
-            swapDirection: 'OUT'
+            // Include OUT, missing, or null swapDirection (exclude IN)
+            $or: [
+              { swapDirection: 'OUT' },
+              { swapDirection: { $exists: false } },
+              { swapDirection: null }
+            ]
           }
         },
         {
@@ -336,13 +345,16 @@ router.get('/dashboard', async (req, res) => {
       calculateTransactionVolume(),
 
       // FIXED: Pending trades calculation - includes swaps (OUT only) and giftcards
+      // Include legacy swaps without swapDirection, exclude IN swaps
       Transaction.aggregate([
         {
           $match: {
             status: 'PENDING',
             $or: [
               { type: 'GIFTCARD' },
-              { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: 'OUT' }
+              { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: 'OUT' },
+              { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: { $exists: false } },
+              { type: { $in: ['SWAP', 'OBIEX_SWAP'] }, swapDirection: null }
             ]
           }
         },
@@ -1158,12 +1170,17 @@ router.get('/platform-stats', async (req, res) => {
 
     // Calculate profit from swaps (markdown difference)
     // For swaps, profit = fromAmount * fromPrice - toAmount * toPrice (when markdown is applied)
+    // Include legacy swaps without swapDirection, exclude IN swaps
     const swapProfitStats = await Transaction.aggregate([
       {
         $match: {
           type: { $in: ['SWAP', 'OBIEX_SWAP'] },
           status: 'SUCCESSFUL',
-          swapDirection: 'OUT' // Only count OUT side to avoid double counting
+          $or: [
+            { swapDirection: 'OUT' },
+            { swapDirection: { $exists: false } },
+            { swapDirection: null }
+          ]
         }
       },
       {
