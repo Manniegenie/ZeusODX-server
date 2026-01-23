@@ -22,6 +22,33 @@ function sanitizeInput(input) {
   return validator.stripLow(validator.escape(input.trim()));
 }
 
+// Sanitize name - only allow letters, spaces, hyphens, apostrophes
+function sanitizeName(name) {
+  return name.replace(/[^a-zA-Z\s\-']/g, '').trim().slice(0, 50);
+}
+
+// Validate name format
+function isValidName(name) {
+  return name.length >= 2 && name.length <= 50 && /^[a-zA-Z\s\-']+$/.test(name);
+}
+
+// Normalize Nigerian phone - remove leading 0 after country code
+function normalizeNigerianPhone(phone) {
+  // Remove all non-digits except leading +
+  let cleaned = phone.replace(/[^\d+]/g, '');
+
+  // Handle +234090... -> +23490...
+  if (cleaned.startsWith('+2340')) {
+    cleaned = '+234' + cleaned.slice(5);
+  }
+  // Handle 234090... -> 23490...
+  if (cleaned.startsWith('2340') && !cleaned.startsWith('+')) {
+    cleaned = '234' + cleaned.slice(4);
+  }
+
+  return cleaned;
+}
+
 // POST: /add-user
 router.post('/add-user', async (req, res) => {
   let { email, firstname, middlename, lastname, phonenumber } = req.body;
@@ -33,19 +60,31 @@ router.post('/add-user', async (req, res) => {
   }
 
   // Sanitize inputs
-  email = sanitizeInput(email.toLowerCase());
-  firstname = sanitizeInput(firstname);
-  middlename = middlename ? sanitizeInput(middlename) : '';
-  lastname = sanitizeInput(lastname);
-  phonenumber = sanitizeInput(phonenumber);
+  email = sanitizeInput(email.toLowerCase()).slice(0, 100);
+  firstname = sanitizeName(firstname);
+  middlename = middlename ? sanitizeName(middlename) : '';
+  lastname = sanitizeName(lastname);
+  phonenumber = normalizeNigerianPhone(phonenumber);
 
-  // Validate formats
-  if (!validator.isEmail(email)) {
+  // Validate email format and length
+  if (!validator.isEmail(email) || email.length > 100) {
     return res.status(400).json({ message: 'Invalid email address.' });
   }
 
-  if (!/^\+?\d{10,15}$/.test(phonenumber)) {
-    return res.status(400).json({ message: 'Invalid phone number. Use format like +2348100000000.' });
+  // Validate name formats
+  if (!isValidName(firstname)) {
+    return res.status(400).json({ message: 'Invalid first name. Use only letters (2-50 characters).' });
+  }
+  if (!isValidName(lastname)) {
+    return res.status(400).json({ message: 'Invalid last name. Use only letters (2-50 characters).' });
+  }
+  if (middlename && !isValidName(middlename)) {
+    return res.status(400).json({ message: 'Invalid middle name. Use only letters (2-50 characters).' });
+  }
+
+  // Validate phone number format (Nigerian: +234 followed by 10 digits)
+  if (!/^\+234[789][01]\d{8}$/.test(phonenumber)) {
+    return res.status(400).json({ message: 'Invalid phone number. Use Nigerian format +2348xxxxxxxxx.' });
   }
 
   try {

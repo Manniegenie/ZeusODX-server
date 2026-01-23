@@ -11,6 +11,24 @@ const { sendLoginEmail } = require("../services/EmailService");
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
 
+// Normalize Nigerian phone - remove leading 0 after country code
+function normalizePhone(phone) {
+  let cleaned = phone.replace(/[^\d+]/g, '');
+  // Handle +234090... -> +23490...
+  if (cleaned.startsWith('+2340')) {
+    cleaned = '+234' + cleaned.slice(5);
+  }
+  // Handle 234090... -> +23490...
+  if (cleaned.startsWith('2340') && !cleaned.startsWith('+')) {
+    cleaned = '+234' + cleaned.slice(4);
+  }
+  // Ensure + prefix for Nigerian numbers
+  if (cleaned.startsWith('234') && !cleaned.startsWith('+')) {
+    cleaned = '+' + cleaned;
+  }
+  return cleaned;
+}
+
 // JWT secrets validation function
 const validateJWTSecrets = () => {
   const jwtSecret = config.jwtSecret || process.env.JWT_SECRET;
@@ -31,9 +49,14 @@ router.post(
       .trim()
       .notEmpty()
       .withMessage("Phone number is required.")
+      .customSanitizer((value) => {
+        // Only allow digits and + prefix
+        return value.replace(/[^\d+]/g, '').slice(0, 15);
+      })
       .custom((value) => {
-        const phoneRegex = /^\+?\d{10,15}$/;
-        if (!phoneRegex.test(value)) throw new Error("Invalid phone number format. Use format like +2348100000000 or 2348100000000.");
+        // Accept Nigerian format: +234xxxxxxxxxx or 234xxxxxxxxxx (13-14 digits with country code)
+        const phoneRegex = /^\+?234[0-9]{10}$/;
+        if (!phoneRegex.test(value)) throw new Error("Invalid phone number format. Use Nigerian format +2348xxxxxxxxx.");
         return true;
       }),
     body("passwordpin")
@@ -59,7 +82,10 @@ router.post(
       return res.status(400).json({ success: false, message: "Validation failed.", errors: errors.array() });
     }
 
-    const { phonenumber, passwordpin } = req.body;
+    const { phonenumber: rawPhone, passwordpin } = req.body;
+
+    // Normalize phone number to handle +234090... -> +23490...
+    const phonenumber = normalizePhone(rawPhone);
 
     try {
       const user = await User.findOne({ phonenumber }).lean(false);

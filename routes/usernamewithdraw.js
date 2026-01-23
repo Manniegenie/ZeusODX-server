@@ -297,7 +297,8 @@ async function createInternalTransferTransactions(transferData) {
     memo,
     recipientUsername,
     senderUsername,
-    senderUser
+    senderUser,
+    recipient
   } = transferData;
 
   try {
@@ -649,7 +650,8 @@ router.post('/internal', async (req, res) => {
       memo,
       recipientUsername: recipient.username,
       senderUsername: senderUser.username,
-      senderUser
+      senderUser,
+      recipient
     });
 
     senderTransaction = transactionResult.senderTransaction;
