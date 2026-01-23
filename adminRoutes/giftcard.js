@@ -9,15 +9,57 @@ const validator = require('validator');
 const { SendGiftcardMail } = require('../services/EmailService');
 const { sendGiftcardApprovalNotification, sendGiftcardRejectionNotification } = require('../services/notificationService');
 
+// Rate ranges configuration
+const RATE_RANGES_CONFIG = {
+  range25_100: { min: 25, max: 100, label: '$25 - $100' },
+  range100_200: { min: 100, max: 200, label: '$100 - $200' },
+  range200_500: { min: 200, max: 500, label: '$200 - $500' },
+  range500_1000: { min: 500, max: 1000, label: '$500 - $1000' }
+};
+
+// Helper to validate a single rate range object
+function validateRateRange(rangeData, rangeName) {
+  const errors = [];
+  if (rangeData === null || rangeData === undefined) return { valid: true, data: null };
+
+  const { rate, physicalRate, ecodeRate } = rangeData;
+
+  if (rate !== undefined && rate !== null) {
+    if (typeof rate !== 'number' || rate < 0) {
+      errors.push(`${rangeName}.rate must be a positive number`);
+    }
+  }
+  if (physicalRate !== undefined && physicalRate !== null) {
+    if (typeof physicalRate !== 'number' || physicalRate < 0) {
+      errors.push(`${rangeName}.physicalRate must be a positive number`);
+    }
+  }
+  if (ecodeRate !== undefined && ecodeRate !== null) {
+    if (typeof ecodeRate !== 'number' || ecodeRate < 0) {
+      errors.push(`${rangeName}.ecodeRate must be a positive number`);
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    data: errors.length === 0 ? {
+      rate: rate != null ? parseFloat(rate) : null,
+      physicalRate: physicalRate != null ? parseFloat(physicalRate) : null,
+      ecodeRate: ecodeRate != null ? parseFloat(ecodeRate) : null
+    } : null
+  };
+}
+
 // Validation function for rate data - essential checks only
 function validateRateData(data) {
-  const { cardType, country, rate, physicalRate, ecodeRate, sourceCurrency, targetCurrency, minAmount, maxAmount, vanillaType } = data;
+  const { cardType, country, rate, physicalRate, ecodeRate, sourceCurrency, targetCurrency, minAmount, maxAmount, vanillaType, rateRanges } = data;
   const errors = [];
 
   // Required fields only
   if (!cardType) errors.push('cardType is required');
   if (!country) errors.push('country is required');
-  if (rate === undefined || rate === null) errors.push('rate is required');
+  if (rate === undefined || rate === null) errors.push('rate is required (default/fallback rate)');
   else if (typeof rate !== 'number' || rate < 0) errors.push('rate must be a positive number');
 
   // Vanilla cards need vanillaType
@@ -30,6 +72,22 @@ function validateRateData(data) {
     errors.push('minAmount cannot be greater than maxAmount');
   }
 
+  // Validate rate ranges if provided
+  let validatedRateRanges = null;
+  if (rateRanges && typeof rateRanges === 'object') {
+    validatedRateRanges = {};
+    for (const rangeKey of Object.keys(RATE_RANGES_CONFIG)) {
+      if (rateRanges[rangeKey]) {
+        const rangeValidation = validateRateRange(rateRanges[rangeKey], rangeKey);
+        if (!rangeValidation.valid) {
+          errors.push(...rangeValidation.errors);
+        } else {
+          validatedRateRanges[rangeKey] = rangeValidation.data;
+        }
+      }
+    }
+  }
+
   return {
     success: errors.length === 0,
     errors,
@@ -37,12 +95,13 @@ function validateRateData(data) {
       cardType: cardType.toUpperCase(),
       country: country.toUpperCase(),
       rate: parseFloat(rate),
+      rateRanges: validatedRateRanges,
       physicalRate: physicalRate != null ? parseFloat(physicalRate) : null,
       ecodeRate: ecodeRate != null ? parseFloat(ecodeRate) : null,
       sourceCurrency: sourceCurrency ? sourceCurrency.toUpperCase() : 'USD',
       targetCurrency: targetCurrency ? targetCurrency.toUpperCase() : 'NGN',
-      minAmount: minAmount != null ? parseFloat(minAmount) : 5,
-      maxAmount: maxAmount != null ? parseFloat(maxAmount) : 2000,
+      minAmount: minAmount != null ? parseFloat(minAmount) : 25,
+      maxAmount: maxAmount != null ? parseFloat(maxAmount) : 1000,
       vanillaType: vanillaType || null
     } : null
   };
@@ -108,6 +167,7 @@ router.post('/rates', async (req, res) => {
         country: newRate.country,
         rate: newRate.rate,
         rateDisplay: `₦${newRate.rate}/${newRate.sourceCurrency}`,
+        rateRanges: newRate.rateRanges,
         physicalRate: newRate.physicalRate,
         ecodeRate: newRate.ecodeRate,
         minAmount: newRate.minAmount,
@@ -256,6 +316,24 @@ router.put('/rates/:id', async (req, res) => {
       return res.status(400).json({ success: false, message: 'rate must be a positive number' });
     }
 
+    // Handle rate ranges update
+    if (req.body.rateRanges && typeof req.body.rateRanges === 'object') {
+      const rateRanges = req.body.rateRanges;
+      for (const rangeKey of Object.keys(RATE_RANGES_CONFIG)) {
+        if (rateRanges[rangeKey] !== undefined) {
+          const rangeValidation = validateRateRange(rateRanges[rangeKey], rangeKey);
+          if (!rangeValidation.valid) {
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid rate range data',
+              errors: rangeValidation.errors
+            });
+          }
+          updateData[`rateRanges.${rangeKey}`] = rangeValidation.data;
+        }
+      }
+    }
+
     updateData.lastUpdated = new Date();
 
     const updatedRate = await GiftCardPrice.findByIdAndUpdate(id, updateData, { new: true });
@@ -277,6 +355,7 @@ router.put('/rates/:id', async (req, res) => {
         country: updatedRate.country,
         rate: updatedRate.rate,
         rateDisplay: `₦${updatedRate.rate}/${updatedRate.sourceCurrency}`,
+        rateRanges: updatedRate.rateRanges,
         physicalRate: updatedRate.physicalRate,
         ecodeRate: updatedRate.ecodeRate,
         minAmount: updatedRate.minAmount,
@@ -347,6 +426,18 @@ router.delete('/rates/:id', async (req, res) => {
   }
 });
 
+// GET /admin/giftcard/rate-ranges-config - Get rate ranges configuration
+router.get('/rate-ranges-config', (req, res) => {
+  res.status(200).json({
+    success: true,
+    data: {
+      rateRanges: RATE_RANGES_CONFIG,
+      rangeKeys: Object.keys(RATE_RANGES_CONFIG)
+    },
+    message: 'Rate ranges configuration retrieved successfully'
+  });
+});
+
 // GET /admin/giftcard/rates - Get all rates (admin view with more details) (no auth)
 router.get('/rates', async (req, res) => {
   try {
@@ -380,6 +471,7 @@ router.get('/rates', async (req, res) => {
           country: rate.country,
           rate: rate.rate,
           rateDisplay: `₦${rate.rate}/${rate.sourceCurrency}`,
+          rateRanges: rate.rateRanges,
           physicalRate: rate.physicalRate,
           ecodeRate: rate.ecodeRate,
           sourceCurrency: rate.sourceCurrency,
@@ -392,6 +484,7 @@ router.get('/rates', async (req, res) => {
           notes: rate.notes,
           createdAt: rate.createdAt
         })),
+        rateRangesConfig: RATE_RANGES_CONFIG,
         pagination: {
           currentPage: pageNum,
           totalPages: Math.ceil(total / limitNum),

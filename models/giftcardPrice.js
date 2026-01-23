@@ -1,6 +1,13 @@
 // models/giftcardPrice.js
 const mongoose = require('mongoose');
 
+// Rate range schema for different card value ranges
+const rateRangeSchema = new mongoose.Schema({
+  rate: { type: Number, min: 0, default: null },
+  physicalRate: { type: Number, min: 0, default: null },
+  ecodeRate: { type: Number, min: 0, default: null }
+}, { _id: false });
+
 const giftCardPriceSchema = new mongoose.Schema({
   cardType: {
     type: String,
@@ -41,11 +48,19 @@ const giftCardPriceSchema = new mongoose.Schema({
     index: true
   },
 
-  // Exchange rate (e.g., 918 means 918 NGN per 1 USD)
+  // Legacy: Default exchange rate (fallback if no range-specific rate)
   rate: {
     type: Number,
     required: true,
     min: 0
+  },
+
+  // Range-based rates: Each range has its own rate, physicalRate, ecodeRate
+  rateRanges: {
+    range25_100: rateRangeSchema,    // $25 - $100
+    range100_200: rateRangeSchema,   // $100 - $200
+    range200_500: rateRangeSchema,   // $200 - $500
+    range500_1000: rateRangeSchema   // $500 - $1000
   },
 
   // Source currency (what the gift card is denominated in)
@@ -64,7 +79,7 @@ const giftCardPriceSchema = new mongoose.Schema({
     default: 'NGN'
   },
 
-  // Card format specific rates (optional)
+  // Legacy: Card format specific rates (kept for backwards compatibility)
   physicalRate: {
     type: Number,
     min: 0,
@@ -117,6 +132,23 @@ const giftCardPriceSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Define rate ranges configuration
+const RATE_RANGES = {
+  range25_100: { min: 25, max: 100, label: '$25 - $100' },
+  range100_200: { min: 100, max: 200, label: '$100 - $200' },
+  range200_500: { min: 200, max: 500, label: '$200 - $500' },
+  range500_1000: { min: 500, max: 1000, label: '$500 - $1000' }
+};
+
+// Helper to determine which range an amount falls into
+giftCardPriceSchema.methods.getRangeKeyForAmount = function(amount) {
+  if (amount >= 500 && amount <= 1000) return 'range500_1000';
+  if (amount >= 200 && amount < 500) return 'range200_500';
+  if (amount >= 100 && amount < 200) return 'range100_200';
+  if (amount >= 25 && amount < 100) return 'range25_100';
+  return null;
+};
+
 // Indexes for performance
 giftCardPriceSchema.index({ cardType: 1, country: 1, isActive: 1 });
 giftCardPriceSchema.index({ country: 1, isActive: 1 });
@@ -135,23 +167,40 @@ giftCardPriceSchema.index(
 
 // Instance methods
 giftCardPriceSchema.methods.calculateAmount = function(amount, cardFormat = null) {
-  let applicableRate = this.rate;
-  
-  // Use format-specific rate if available
-  if (cardFormat === 'PHYSICAL' && this.physicalRate) {
-    applicableRate = this.physicalRate;
-  } else if (cardFormat === 'E_CODE' && this.ecodeRate) {
-    applicableRate = this.ecodeRate;
+  // Determine which rate range applies
+  const rangeKey = this.getRangeKeyForAmount(amount);
+  const rangeRates = rangeKey && this.rateRanges?.[rangeKey];
+
+  let applicableRate = this.rate; // Default fallback
+
+  if (rangeRates) {
+    // Use range-specific rates based on card format
+    if (cardFormat === 'PHYSICAL' && rangeRates.physicalRate) {
+      applicableRate = rangeRates.physicalRate;
+    } else if (cardFormat === 'E_CODE' && rangeRates.ecodeRate) {
+      applicableRate = rangeRates.ecodeRate;
+    } else if (rangeRates.rate) {
+      applicableRate = rangeRates.rate;
+    }
+  } else {
+    // Fallback to legacy format-specific rates
+    if (cardFormat === 'PHYSICAL' && this.physicalRate) {
+      applicableRate = this.physicalRate;
+    } else if (cardFormat === 'E_CODE' && this.ecodeRate) {
+      applicableRate = this.ecodeRate;
+    }
   }
-  
+
   const amountToReceive = amount * applicableRate;
-  
+
   return {
-    amountToReceive: Math.round(amountToReceive * 100) / 100, // Round to 2 decimal places
+    amountToReceive: Math.round(amountToReceive * 100) / 100,
     rate: applicableRate,
     rateDisplay: `${applicableRate}/${this.sourceCurrency}`,
     sourceCurrency: this.sourceCurrency,
-    targetCurrency: this.targetCurrency
+    targetCurrency: this.targetCurrency,
+    rangeKey: rangeKey,
+    rangeLabel: rangeKey ? RATE_RANGES[rangeKey]?.label : null
   };
 };
 
@@ -159,16 +208,38 @@ giftCardPriceSchema.methods.isValidAmount = function(amount) {
   return amount >= this.minAmount && amount <= this.maxAmount;
 };
 
+// Get rate for specific amount and format
+giftCardPriceSchema.methods.getRateForAmount = function(amount, cardFormat = null) {
+  const rangeKey = this.getRangeKeyForAmount(amount);
+  const rangeRates = rangeKey && this.rateRanges?.[rangeKey];
+
+  if (rangeRates) {
+    if (cardFormat === 'PHYSICAL' && rangeRates.physicalRate) return rangeRates.physicalRate;
+    if (cardFormat === 'E_CODE' && rangeRates.ecodeRate) return rangeRates.ecodeRate;
+    if (rangeRates.rate) return rangeRates.rate;
+  }
+
+  // Fallback to legacy rates
+  if (cardFormat === 'PHYSICAL' && this.physicalRate) return this.physicalRate;
+  if (cardFormat === 'E_CODE' && this.ecodeRate) return this.ecodeRate;
+  return this.rate;
+};
+
+// Static method to get rate ranges config
+giftCardPriceSchema.statics.getRateRangesConfig = function() {
+  return RATE_RANGES;
+};
+
 // Static methods
 giftCardPriceSchema.statics.getActiveRates = async function(country = null) {
   const query = { isActive: true };
-  
+
   if (country) {
     query.country = country.toUpperCase();
   }
-  
+
   return await this.find(query)
-    .select('cardType country rate physicalRate ecodeRate sourceCurrency targetCurrency minAmount maxAmount vanillaType')
+    .select('cardType country rate rateRanges physicalRate ecodeRate sourceCurrency targetCurrency minAmount maxAmount vanillaType')
     .sort({ country: 1, cardType: 1 });
 };
 
@@ -189,7 +260,7 @@ giftCardPriceSchema.statics.getRateByCardTypeAndCountry = async function(cardTyp
     q.vanillaType = String(options.vanillaType);
   }
 
-  return await this.findOne(q).select('cardType country rate sourceCurrency targetCurrency physicalRate ecodeRate minAmount maxAmount vanillaType');
+  return await this.findOne(q).select('cardType country rate rateRanges sourceCurrency targetCurrency physicalRate ecodeRate minAmount maxAmount vanillaType');
 };
 
 /**
