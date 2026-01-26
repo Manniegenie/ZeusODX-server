@@ -221,7 +221,7 @@ async function submitToYouverify({
       status: error.response?.status,
       errorData: JSON.stringify(error.response?.data || {}),
       jobId: partnerJobId,
-      endpoint: apiUrl
+      idType
     });
 
     // Return error details
