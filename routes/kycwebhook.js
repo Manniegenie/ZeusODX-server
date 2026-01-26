@@ -311,38 +311,49 @@ router.post('/callback', async (req, res) => {
           logger.info('BVN already set, skipping', { userId });
         }
       } else {
-        // Document KYC (Level 2)
-        userUpdate['kyc.status'] = 'approved';
-        userUpdate['kycStatus'] = 'approved';
-        userUpdate['kyc.level2.status'] = 'approved';
-        userUpdate['kyc.level2.documentSubmitted'] = true;
-        userUpdate['kyc.level2.documentType'] = frontendIdType;
-        userUpdate['kyc.level2.documentNumber'] = norm.idNumber || kycDoc.idNumber;
-        userUpdate['kyc.level2.approvedAt'] = now;
-        userUpdate['kyc.level2.rejectionReason'] = null;
+        // Document KYC (Level 2) - only set if not already approved
+        if (user.kyc?.level2?.status !== 'approved') {
+          userUpdate['kyc.status'] = 'approved';
+          userUpdate['kycStatus'] = 'approved';
+          userUpdate['kyc.level2.status'] = 'approved';
+          userUpdate['kyc.level2.documentSubmitted'] = true;
+          userUpdate['kyc.level2.documentType'] = frontendIdType;
+          userUpdate['kyc.level2.documentNumber'] = norm.idNumber || kycDoc.idNumber;
+          userUpdate['kyc.level2.approvedAt'] = now;
+          userUpdate['kyc.level2.rejectionReason'] = null;
 
-        // Upgrade to KYC Level 2 if not already
-        if (user.kycLevel < 2) {
-          userUpdate.kycLevel = 2;
-          logger.info('User upgraded to KYC Level 2', { userId, previousLevel: user.kycLevel });
+          if (user.kycLevel < 2) {
+            userUpdate.kycLevel = 2;
+            logger.info('User upgraded to KYC Level 2 via webhook', { userId });
+          }
+        } else {
+          logger.info('Document KYC already approved, skipping', { userId });
         }
       }
     } else if (status === 'REJECTED') {
-      userUpdate['kyc.status'] = 'rejected';
-      userUpdate['kycStatus'] = 'rejected';
-      userUpdate['kyc.level2.status'] = 'rejected';
-      userUpdate['kyc.level2.rejectionReason'] = norm.reason;
-      userUpdate['kyc.level2.rejectedAt'] = now;
+      // Only update rejection if not already approved
+      if (user.kyc?.level2?.status !== 'approved' && !user.bvnVerified) {
+        userUpdate['kyc.status'] = 'rejected';
+        userUpdate['kycStatus'] = 'rejected';
+        userUpdate['kyc.level2.status'] = 'rejected';
+        userUpdate['kyc.level2.rejectionReason'] = norm.reason;
+        userUpdate['kyc.level2.rejectedAt'] = now;
 
-      if (isBvn) {
-        userUpdate.bvnVerified = false;
+        if (isBvn) {
+          userUpdate.bvnVerified = false;
+        }
+
+        logger.info('KYC rejected for user', { userId, reason: norm.reason });
+      } else {
+        logger.info('KYC already approved, ignoring rejection webhook', { userId });
       }
-
-      logger.info('KYC rejected for user', { userId, reason: norm.reason });
     } else if (status === 'PROVISIONAL' || status === 'PENDING') {
-      userUpdate['kyc.status'] = 'pending';
-      userUpdate['kycStatus'] = 'pending';
-      userUpdate['kyc.level2.status'] = 'pending';
+      // Only update pending if not already approved
+      if (user.kyc?.level2?.status !== 'approved' && !user.bvnVerified) {
+        userUpdate['kyc.status'] = 'pending';
+        userUpdate['kycStatus'] = 'pending';
+        userUpdate['kyc.level2.status'] = 'pending';
+      }
     }
 
     const updatedUser = await User.findByIdAndUpdate(userId, { $set: userUpdate }, { new: true });
