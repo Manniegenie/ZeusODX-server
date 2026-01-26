@@ -312,7 +312,7 @@ async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, r
 
     const payBetaService = serviceMapping[service_id];
     if (!payBetaService) {
-      throw new Error(`Unsupported service for PayBeta: ${service_id}`);
+      throw new Error(`Unsupported service: ${service_id}`);
     }
 
     // Ensure reference is under 40 characters for PayBeta
@@ -362,10 +362,10 @@ async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, r
     });
 
     if (response.status !== 'successful') {
-      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`Cable TV service error: ${response.message || 'Unknown error'}`);
     }
 
-    // Transform PayBeta response to match eBills format for consistency
+    // Transform response to match internal format for consistency
     return {
       code: 'success',
       message: response.message,
@@ -383,20 +383,20 @@ async function callPayBetaAPI({ customer_id, service_id, variation_id, amount, r
     };
 
   } catch (error) {
-    logger.error('❌ PayBeta cable TV purchase failed:', {
+    logger.error('❌ Cable TV purchase failed:', {
       request_id, userId, error: error.message,
       status: error.response?.status,
-      payBetaError: error.response?.data
+      apiError: error.response?.data
     });
 
     if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
+      throw new Error('Insufficient balance with provider. Please contact support.');
     }
     if (error.message.includes('validation')) {
       throw new Error('Invalid request parameters. Please check your input.');
     }
 
-    throw new Error(`PayBeta API error: ${error.message}`);
+    throw new Error(`Cable TV service error: ${error.message}`);
   }
 }
 
@@ -675,25 +675,25 @@ router.post('/purchase', async (req, res) => {
       return res.status(500).json({
         success: false,
         error: 'BALANCE_UPDATE_FAILED',
-        message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
+        message: 'Transaction succeeded but balance deduction failed. Please contact support immediately.',
         details: {
-          paybeta_order_id: payBetaResponse.data?.order_id,
-          paybeta_status: payBetaResponse.data?.status,
+          order_id: payBetaResponse.data?.order_id,
+          status: payBetaResponse.data?.status,
           amount: amount,
           customer_id: customer_id
         }
       });
     }
     } else {
-      // PayBeta was not successful, don't deduct balance
-      logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
-      
-      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+      // API was not successful, don't deduct balance
+      logger.info(`❌ Cable TV API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
+
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
         status: 'failed',
         processingErrors: [{
-          error: `PayBeta transaction not successful: ${payBetaStatus}`,
+          error: `Cable TV transaction not successful: ${payBetaStatus}`,
           timestamp: new Date(),
-          phase: 'paybeta_status_check'
+          phase: 'api_status_check'
         }]
       });
       
@@ -882,7 +882,7 @@ router.post('/purchase', async (req, res) => {
     } else {
       return res.status(200).json({
         success: true,
-        message: `Cable TV purchase status: ${payBetaStatus}`,
+        message: `Cable TV purchase status: ${payBetaStatus}. Please check your transaction history.`,
         data: {
           ...payBetaResponse.data,
           request_id: finalRequestId,

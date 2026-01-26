@@ -275,23 +275,23 @@ async function callEBillsAPI({ phone, amount, service_id, variation_id, request_
     });
 
     if (response.code !== 'success') {
-      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`Data service error: ${response.message || 'Unknown error'}`);
     }
 
     return response;
 
   } catch (error) {
-    logger.error('❌ PayBeta data purchase failed:', {
+    logger.error('❌ Data purchase failed:', {
       request_id, userId, error: error.message,
       status: error.response?.status,
-      payBetaError: error.response?.data
+      apiError: error.response?.data
     });
 
     if (error.message.includes('IP Address')) {
-      throw new Error('IP address not whitelisted with PayBeta. Please contact support.');
+      throw new Error('IP address not whitelisted. Please contact support.');
     }
     if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
+      throw new Error('Insufficient balance with provider. Please contact support.');
     }
     if (error.response?.status === 422) {
       const validationErrors = error.response.data?.errors || {};
@@ -299,7 +299,7 @@ async function callEBillsAPI({ phone, amount, service_id, variation_id, request_
       throw new Error(`Validation error: ${errorMessages.join(', ')}`);
     }
 
-    throw new Error(`PayBeta API error: ${error.message}`);
+    throw new Error(`Data service error: ${error.message}`);
   }
 }
 
@@ -318,7 +318,7 @@ async function callPayBetaAPI({ phone, amount, service_id, variation_id, request
 
     const payBetaService = serviceMapping[service_id];
     if (!payBetaService) {
-      throw new Error(`Unsupported service for PayBeta: ${service_id}`);
+      throw new Error(`Unsupported service: ${service_id}`);
     }
 
     // Ensure reference is under 40 characters for PayBeta
@@ -350,7 +350,7 @@ async function callPayBetaAPI({ phone, amount, service_id, variation_id, request
     });
 
     if (response.status !== 'successful') {
-      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`Data service error: ${response.message || 'Unknown error'}`);
     }
 
     // Transform PayBeta response to match internal format for consistency
@@ -379,16 +379,16 @@ async function callPayBetaAPI({ phone, amount, service_id, variation_id, request
     });
 
     if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
-      throw new Error('PayBeta API request timed out. The service may be slow. Please try again.');
+      throw new Error('Service request timed out. Please try again.');
     }
     if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
+      throw new Error('Insufficient balance with provider. Please contact support.');
     }
     if (error.message.includes('validation')) {
       throw new Error('Invalid request parameters. Please check your input.');
     }
 
-    throw new Error(`PayBeta API error: ${error.message}`);
+    throw new Error(`Data service error: ${error.message}`);
   }
 }
 
@@ -665,36 +665,36 @@ router.post('/purchase', async (req, res) => {
         return res.status(500).json({
           success: false,
           error: 'BALANCE_UPDATE_FAILED',
-          message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
+          message: 'Transaction succeeded but balance deduction failed. Please contact support immediately.',
           details: {
-            paybeta_order_id: payBetaResponse.data?.order_id,
-            paybeta_status: payBetaResponse.data?.status,
+            order_id: payBetaResponse.data?.order_id,
+            status: payBetaResponse.data?.status,
             amount: amount,
             phone: phone
           }
         });
       }
     } else {
-      // PayBeta was not successful, don't deduct balance
-      logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
-      
-      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+      // API was not successful, don't deduct balance
+      logger.info(`❌ Data API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
+
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
         status: 'failed',
         processingErrors: [{
-          error: `PayBeta transaction not successful: ${payBetaStatus}`,
+          error: `Data transaction not successful: ${payBetaStatus}`,
           timestamp: new Date(),
-          phase: 'paybeta_response',
-          paybeta_order_id: payBetaResponse.data?.order_id
+          phase: 'api_response',
+          order_id: payBetaResponse.data?.order_id
         }]
       });
-      
+
       return res.status(500).json({
         success: false,
-        error: 'PAYBETA_TRANSACTION_FAILED',
-        message: `PayBeta transaction not successful: ${payBetaStatus}`,
+        error: 'DATA_TRANSACTION_FAILED',
+        message: `Data transaction not successful: ${payBetaStatus}`,
         details: {
-          paybeta_order_id: payBetaResponse.data?.order_id,
-          paybeta_status: payBetaResponse.data?.status,
+          order_id: payBetaResponse.data?.order_id,
+          status: payBetaResponse.data?.status,
           amount: amount,
           phone: phone
         }
@@ -834,7 +834,7 @@ router.post('/purchase', async (req, res) => {
       // This should not happen since we already handled non-successful cases above
       return res.status(200).json({
         success: true,
-        message: `Data purchase status: ${payBetaStatus}`,
+        message: `Data purchase status: ${payBetaStatus}. Please check your transaction history.`,
         data: {
           ...payBetaResponse.data,
           request_id: finalRequestId,

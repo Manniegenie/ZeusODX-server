@@ -286,7 +286,7 @@ async function callPayBetaAPI({ customer_id, service_id, amount, request_id, use
     });
 
     if (response.status !== 'successful') {
-      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`Betting service error: ${response.message || 'Unknown error'}`);
     }
 
     // Transform PayBeta response to match eBills format for consistency
@@ -314,13 +314,13 @@ async function callPayBetaAPI({ customer_id, service_id, amount, request_id, use
     });
 
     if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
+      throw new Error('Insufficient balance with provider. Please contact support.');
     }
     if (error.message.includes('validation')) {
       throw new Error('Invalid request parameters. Please check your input.');
     }
 
-    throw new Error(`PayBeta API error: ${error.message}`);
+    throw new Error(`Betting service error: ${error.message}`);
   }
 }
 
@@ -996,16 +996,16 @@ router.get('/test-paybeta', async (req, res) => {
     
     res.json({
       success: true,
-      message: 'PayBeta test successful',
+      message: 'Service test successful',
       data: response
     });
-    
+
   } catch (error) {
-    logger.error('🧪 PayBeta test failed:', error);
-    
+    logger.error('🧪 Service test failed:', error);
+
     res.status(500).json({
       success: false,
-      message: 'PayBeta test failed',
+      message: 'Service test failed',
       error: error.message,
       details: error
     });

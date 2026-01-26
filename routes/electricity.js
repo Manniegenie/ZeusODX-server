@@ -304,7 +304,7 @@ router.get('/providers', async (req, res) => {
     });
 
     if (response.status !== 'successful') {
-      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`Service error: ${response.message || 'Unknown error'}`);
     }
 
     // Process providers to add hasLogo and icon properties
@@ -587,7 +587,7 @@ async function callPayBetaElectricityAPI({ service, meterNumber, meterType, amou
     });
 
     if (response.status !== 'successful') {
-      throw new Error(`PayBeta Electricity API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`Electricity service error: ${response.message || 'Unknown error'}`);
     }
 
     return response;
@@ -599,7 +599,7 @@ async function callPayBetaElectricityAPI({ service, meterNumber, meterType, amou
     });
 
     if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with PayBeta provider. Please contact support.');
+      throw new Error('Insufficient balance with provider. Please contact support.');
     }
     if (error.response?.status === 422) {
       const validationErrors = error.response.data?.errors || {};
@@ -607,7 +607,7 @@ async function callPayBetaElectricityAPI({ service, meterNumber, meterType, amou
       throw new Error(`Validation error: ${errorMessages.join(', ')}`);
     }
 
-    throw new Error(`PayBeta Electricity API error: ${error.message}`);
+    throw new Error(`Electricity service error: ${error.message}`);
   }
 }
 
@@ -881,10 +881,14 @@ router.post('/purchase', async (req, res) => {
         status: 'failed',
         processingErrors: [{ error: apiError.message, timestamp: new Date(), phase: 'api_call' }]
       });
+      // Sanitize error message to remove third-party references
+      const sanitizedMessage = apiError.message
+        .replace(/PayBeta|paybeta/gi, 'Service')
+        .replace(/eBills|ebills/gi, 'Service');
       return res.status(500).json({
         success: false,
-        error: 'PAYBETA_ELECTRICITY_API_ERROR',
-        message: apiError.message
+        error: 'ELECTRICITY_API_ERROR',
+        message: sanitizedMessage
       });
     }
 

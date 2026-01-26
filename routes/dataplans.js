@@ -108,23 +108,23 @@ router.post('/plans', async (req, res) => {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID provided to PayBeta API'
+          message: 'Invalid service ID provided'
         });
       }
-      
+
       return res.status(status).json({
         success: false,
-        error: 'PAYBETA_API_ERROR',
-        message: errorData?.message || 'PayBeta API request failed'
+        error: 'SERVICE_API_ERROR',
+        message: errorData?.message || 'Service request failed'
       });
     }
-    
+
     // Network or timeout errors
     if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
       return res.status(504).json({
         success: false,
         error: 'TIMEOUT',
-        message: 'Request to PayBeta API timed out. Please try again.'
+        message: 'Service request timed out. Please try again.'
       });
     }
     
@@ -221,22 +221,22 @@ router.get('/plans', async (req, res) => {
         return res.status(400).json({
           success: false,
           error: 'INVALID_SERVICE_ID',
-          message: 'Invalid service ID provided to PayBeta API'
+          message: 'Invalid service ID provided'
         });
       }
-      
+
       return res.status(status).json({
         success: false,
-        error: 'PAYBETA_API_ERROR',
-        message: errorData?.message || 'PayBeta API request failed'
+        error: 'SERVICE_API_ERROR',
+        message: errorData?.message || 'Service request failed'
       });
     }
-    
+
     if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
       return res.status(504).json({
         success: false,
         error: 'TIMEOUT',
-        message: 'Request to PayBeta API timed out. Please try again.'
+        message: 'Service request timed out. Please try again.'
       });
     }
     

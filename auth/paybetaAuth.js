@@ -22,7 +22,7 @@ class PayBetaAuth {
    */
   getAuthHeader() {
     if (!this.apiKey) {
-      throw new Error('PayBeta API key not configured. Please set PAYBETA_API_KEY environment variable.');
+      throw new Error('Service API key not configured. Please contact support.');
     }
 
     return {
@@ -101,20 +101,20 @@ class PayBetaAuth {
       });
       
       if (error.response?.status === 401) {
-        throw new Error('PayBeta API authentication failed. Check your API key.');
+        throw new Error('Service authentication failed. Please contact support.');
       }
-      
+
       if (error.response?.status === 403) {
-        throw new Error('PayBeta API access denied. Check your API key permissions.');
+        throw new Error('Service access denied. Please contact support.');
       }
-      
+
       if (error.response?.status === 400) {
         const errorMsg = error.response.data?.message || 'Bad request';
-        throw new Error(`PayBeta API validation error: ${errorMsg}`);
+        throw new Error(`Validation error: ${errorMsg}`);
       }
-      
-      if (error.code === 'ETIMEDOUT') {
-        throw new Error('PayBeta API request timed out. The service may be slow or unavailable.');
+
+      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+        throw new Error('Service request timed out. Please try again later.');
       }
       
       throw error;
@@ -149,7 +149,7 @@ class PayBetaAuth {
       return {
         success: true,
         authenticated: true,
-        message: 'PayBeta API connection successful'
+        message: 'Service API connection successful'
       };
       
     } catch (error) {

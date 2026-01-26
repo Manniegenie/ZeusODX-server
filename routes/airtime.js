@@ -22,7 +22,7 @@ router.get('/test-paybeta', async (req, res) => {
     const testResult = await payBetaAuth.testConnection();
     res.json({
       success: testResult.success,
-      message: testResult.message || 'PayBeta connection test completed',
+      message: testResult.message || 'Service connection test completed',
       authenticated: testResult.authenticated,
       error: testResult.error,
       suggestion: testResult.suggestion
@@ -30,7 +30,7 @@ router.get('/test-paybeta', async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'PayBeta test failed',
+      message: 'Service test failed',
       error: error.message
     });
   }
@@ -308,7 +308,7 @@ async function callPayBetaAPI({ phone, amount, service_id, request_id, userId })
 
     const payBetaService = serviceMapping[service_id];
     if (!payBetaService) {
-      throw new Error(`Unsupported service for PayBeta: ${service_id}`);
+      throw new Error(`Unsupported service: ${service_id}`);
     }
 
     // Ensure reference is under 40 characters for PayBeta
@@ -338,7 +338,7 @@ async function callPayBetaAPI({ phone, amount, service_id, request_id, userId })
     });
 
     if (response.status !== 'successful') {
-      throw new Error(`PayBeta API error: ${response.message || 'Unknown error'}`);
+      throw new Error(`Airtime service error: ${response.message || 'Unknown error'}`);
     }
 
     // Transform PayBeta response to match eBills format for consistency
@@ -368,16 +368,16 @@ async function callPayBetaAPI({ phone, amount, service_id, request_id, userId })
     });
 
     if (error.message.includes('API key not configured')) {
-      throw new Error('PayBeta API key not configured. Please contact support.');
+      throw new Error('Service not configured. Please contact support.');
     }
     if (error.message.includes('authentication failed')) {
-      throw new Error('PayBeta authentication failed. Please contact support.');
+      throw new Error('Service authentication failed. Please contact support.');
     }
     if (error.message.includes('validation error')) {
-      throw new Error(`PayBeta validation error: ${error.message}`);
+      throw new Error(`Validation error: ${error.message}`);
     }
 
-    throw new Error(`PayBeta API error: ${error.message}`);
+    throw new Error(`Airtime service error: ${error.message}`);
   }
 }
 
@@ -668,29 +668,29 @@ router.post('/purchase', async (req, res) => {
         return res.status(500).json({
           success: false,
           error: 'BALANCE_UPDATE_FAILED',
-          message: 'PayBeta transaction succeeded but balance deduction failed. Please contact support immediately.',
+          message: 'Transaction succeeded but balance deduction failed. Please contact support immediately.',
           details: {
-            paybeta_order_id: payBetaResponse.data?.order_id,
-            paybeta_status: payBetaResponse.data?.status,
+            order_id: payBetaResponse.data?.order_id,
+            status: payBetaResponse.data?.status,
             amount: amount,
             phone: phone
           }
         });
       }
     } else {
-      // PayBeta was not successful, don't deduct balance
-      logger.info(`❌ PayBeta API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
-      
-      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, { 
+      // API was not successful, don't deduct balance
+      logger.info(`❌ Airtime API not successful (${payBetaStatus}), not deducting balance for ${finalRequestId}`);
+
+      await BillTransaction.findByIdAndUpdate(pendingTransaction._id, {
         status: 'failed',
         processingErrors: [{
-          error: `PayBeta transaction not successful: ${payBetaStatus}`,
+          error: `Airtime transaction not successful: ${payBetaStatus}`,
           timestamp: new Date(),
-          phase: 'paybeta_response',
-          paybeta_order_id: payBetaResponse.data?.order_id
+          phase: 'api_response',
+          order_id: payBetaResponse.data?.order_id
         }]
       });
-      
+
       // Send failure notification
       try {
         await sendAirtimePurchaseNotification(
@@ -701,7 +701,7 @@ router.post('/purchase', async (req, res) => {
           'failed',
           {
             requestId: finalRequestId,
-            error: `PayBeta transaction not successful: ${payBetaStatus}`,
+            error: `Airtime transaction not successful: ${payBetaStatus}`,
             currency: 'NGNZ'
           }
         );
@@ -712,14 +712,14 @@ router.post('/purchase', async (req, res) => {
           error: notificationError.message
         });
       }
-      
+
       return res.status(500).json({
         success: false,
-        error: 'PAYBETA_TRANSACTION_FAILED',
-        message: `PayBeta transaction not successful: ${payBetaStatus}`,
+        error: 'AIRTIME_TRANSACTION_FAILED',
+        message: `Airtime transaction not successful: ${payBetaStatus}`,
         details: {
-          paybeta_order_id: payBetaResponse.data?.order_id,
-          paybeta_status: payBetaResponse.data?.status,
+          order_id: payBetaResponse.data?.order_id,
+          status: payBetaResponse.data?.status,
           amount: amount,
           phone: phone
         }
@@ -869,7 +869,7 @@ router.post('/purchase', async (req, res) => {
       // This should not happen since we already handled non-successful cases above
       return res.status(200).json({
         success: true,
-        message: `Airtime purchase status: ${payBetaStatus}`,
+        message: `Airtime purchase status: ${payBetaStatus}. Please check your transaction history.`,
         data: {
           ...payBetaResponse.data,
           request_id: finalRequestId,
