@@ -312,6 +312,19 @@ router.post(
       const isBvnVerification = idType === 'bvn';
 
       if (isBvnVerification) {
+        // Check if BVN is already used by another user
+        const existingBvnUser = await User.findOne({
+          bvn: idNumber,
+          _id: { $ne: user._id }
+        });
+
+        if (existingBvnUser) {
+          return res.status(400).json({
+            success: false,
+            message: "This BVN is already registered to another account. Please contact support if you believe this is an error."
+          });
+        }
+
         // Check for existing BVN verification (pending OR approved)
         const existingBvn = await KYC.findOne({
           userId: user._id,
@@ -569,14 +582,34 @@ router.post(
 
       if (isBvnVerification) {
         // For BVN, update bvn field and status
-        await User.findByIdAndUpdate(user._id, {
-          $set: {
-            bvn: idNumber,
-            bvnVerified: verification.allValidationPassed === true,
-            'kyc.updatedAt': new Date(),
-            'kyc.latestKycId': kycDoc._id
+        try {
+          await User.findByIdAndUpdate(user._id, {
+            $set: {
+              bvn: idNumber,
+              bvnVerified: verification.allValidationPassed === true,
+              'kyc.updatedAt': new Date(),
+              'kyc.latestKycId': kycDoc._id
+            }
+          });
+        } catch (bvnUpdateError) {
+          // Handle duplicate key error - BVN already used by another user
+          if (bvnUpdateError.code === 11000 || bvnUpdateError.message.includes('E11000')) {
+            logger.warn('BVN already used by another user during update', {
+              userId: user._id,
+              error: bvnUpdateError.message
+            });
+            // Update without setting bvn field
+            await User.findByIdAndUpdate(user._id, {
+              $set: {
+                bvnVerified: false,
+                'kyc.updatedAt': new Date(),
+                'kyc.latestKycId': kycDoc._id
+              }
+            });
+          } else {
+            throw bvnUpdateError;
           }
-        });
+        }
       } else {
         // For document KYC, update kyc.level2 status
         const userUpdate = {
@@ -648,6 +681,16 @@ router.post(
         userId: req.user.id,
         error: error.message
       });
+
+      // Handle duplicate key errors (BVN/NIN already used by another user)
+      if (error.code === 11000 || error.message.includes('E11000') || error.message.includes('duplicate key')) {
+        const duplicateField = error.message.includes('bvn') ? 'BVN' :
+                              error.message.includes('nin') ? 'NIN' : 'ID';
+        return res.status(400).json({
+          success: false,
+          message: `This ${duplicateField} is already registered to another account. Please contact support if you believe this is an error.`
+        });
+      }
 
       // Handle specific Youverify errors
       if (error.message.includes('YOUVERIFY')) {

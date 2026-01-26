@@ -302,10 +302,14 @@ router.post('/callback', async (req, res) => {
 
     if (status === 'APPROVED') {
       if (isBvn) {
-        // BVN Verification
-        userUpdate.bvn = norm.idNumber || kycDoc.idNumber;
-        userUpdate.bvnVerified = true;
-        logger.info('BVN verified for user', { userId, bvn: `${norm.idNumber?.substring(0, 4)}****` });
+        // Only set BVN if not already set by KYC.js
+        if (!user.bvn) {
+          userUpdate.bvn = norm.idNumber || kycDoc.idNumber;
+          userUpdate.bvnVerified = true;
+          logger.info('BVN set via webhook', { userId });
+        } else {
+          logger.info('BVN already set, skipping', { userId });
+        }
       } else {
         // Document KYC (Level 2)
         userUpdate['kyc.status'] = 'approved';
@@ -346,8 +350,7 @@ router.post('/callback', async (req, res) => {
     logger.info('User status updated', {
       userId,
       kycStatus: updatedUser.kycStatus,
-      kycLevel: updatedUser.kycLevel,
-      bvnVerified: updatedUser.bvnVerified
+      kycLevel: updatedUser.kycLevel
     });
 
     // 7. Call upgrade hook if approved (for document KYC)
