@@ -11,7 +11,6 @@ const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
-
 const router = express.Router();
 
 // Cache for user data to avoid repeated DB queries
@@ -28,7 +27,7 @@ registerCache('betting_userCache', userCache);
 function normalizeServiceIdForNetwork(serviceId) {
   const serviceMapping = {
     '1xbet': '1xBet',
-    'bangbet': 'BangBet', 
+    'bangbet': 'BangBet',
     'bet9ja': 'Bet9ja',
     'betking': 'BetKing',
     'betland': 'BetLand',
@@ -48,21 +47,19 @@ function normalizeServiceIdForNetwork(serviceId) {
     'greenlotto': 'GreenLotto',
     'sportybet': 'SportyBet'
   };
-  
   return serviceMapping[serviceId.toLowerCase()] || serviceId;
 }
 
 // Valid betting service providers
 const BETTING_SERVICES = [
   '1xBet', 'BangBet', 'Bet9ja', 'BetKing', 'BetLand', 'BetLion',
-  'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet',
-  'NairaBet', 'SupaBet'
+  'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet', 'NairaBet', 'SupaBet'
 ];
 
 // Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
-  ETH: { name: 'Ethereum' }, 
+  ETH: { name: 'Ethereum' },
   SOL: { name: 'Solana' },
   USDT: { name: 'Tether' },
   USDC: { name: 'USD Coin' },
@@ -75,7 +72,7 @@ const SUPPORTED_TOKENS = {
 // Token field mapping for balance operations (NGNB changed to NGNZ)
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
-  ETH: 'eth', 
+  ETH: 'eth',
   SOL: 'sol',
   USDT: 'usdt',
   USDC: 'usdc',
@@ -91,77 +88,54 @@ const TOKEN_FIELD_MAPPING = {
 async function getCachedUser(userId) {
   const cacheKey = `user_${userId}`;
   const cached = userCache.get(cacheKey);
-  
+
   if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
     return cached.user;
   }
-  
+
   // Include email and name fields so we can send notifications
   const user = await User.findById(userId).select(
     'twoFASecret is2FAEnabled passwordpin ngnzBalance lastBalanceUpdate email firstName username'
-  ).lean(); // Use lean() for better performance, only select what we need
-  
+  ).lean();
+
   if (user) {
     userCache.set(cacheKey, { user, timestamp: Date.now() });
-    // Auto-cleanup cache
     setTimeout(() => userCache.delete(cacheKey), CACHE_TTL);
   }
-  
+
   return user;
 }
 
 /**
  * SIMPLIFIED: Direct balance update only (no reservations, no portfolio updates)
- * @param {String} userId - User ID
- * @param {String} currency - Currency code
- * @param {Number} amount - Amount to add/subtract (negative for deductions)
- * @returns {Promise<Object>} Updated user
  */
 async function updateUserBalance(userId, currency, amount) {
   if (!userId || !currency || typeof amount !== 'number') {
     throw new Error('Invalid parameters for balance update');
   }
-  
+
   try {
     const currencyUpper = currency.toUpperCase();
-    
-    // Validate currency is supported
     if (!SUPPORTED_TOKENS[currencyUpper]) {
       throw new Error(`Unsupported currency: ${currencyUpper}`);
     }
-    
-    // Map currency to correct balance field
+
     const currencyLower = TOKEN_FIELD_MAPPING[currencyUpper];
     const balanceField = `${currencyLower}Balance`;
-    
-    // Simple atomic update
+
     const updateFields = {
       $inc: { [balanceField]: amount },
       $set: { lastBalanceUpdate: new Date() }
     };
-    
-    const user = await User.findByIdAndUpdate(
-      userId, 
-      updateFields, 
-      { new: true, runValidators: true }
-    );
-    
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-    
-    // Clear cache
+
+    const user = await User.findByIdAndUpdate(userId, updateFields, { new: true, runValidators: true });
+    if (!user) throw new Error(`User not found: ${userId}`);
+
     userCache.delete(`user_${userId}`);
-    
     logger.info(`Updated balance for user ${userId}: ${amount > 0 ? '+' : ''}${amount} ${currencyUpper}`);
-    
     return user;
   } catch (error) {
-    logger.error(`Failed to update balance for user ${userId}`, { 
-      currency, 
-      amount, 
-      error: error.message 
-    });
+    logger.error(`Failed to update balance for user ${userId}`, { currency, amount, error: error.message });
     throw error;
   }
 }
@@ -185,72 +159,39 @@ async function comparePasswordPin(candidatePasswordPin, hashedPasswordPin) {
 function validateBettingRequest(body) {
   const errors = [];
   const sanitized = {};
-  
-  // Customer ID validation
-  if (!body.customer_id) {
-    errors.push('Customer ID (betting account ID) is required');
-  } else {
-    sanitized.customer_id = String(body.customer_id).trim();
-    if (sanitized.customer_id.length === 0) {
-      errors.push('Customer ID must be a non-empty string');
-    }
-  }
-  
-  // Service ID validation - Let PayBeta handle provider validation
-  if (!body.service_id) {
-    errors.push('Service ID is required');
-  } else {
-    sanitized.service_id = String(body.service_id).trim();
-    // Removed hardcoded provider validation - PayBeta API will validate
-  }
-  
-  // Amount validation - UPDATED: References NGNZ
-  if (body.amount === undefined || body.amount === null || body.amount === '') {
-    errors.push('Amount is required');
-  } else {
+
+  if (!body.customer_id) errors.push('Customer ID (betting account ID) is required');
+  else sanitized.customer_id = String(body.customer_id).trim();
+
+  if (!body.service_id) errors.push('Service ID is required');
+  else sanitized.service_id = String(body.service_id).trim();
+
+  if (body.amount === undefined || body.amount === null || body.amount === '') errors.push('Amount is required');
+  else {
     const rawAmount = Number(body.amount);
-    if (!Number.isFinite(rawAmount)) {
-      errors.push('Amount must be a valid number');
-    } else {
+    if (!Number.isFinite(rawAmount)) errors.push('Amount must be a valid number');
+    else {
       sanitized.amount = Math.abs(Math.round(rawAmount * 100) / 100);
       if (rawAmount < 0) errors.push('Amount cannot be negative');
       if (sanitized.amount <= 0) errors.push('Amount must be greater than zero');
-      
-      const minAmount = 1000; // Minimum for betting
-      const maxAmount = 100000; // Maximum for betting
-      if (sanitized.amount < minAmount) {
-        errors.push(`Amount below minimum. Minimum betting funding is ${minAmount} NGNZ`);
-      }
-      if (sanitized.amount > maxAmount) {
-        errors.push(`Amount above maximum. Maximum betting funding is ${maxAmount} NGNZ`);
-      }
+      const minAmount = 1000;
+      const maxAmount = 100000;
+      if (sanitized.amount < minAmount) errors.push(`Amount below minimum. Minimum betting funding is ${minAmount} NGNZ`);
+      if (sanitized.amount > maxAmount) errors.push(`Amount above maximum. Maximum betting funding is ${maxAmount} NGNZ`);
     }
   }
-  
-  // 2FA validation
-  if (!body.twoFactorCode?.trim()) {
-    errors.push('Two-factor authentication code is required');
-  } else {
-    sanitized.twoFactorCode = String(body.twoFactorCode).trim();
-  }
-  
-  // Password PIN validation
-  if (!body.passwordpin?.trim()) {
-    errors.push('Password PIN is required');
-  } else {
+
+  if (!body.twoFactorCode?.trim()) errors.push('Two-factor authentication code is required');
+  else sanitized.twoFactorCode = String(body.twoFactorCode).trim();
+
+  if (!body.passwordpin?.trim()) errors.push('Password PIN is required');
+  else {
     sanitized.passwordpin = String(body.passwordpin).trim();
-    if (!/^\d{6}$/.test(sanitized.passwordpin)) {
-      errors.push('Password PIN must be exactly 6 numbers');
-    }
+    if (!/^\d{6}$/.test(sanitized.passwordpin)) errors.push('Password PIN must be exactly 6 numbers');
   }
-  
+
   sanitized.payment_currency = 'NGNZ';
-  
-  return {
-    isValid: errors.length === 0,
-    errors,
-    sanitized
-  };
+  return { isValid: errors.length === 0, errors, sanitized };
 }
 
 /**
@@ -258,38 +199,22 @@ function validateBettingRequest(body) {
  */
 async function callPayBetaAPI({ customer_id, service_id, amount, request_id, userId, customer_name }) {
   try {
-    // Ensure reference is under 40 characters for PayBeta
-    const payBetaReference = request_id.length > 40 ? 
-      request_id.substring(0, 40) : request_id;
+    const payBetaReference = request_id.length > 40 ? request_id.substring(0, 40) : request_id;
 
     const payload = {
       service: service_id.toLowerCase(),
       customerId: customer_id.trim(),
-      amount: Math.round(amount), // PayBeta expects integer
+      amount: Math.round(amount),
       customerName: customer_name || 'CUSTOMER',
       reference: payBetaReference
     };
 
-    logger.info('Making PayBeta betting funding request:', {
-      customer_id, service_id, amount, request_id, endpoint: '/v2/gaming/purchase'
-    });
+    logger.info('Making PayBeta betting funding request:', { customer_id, service_id, amount, request_id });
 
-    const response = await payBetaAuth.makeRequest('POST', '/v2/gaming/purchase', payload, {
-      timeout: 25000
-    });
+    const response = await payBetaAuth.makeRequest('POST', '/v2/gaming/purchase', payload, { timeout: 25000 });
 
-    logger.info(`PayBeta API response for ${request_id}:`, {
-      status: response.status,
-      message: response.message,
-      reference: response.data?.reference,
-      transactionId: response.data?.transactionId
-    });
+    if (response.status !== 'successful') throw new Error(`Betting service error: ${response.message || 'Unknown error'}`);
 
-    if (response.status !== 'successful') {
-      throw new Error(`Betting service error: ${response.message || 'Unknown error'}`);
-    }
-
-    // Transform PayBeta response to match eBills format for consistency
     return {
       code: 'success',
       message: response.message,
@@ -305,21 +230,9 @@ async function callPayBetaAPI({ customer_id, service_id, amount, request_id, use
         transactionDate: response.data.transactionDate
       }
     };
-
   } catch (error) {
-    logger.error('❌ PayBeta betting funding failed:', {
-      request_id, userId, error: error.message,
-      status: error.response?.status,
-      payBetaError: error.response?.data
-    });
-
-    if (error.message.includes('insufficient')) {
-      throw new Error('Insufficient balance with provider. Please contact support.');
-    }
-    if (error.message.includes('validation')) {
-      throw new Error('Invalid request parameters. Please check your input.');
-    }
-
+    logger.error('❌ PayBeta betting funding failed:', { request_id, userId, error: error.message });
+    if (error.message.includes('insufficient')) throw new Error('Service Unavailable. Please contact support.');
     throw new Error(`Betting service error: ${error.message}`);
   }
 }
