@@ -2,27 +2,72 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 
 /**
+ * Timeout presets tuned for Nigerian billers / DISCO realities
+ */
+const TIMEOUTS = {
+  DEFAULT: 90000,        // 90s baseline
+  AIRTIME: 60000,        // 60s
+  DATA: 60000,
+  ELECTRICITY: 180000,   // 3 minutes
+  STATUS: 30000          // 30s
+};
+
+/**
+ * Internal error mapper
+ * Never expose third-party providers to frontend
+ */
+function mapToPublicError(error) {
+  // Timeout ≠ failure
+  if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+    return new Error(
+      'Transaction is taking longer than expected. Please check transaction status before retrying.'
+    );
+  }
+
+  if (error.response?.status === 401 || error.response?.status === 403) {
+    return new Error(
+      'Service is temporarily unavailable. Please try again later.'
+    );
+  }
+
+  if (error.response?.status === 400) {
+    return new Error(
+      error.response?.data?.message ||
+      'Invalid transaction request. Please review your details.'
+    );
+  }
+
+  if (error.response?.status >= 500) {
+    return new Error(
+      'Service is currently unavailable. Please try again shortly.'
+    );
+  }
+
+  return new Error(
+    'Transaction could not be completed at this time. Please try again.'
+  );
+}
+
+/**
  * PayBeta Authentication Class
  * Handles PayBeta API authentication and requests
- * Based on PayBeta API documentation
  */
 class PayBetaAuth {
   constructor() {
     this.baseURL = process.env.PAYBETA_API_URL || 'https://api.paybeta.ng';
     this.apiKey = process.env.PAYBETA_API_KEY?.trim();
-    
+
     if (!this.apiKey) {
-      logger.warn('PayBeta API key not configured. Set PAYBETA_API_KEY environment variable.');
+      logger.warn('PayBeta API key not configured.');
     }
   }
 
   /**
-   * Get authorization header with API key
-   * @returns {Object} Authorization header object
+   * Build auth headers
    */
   getAuthHeader() {
     if (!this.apiKey) {
-      throw new Error('Service API key not configured. Please contact support.');
+      throw new Error('Service configuration error.');
     }
 
     return {
@@ -33,25 +78,18 @@ class PayBetaAuth {
   }
 
   /**
-   * Make authenticated request to PayBeta API
-   * @param {string} method - HTTP method (GET, POST, etc.)
-   * @param {string} endpoint - API endpoint (e.g., '/airtime/purchase')
-   * @param {Object} data - Request data for POST/PUT requests
-   * @param {Object} options - Additional axios options
-   * @returns {Promise<Object>} API response
+   * Make authenticated request
    */
   async makeRequest(method, endpoint, data = null, options = {}) {
     try {
-      const authHeader = this.getAuthHeader();
-      
       const requestConfig = {
         method: method.toUpperCase(),
         url: `${this.baseURL}${endpoint}`,
         headers: {
-          ...authHeader,
+          ...this.getAuthHeader(),
           ...options.headers
         },
-        timeout: options.timeout || 30000,
+        timeout: options.timeout ?? TIMEOUTS.DEFAULT,
         ...options
       };
 
@@ -59,148 +97,86 @@ class PayBetaAuth {
         requestConfig.data = data;
       }
 
-      logger.info(`🔍 PayBeta API Request Debug:`, {
-        method: method.toUpperCase(),
+      logger.info('🔍 Upstream request', {
+        provider: 'PayBeta',
+        method: requestConfig.method,
         endpoint,
-        fullURL: `${this.baseURL}${endpoint}`,
-        hasApiKey: !!this.apiKey,
-        apiKeyLength: this.apiKey?.length,
-        dataKeys: data ? Object.keys(data) : [],
-        data: data,
-        headers: requestConfig.headers,
-        timeout: requestConfig.timeout
+        timeout: requestConfig.timeout,
+        payloadKeys: data ? Object.keys(data) : []
       });
-      
+
       const response = await axios(requestConfig);
-      
+
       if (!response || response.status < 200 || response.status >= 300) {
-        throw new Error(`Unexpected response status: ${response?.status}`);
+        throw new Error(`Unexpected upstream status: ${response?.status}`);
       }
 
       return response.data;
-
     } catch (error) {
-      logger.error(`💥 PayBeta API request failed - COMPREHENSIVE DEBUG:`, {
-        method: method.toUpperCase(),
+      // Full upstream visibility — logs only
+      logger.error('💥 Upstream provider error', {
+        provider: 'PayBeta',
+        method,
         endpoint,
-        fullURL: `${this.baseURL}${endpoint}`,
         status: error.response?.status,
-        statusText: error.response?.statusText,
         message: error.response?.data?.message || error.message,
         data: error.response?.data,
-        headers: error.response?.headers,
-        requestData: data,
-        errorCode: error.code,
-        errorMessage: error.message,
-        stack: error.stack,
-        axiosError: {
-          isAxiosError: error.isAxiosError,
-          config: error.config,
-          response: error.response
-        }
+        code: error.code,
+        stack: error.stack
       });
-      
-      if (error.response?.status === 401) {
-        throw new Error('Service authentication failed. Please contact support.');
-      }
 
-      if (error.response?.status === 403) {
-        throw new Error('Service access denied. Please contact support.');
-      }
-
-      if (error.response?.status === 400) {
-        const errorMsg = error.response.data?.message || 'Bad request';
-        throw new Error(`Validation error: ${errorMsg}`);
-      }
-
-      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
-        throw new Error('Service request timed out. Please try again later.');
-      }
-      
-      throw error;
+      // Never leak provider details
+      throw mapToPublicError(error);
     }
   }
 
   /**
-   * Test PayBeta API connection
-   * @returns {Promise<Object>} Test results
+   * Internal connectivity test (not frontend-facing)
    */
   async testConnection() {
     try {
-      logger.info('Testing PayBeta API connection...');
-      
       if (!this.apiKey) {
         return {
           success: false,
           authenticated: false,
-          error: 'API key not configured',
-          suggestion: 'Set PAYBETA_API_KEY environment variable'
+          error: 'Missing API configuration'
         };
       }
 
-      // Test with a simple request (you might need to adjust this based on available endpoints)
-      const response = await this.makeRequest('POST', '/v2/airtime/purchase', {
-        service: 'mtn_vtu',
-        phoneNumber: '08123456789',
-        amount: 100,
-        reference: 'test_' + Date.now().toString().slice(-8) // Keep under 40 chars
-      });
+      await this.makeRequest(
+        'POST',
+        '/v2/airtime/purchase',
+        {
+          service: 'mtn_vtu',
+          phoneNumber: '08123456789',
+          amount: 100,
+          reference: 'test_' + Date.now().toString().slice(-8)
+        },
+        { timeout: TIMEOUTS.AIRTIME }
+      );
 
       return {
         success: true,
-        authenticated: true,
-        message: 'Service API connection successful'
+        authenticated: true
       };
-      
     } catch (error) {
-      logger.error('PayBeta API test failed:', error.message);
       return {
         success: false,
         authenticated: false,
-        error: error.message,
-        suggestion: this.getSuggestionForError(error.message)
+        error: error.message
       };
     }
   }
-
-  /**
-   * Get suggestions for common errors
-   * @param {string} errorMessage - Error message
-   * @returns {string} Suggestion
-   */
-  getSuggestionForError(errorMessage) {
-    if (errorMessage.includes('API key not configured')) {
-      return 'Set PAYBETA_API_KEY environment variable with your PayBeta API key.';
-    }
-    
-    if (errorMessage.includes('authentication failed') || errorMessage.includes('401')) {
-      return 'Check your PayBeta API key. Ensure it is correct and active.';
-    }
-    
-    if (errorMessage.includes('access denied') || errorMessage.includes('403')) {
-      return 'Check your PayBeta account permissions. Ensure your API key has the required access.';
-    }
-    
-    if (errorMessage.includes('validation error') || errorMessage.includes('400')) {
-      return 'Check your request parameters. Ensure all required fields are provided and valid.';
-    }
-    
-    if (errorMessage.includes('timeout')) {
-      return 'PayBeta API is slow or unavailable. Try again later.';
-    }
-    
-    return 'Check PayBeta service status and your API configuration.';
-  }
 }
 
-// Create singleton instance
+// Singleton
 const payBetaAuth = new PayBetaAuth();
 
 module.exports = {
+  TIMEOUTS,
   PayBetaAuth,
   payBetaAuth,
-  
-  // Convenience methods
-  makeRequest: (method, endpoint, data, options) => payBetaAuth.makeRequest(method, endpoint, data, options),
+  makeRequest: (method, endpoint, data, options) =>
+    payBetaAuth.makeRequest(method, endpoint, data, options),
   testConnection: () => payBetaAuth.testConnection()
 };
