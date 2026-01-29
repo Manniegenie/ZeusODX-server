@@ -32,18 +32,23 @@ function isValidName(name) {
   return name.length >= 2 && name.length <= 50 && /^[a-zA-Z\s\-']+$/.test(name);
 }
 
-// Normalize Nigerian phone - remove leading 0 after country code
+// Normalize Nigerian phone - SAME logic used everywhere
 function normalizeNigerianPhone(phone) {
-  // Remove all non-digits except leading +
   let cleaned = phone.replace(/[^\d+]/g, '');
 
-  // Handle +234090... -> +23490...
+  // +234070xxxxxxxx -> +23470xxxxxxxx
   if (cleaned.startsWith('+2340')) {
     cleaned = '+234' + cleaned.slice(5);
   }
-  // Handle 234090... -> 23490...
+
+  // 234070xxxxxxxx -> +23470xxxxxxxx
   if (cleaned.startsWith('2340') && !cleaned.startsWith('+')) {
     cleaned = '234' + cleaned.slice(4);
+  }
+
+  // Force +234 prefix
+  if (cleaned.startsWith('234') && !cleaned.startsWith('+')) {
+    cleaned = '+' + cleaned;
   }
 
   return cleaned;
@@ -64,6 +69,8 @@ router.post('/add-user', async (req, res) => {
   firstname = sanitizeName(firstname);
   middlename = middlename ? sanitizeName(middlename) : '';
   lastname = sanitizeName(lastname);
+
+  // 🔑 Normalize phone ONCE and early
   phonenumber = normalizeNigerianPhone(phonenumber);
 
   // Validate email format and length
@@ -88,8 +95,8 @@ router.post('/add-user', async (req, res) => {
   }
 
   try {
-    // Normalize phone number for SMS (remove + if present)
-    const normalizedPhone = phonenumber.startsWith('+') ? phonenumber.slice(1) : phonenumber;
+    // VerifyAT expects no +
+    const phoneForSMS = phonenumber.slice(1);
 
     // Check if user already exists in main User database
     const existingMainUser = await User.findOne({
@@ -120,22 +127,22 @@ router.post('/add-user', async (req, res) => {
     // Generate OTP and expiration
     const otp = generateOTP();
     const createdAt = new Date();
-    const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000); // HARD-CODED 10 minutes
+    const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000);
 
     // Send OTP via Africa's Talking
-    const sendResult = await sendVerificationCode(normalizedPhone, otp);
+    const sendResult = await sendVerificationCode(phoneForSMS, otp);
     if (!sendResult.success) {
-      logger.error('Failed to send OTP', { phone: normalizedPhone, error: sendResult.error });
+      logger.error('Failed to send OTP', { phone: phoneForSMS, error: sendResult.error });
       return res.status(500).json({ message: 'Failed to send verification code.' });
     }
 
-    // Save pending user
+    // Save pending user (NORMALIZED phone only)
     const pendingUser = new PendingUser({
       email,
       firstname,
       middlename,
       lastname,
-      phonenumber, // Store original format
+      phonenumber,
       verificationCode: otp,
       verificationCodeCreatedAt: createdAt,
       verificationCodeExpiresAt: expiresAt
@@ -144,9 +151,12 @@ router.post('/add-user', async (req, res) => {
     await pendingUser.save();
     logger.info('Pending user created and OTP sent', { email, phonenumber });
 
-    // Send welcome email (non-blocking - don't fail signup if email fails)
+    // Send welcome email (non-blocking)
     try {
-      const fullName = middlename ? `${firstname} ${middlename} ${lastname}` : `${firstname} ${lastname}`;
+      const fullName = middlename
+        ? `${firstname} ${middlename} ${lastname}`
+        : `${firstname} ${lastname}`;
+
       const emailResult = await sendSignupEmail(email, fullName);
       logger.info('Welcome email sent successfully', { 
         email: email.slice(0, 3) + '****',
@@ -154,11 +164,9 @@ router.post('/add-user', async (req, res) => {
         messageId: emailResult.messageId
       });
     } catch (emailError) {
-      // Log the error but don't fail the signup process
       logger.error('Failed to send welcome email', {
         email: email.slice(0, 3) + '****',
-        error: emailError.message,
-        stack: emailError.stack
+        error: emailError.message
       });
     }
 
