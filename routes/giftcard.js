@@ -10,6 +10,7 @@ const GiftCardPrice = require('../models/giftcardPrice');
 const logger = require('../utils/logger');
 const { sendGiftcardSubmissionEmail } = require('../services/EmailService');
 const { sendGiftcardSubmissionNotification } = require('../services/notificationService');
+const { sendGiftcardAlert } = require('../utils/verifyAT');
 
 // Cloudinary configuration
 cloudinary.config({
@@ -467,6 +468,35 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
           userId: user._id,
           submissionId: giftCard._id,
           error: error.message
+        });
+      }
+
+      // Send SMS alert to admins
+      try {
+        const smsResult = await sendGiftcardAlert({
+          username: user.firstName || user.username || 'Customer',
+          cardType: normalizedCardType,
+          cardFormat: normalizedCardFormat,
+          cardValue: cardVal,
+          expectedAmount: rateCalculation.amountToReceive,
+          country: normalizedCountry,
+          submissionId: giftCard._id.toString().slice(-8).toUpperCase()
+        });
+
+        if (smsResult.success) {
+          logger.info('Giftcard SMS alert sent to admins', {
+            submissionId: giftCard._id
+          });
+        } else {
+          logger.warn('Giftcard SMS alert failed (non-critical)', {
+            submissionId: giftCard._id,
+            error: smsResult.error
+          });
+        }
+      } catch (smsError) {
+        logger.error('Failed to send giftcard SMS alert', {
+          submissionId: giftCard._id,
+          error: smsError.message
         });
       }
     });
