@@ -11,21 +11,30 @@ const { sendLoginEmail } = require("../services/EmailService");
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
 
-// Normalize Nigerian phone - remove leading 0 after country code
+// Normalize Nigerian phone - SAME logic as signup.js
 function normalizePhone(phone) {
   let cleaned = phone.replace(/[^\d+]/g, '');
-  // Handle +234090... -> +23490...
+
+  // +234070xxxxxxxx -> +23470xxxxxxxx
   if (cleaned.startsWith('+2340')) {
     cleaned = '+234' + cleaned.slice(5);
   }
-  // Handle 234090... -> +23490...
+
+  // 234070xxxxxxxx -> +23470xxxxxxxx
   if (cleaned.startsWith('2340') && !cleaned.startsWith('+')) {
-    cleaned = '+234' + cleaned.slice(4);
+    cleaned = '234' + cleaned.slice(4);
   }
-  // Ensure + prefix for Nigerian numbers
+
+  // 0xxxxxxxxxx -> +234xxxxxxxxx (local format)
+  if (cleaned.startsWith('0') && cleaned.length === 11) {
+    cleaned = '+234' + cleaned.slice(1);
+  }
+
+  // Force +234 prefix
   if (cleaned.startsWith('234') && !cleaned.startsWith('+')) {
     cleaned = '+' + cleaned;
   }
+
   return cleaned;
 }
 

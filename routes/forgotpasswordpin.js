@@ -44,10 +44,39 @@ function isValidPhoneNumber(phone) {
   return /^\+?[\d\s\-()]{10,15}$/.test(phone);
 }
 
+// Normalize Nigerian phone - SAME logic as signup.js
+function normalizeNigerianPhone(phone) {
+  let cleaned = phone.replace(/[^\d+]/g, '');
+
+  // +234070xxxxxxxx -> +23470xxxxxxxx
+  if (cleaned.startsWith('+2340')) {
+    cleaned = '+234' + cleaned.slice(5);
+  }
+
+  // 234070xxxxxxxx -> +23470xxxxxxxx
+  if (cleaned.startsWith('2340') && !cleaned.startsWith('+')) {
+    cleaned = '234' + cleaned.slice(4);
+  }
+
+  // 0xxxxxxxxxx -> +234xxxxxxxxx (local format)
+  if (cleaned.startsWith('0') && cleaned.length === 11) {
+    cleaned = '+234' + cleaned.slice(1);
+  }
+
+  // Force +234 prefix
+  if (cleaned.startsWith('234') && !cleaned.startsWith('+')) {
+    cleaned = '+' + cleaned;
+  }
+
+  return cleaned;
+}
+
 // Helper to find user by phone number - Note: schema uses 'phonenumber' not 'phoneNumber'
 async function findUserByPhone(phoneNumber) {
   try {
-    const user = await User.findOne({ phonenumber: phoneNumber });
+    // Normalize phone before lookup
+    const normalizedPhone = normalizeNigerianPhone(phoneNumber);
+    const user = await User.findOne({ phonenumber: normalizedPhone });
     return user;
   } catch (error) {
     logger.error('Error finding user by phone number', {
