@@ -9,6 +9,13 @@ class ScheduledNotificationService {
   constructor() {
     this.isRunning = false;
     this.jobs = [];
+    // Define schedules as class property so they're always available
+    this.scheduleConfig = [
+      { time: '7:00 AM', cron: '0 7 * * *' },
+      { time: '12:00 PM', cron: '0 12 * * *' },
+      { time: '6:00 PM', cron: '0 18 * * *' },
+      { time: '9:00 PM', cron: '0 21 * * *' }
+    ];
   }
 
   // Start all scheduled notifications
@@ -20,15 +27,7 @@ class ScheduledNotificationService {
 
     logger.info('Starting scheduled notification service...');
 
-    // Schedule price notifications at 7am, 12pm, 6pm, and 9pm
-    const schedules = [
-      { time: '7:00 AM', cron: '0 7 * * *' },
-      { time: '12:00 PM', cron: '0 12 * * *' },
-      { time: '6:00 PM', cron: '0 18 * * *' },
-      { time: '9:00 PM', cron: '0 21 * * *' }
-    ];
-
-    schedules.forEach(({ time, cron: cronExpression }) => {
+    this.scheduleConfig.forEach(({ time, cron: cronExpression }) => {
       const job = cron.schedule(cronExpression, async () => {
         logger.info(`Running scheduled price notification at ${time}`);
         await this.sendPriceNotification();
@@ -221,10 +220,10 @@ class ScheduledNotificationService {
   getStatus() {
     return {
       isRunning: this.isRunning,
-      jobsCount: this.jobs.length,
-      schedules: this.jobs.map(({ time, job }) => ({
+      jobsCount: this.isRunning ? this.scheduleConfig.length : 0,
+      schedules: this.scheduleConfig.map(({ time }) => ({
         time,
-        running: job.running
+        running: this.isRunning
       }))
     };
   }
