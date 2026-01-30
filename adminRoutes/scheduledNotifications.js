@@ -57,10 +57,30 @@ router.post('/stop', (req, res) => {
 // POST /scheduled-notifications/test - Test price notification
 router.post('/test', async (req, res) => {
   try {
-    await scheduledNotificationService.testNotification();
+    const result = await scheduledNotificationService.testNotification();
+
+    if (!result.success && result.reason) {
+      // No notifications could be sent
+      return res.json({
+        success: false,
+        message: result.reason,
+        data: result
+      });
+    }
+
     res.json({
-      success: true,
-      message: 'Test notification sent successfully'
+      success: result.success,
+      message: result.success
+        ? `Notifications sent: ${result.successCount}/${result.totalUsers} users`
+        : 'No notifications delivered',
+      data: {
+        totalUsers: result.totalUsers,
+        delivered: result.successCount,
+        failed: result.errorCount,
+        skipped: result.skippedCount,
+        notification: result.notification,
+        errors: result.errors
+      }
     });
   } catch (error) {
     logger.error('Error sending test notification', { error: error.message });

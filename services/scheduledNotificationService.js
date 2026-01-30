@@ -228,10 +228,115 @@ class ScheduledNotificationService {
     };
   }
 
-  // Test the notification (for manual testing)
+  // Test the notification (for manual testing) - returns detailed results
   async testNotification() {
     logger.info('Testing price notification...');
-    await this.sendPriceNotification();
+    return await this.sendPriceNotificationWithResults();
+  }
+
+  // Send price notification and return detailed results
+  async sendPriceNotificationWithResults() {
+    try {
+      logger.info('Fetching latest crypto prices...');
+
+      // Get NGNZ rate
+      let ngnzRate = null;
+      try {
+        const rateInfo = await currencyService.getUsdToNgnRate();
+        ngnzRate = {
+          symbol: 'NGNZ',
+          price: rateInfo.finalPrice,
+          hourly_change: 0
+        };
+      } catch (error) {
+        logger.warn('Failed to fetch NGNZ rate:', error.message);
+      }
+
+      // Get latest prices for major tokens
+      const latestPrices = await CryptoPrice.getLatestPrices();
+
+      if ((!latestPrices || latestPrices.length === 0) && !ngnzRate) {
+        return { success: false, reason: 'No crypto prices found' };
+      }
+
+      // Filter for major tokens (BTC, ETH, SOL)
+      const majorTokens = ['BTC', 'ETH', 'SOL'];
+      const relevantPrices = (latestPrices || []).filter(price =>
+        majorTokens.includes(price.symbol)
+      );
+
+      // Add NGNZ at the beginning if available
+      const allPrices = ngnzRate ? [ngnzRate, ...relevantPrices] : relevantPrices;
+
+      if (allPrices.length === 0) {
+        return { success: false, reason: 'No prices found' };
+      }
+
+      // Format the notification message
+      const notification = this.formatPriceNotification(allPrices);
+
+      // Get all users with push tokens
+      const users = await User.find({
+        $or: [
+          { fcmToken: { $ne: null } },
+          { expoPushToken: { $ne: null } }
+        ]
+      }).select('_id fcmToken expoPushToken email username');
+
+      if (users.length === 0) {
+        return { success: false, reason: 'No users with push tokens found' };
+      }
+
+      // Send notification to each user
+      let successCount = 0;
+      let errorCount = 0;
+      let skippedCount = 0;
+      const errors = [];
+
+      for (const user of users) {
+        try {
+          const result = await sendPushNotification(user._id.toString(), {
+            title: notification.title,
+            body: notification.body,
+            data: {
+              type: 'price_update',
+              timestamp: new Date().toISOString(),
+              tokens: allPrices.map(p => ({
+                symbol: p.symbol,
+                price: p.price,
+                change: p.hourly_change
+              }))
+            }
+          });
+
+          if (result.success) {
+            successCount++;
+          } else if (result.skipped) {
+            skippedCount++;
+          } else {
+            errorCount++;
+            errors.push({ userId: user._id, email: user.email, error: result.message });
+          }
+        } catch (error) {
+          errorCount++;
+          errors.push({ userId: user._id, email: user.email, error: error.message });
+        }
+      }
+
+      return {
+        success: successCount > 0,
+        totalUsers: users.length,
+        successCount,
+        errorCount,
+        skippedCount,
+        notification: { title: notification.title, body: notification.body },
+        errors: errors.slice(0, 5) // Return first 5 errors for debugging
+      };
+
+    } catch (error) {
+      logger.error('Error in test price notification', { error: error.message });
+      return { success: false, reason: error.message };
+    }
   }
 }
 

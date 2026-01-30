@@ -21,6 +21,33 @@ function sanitizeInput(input) {
   return validator.stripLow(validator.escape(input.trim()));
 }
 
+// Normalize Nigerian phone - SAME logic as signup.js
+function normalizeNigerianPhone(phone) {
+  let cleaned = phone.replace(/[^\d+]/g, '');
+
+  // +234070xxxxxxxx -> +23470xxxxxxxx
+  if (cleaned.startsWith('+2340')) {
+    cleaned = '+234' + cleaned.slice(5);
+  }
+
+  // 234070xxxxxxxx -> +23470xxxxxxxx
+  if (cleaned.startsWith('2340') && !cleaned.startsWith('+')) {
+    cleaned = '234' + cleaned.slice(4);
+  }
+
+  // 0xxxxxxxxxx -> +234xxxxxxxxx
+  if (cleaned.startsWith('0') && cleaned.length === 11) {
+    cleaned = '+234' + cleaned.slice(1);
+  }
+
+  // Force +234 prefix
+  if (cleaned.startsWith('234') && !cleaned.startsWith('+')) {
+    cleaned = '+' + cleaned;
+  }
+
+  return cleaned;
+}
+
 // --- Rate limiter for OTP resend ---
 const otpResendLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes window
@@ -42,7 +69,12 @@ router.post('/resend-otp', otpResendLimiter, async (req, res) => {
   }
 
   phonenumber = sanitizeInput(phonenumber);
-  const normalizedPhone = phonenumber.startsWith('+') ? phonenumber.slice(1) : phonenumber;
+
+  // Normalize phone number to match stored format
+  phonenumber = normalizeNigerianPhone(phonenumber);
+
+  // For SMS sending (Africa's Talking expects no +)
+  const phoneForSMS = phonenumber.startsWith('+') ? phonenumber.slice(1) : phonenumber;
 
   try {
     const pendingUser = await PendingUser.findOne({ phonenumber });
@@ -56,10 +88,10 @@ router.post('/resend-otp', otpResendLimiter, async (req, res) => {
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000); // HARD-CODED 10 minutes
 
-    const sendResult = await sendVerificationCode(normalizedPhone, otp);
+    const sendResult = await sendVerificationCode(phoneForSMS, otp);
 
     if (!sendResult.success) {
-      logger.error('Failed to resend OTP', { phone: normalizedPhone, error: sendResult.error });
+      logger.error('Failed to resend OTP', { phone: phoneForSMS, error: sendResult.error });
       return res.status(500).json({ message: 'Failed to send verification code.' });
     }
 
