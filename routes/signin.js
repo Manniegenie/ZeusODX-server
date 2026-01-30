@@ -59,12 +59,12 @@ router.post(
       .notEmpty()
       .withMessage("Phone number is required.")
       .customSanitizer((value) => {
-        // Only allow digits and + prefix
-        return value.replace(/[^\d+]/g, '').slice(0, 15);
+        // Clean and normalize phone number
+        return normalizePhone(value);
       })
       .custom((value) => {
-        // Accept Nigerian format: +234xxxxxxxxxx or 234xxxxxxxxxx (13-14 digits with country code)
-        const phoneRegex = /^\+?234[0-9]{10}$/;
+        // Accept Nigerian format: +234xxxxxxxxxx (13 digits total)
+        const phoneRegex = /^\+234[789][01]\d{8}$/;
         if (!phoneRegex.test(value)) throw new Error("Invalid phone number format. Use Nigerian format +2348xxxxxxxxx.");
         return true;
       }),
@@ -91,10 +91,8 @@ router.post(
       return res.status(400).json({ success: false, message: "Validation failed.", errors: errors.array() });
     }
 
-    const { phonenumber: rawPhone, passwordpin } = req.body;
-
-    // Normalize phone number to handle +234090... -> +23490...
-    const phonenumber = normalizePhone(rawPhone);
+    const { phonenumber, passwordpin } = req.body;
+    // Phone already normalized by customSanitizer
 
     try {
       const user = await User.findOne({ phonenumber }).lean(false);
