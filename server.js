@@ -11,8 +11,9 @@ const cron = require('node-cron');
 
 // Import crypto price job
 const { updateCryptoPrices } = require('./services/cryptoPriceJob');
-// Import scheduled notification service
+// Import scheduled notification services
 const scheduledNotificationService = require('./services/scheduledNotificationService');
+const scheduledGiftCardNotificationService = require('./services/scheduledGiftCardNotificationService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -514,6 +515,7 @@ const analyticsRoutes = require("./adminRoutes/analytics");
 const resendOtpRoutes = require("./routes/resendOtp");
 const Admin2FARoutes = require("./adminRoutes/Admin2FA");
 const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotifications");
+const scheduledGiftCardNotificationRoutes = require("./adminRoutes/scheduledGiftCardNotifications");
 const notificationRoutes = require("./routes/notifications");
 const Fetchnetworktestttt = require("./routes/FetchnetworkTestttt");
 const bannerRoutes = require("./routes/Banners");
@@ -556,6 +558,7 @@ app.use('/notification', Pushnotification);
 // Admin notification management (requires auth)
 app.use('/admin/notification', authenticateAdminToken, requireAdmin, Pushnotification);
 app.use('/admin/scheduled-notifications', authenticateAdminToken, requireAdmin, scheduledNotificationRoutes);
+app.use('/admin/scheduled-giftcard-notifications', authenticateAdminToken, requireAdmin, scheduledGiftCardNotificationRoutes);
 
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
@@ -660,7 +663,11 @@ const startServer = async () => {
       
       // Start scheduled notifications
       scheduledNotificationService.start();
-      console.log('📱 Scheduled price notifications started (7am, 12pm, 6pm, 9pm) - NGNZ, BTC, ETH, SOL');
+      console.log('📱 Scheduled price notifications started (7am, 12pm, 6pm, 9pm) - NGNZ, BTC, BNB, ETH, SOL');
+      
+      // Start gift card scheduled notifications
+      scheduledGiftCardNotificationService.start();
+      console.log('🎁 Scheduled gift card notifications started (11am, 3pm) - iTunes, Steam, Razer Gold');
       
       // Run price update immediately on startup
       setTimeout(async () => {
