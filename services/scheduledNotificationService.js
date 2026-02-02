@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const CryptoPrice = require('../models/CryptoPrice');
+const PriceChange = require('../models/pricechange');
 const { sendPushNotification } = require('./notificationService');
 const User = require('../models/user');
 const logger = require('../utils/logger');
@@ -84,14 +84,14 @@ class ScheduledNotificationService {
         logger.warn('NGNZ rate unavailable (set offramp rate in admin):', error.message);
       }
 
-      // Get latest prices for major tokens (from crypto price job)
-      const latestPrices = await CryptoPrice.getLatestPrices() || [];
+      // Get latest prices for major tokens (from PriceChange - populated by crypto price job)
+      const latestPrices = await PriceChange.getLatestPrices() || [];
 
-      // Filter for major tokens (BTC, BNB, ETH, SOL)
+      // Filter for major tokens (BTC, BNB, ETH, SOL) and sort in display order
       const majorTokens = ['BTC', 'BNB', 'ETH', 'SOL'];
-      const relevantPrices = latestPrices.filter(price =>
-        majorTokens.includes(price.symbol)
-      );
+      const relevantPrices = latestPrices
+        .filter(price => majorTokens.includes(price.symbol))
+        .sort((a, b) => majorTokens.indexOf(a.symbol) - majorTokens.indexOf(b.symbol));
 
       // Add NGNZ at the beginning if available
       const allPrices = ngnzRate ? [ngnzRate, ...relevantPrices] : relevantPrices;
@@ -99,7 +99,7 @@ class ScheduledNotificationService {
       if (allPrices.length === 0) {
         const reasons = [];
         if (!ngnzRate) reasons.push('NGNZ/offramp rate not set in admin');
-        if (relevantPrices.length === 0) reasons.push('no BTC/BNB/ETH/SOL in crypto_prices (check price job)');
+        if (relevantPrices.length === 0) reasons.push('no BTC/BNB/ETH/SOL in pricechanges (run crypto price job)');
         logger.warn('No prices for notification:', reasons.join('; '));
         return;
       }
@@ -251,14 +251,14 @@ class ScheduledNotificationService {
         logger.warn('NGNZ rate unavailable (set offramp rate in admin):', error.message);
       }
 
-      // Get latest prices for major tokens (from crypto price job)
-      const latestPrices = await CryptoPrice.getLatestPrices() || [];
+      // Get latest prices for major tokens (from PriceChange - populated by crypto price job)
+      const latestPrices = await PriceChange.getLatestPrices() || [];
 
-      // Filter for major tokens (BTC, BNB, ETH, SOL)
+      // Filter for major tokens (BTC, BNB, ETH, SOL) and sort in display order
       const majorTokens = ['BTC', 'BNB', 'ETH', 'SOL'];
-      const relevantPrices = latestPrices.filter(price =>
-        majorTokens.includes(price.symbol)
-      );
+      const relevantPrices = latestPrices
+        .filter(price => majorTokens.includes(price.symbol))
+        .sort((a, b) => majorTokens.indexOf(a.symbol) - majorTokens.indexOf(b.symbol));
 
       // Add NGNZ at the beginning if available
       const allPrices = ngnzRate ? [ngnzRate, ...relevantPrices] : relevantPrices;
@@ -266,7 +266,7 @@ class ScheduledNotificationService {
       if (allPrices.length === 0) {
         const reasons = [];
         if (!ngnzRate) reasons.push('NGNZ/offramp rate not configured in admin');
-        if (relevantPrices.length === 0) reasons.push('no BTC/BNB/ETH/SOL in crypto_prices (run crypto price job)');
+        if (relevantPrices.length === 0) reasons.push('no BTC/BNB/ETH/SOL in pricechanges (run crypto price job)');
         return { success: false, reason: reasons.join('. ') };
       }
 

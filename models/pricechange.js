@@ -146,6 +146,28 @@ priceChangeSchema.statics.cleanupOldPrices = async function(daysToKeep = 30) {
   }
 };
 
+// Get latest price per symbol (for scheduled notifications etc.)
+priceChangeSchema.statics.getLatestPrices = async function() {
+  try {
+    const pipeline = [
+      { $sort: { symbol: 1, timestamp: -1 } },
+      { $group: {
+          _id: '$symbol',
+          symbol: { $first: '$symbol' },
+          price: { $first: '$price' },
+          timestamp: { $first: '$timestamp' }
+        }
+      },
+      { $sort: { symbol: 1 } }
+    ];
+    const docs = await this.aggregate(pipeline);
+    return docs.map((d) => ({ symbol: d.symbol, price: d.price, hourly_change: 0 }));
+  } catch (e) {
+    console.error('getLatestPrices failed:', e.message);
+    return [];
+  }
+};
+
 // History window
 priceChangeSchema.statics.getPriceHistory = async function(symbol, hours = 24) {
   try {
