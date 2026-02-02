@@ -29,11 +29,15 @@ class ScheduledNotificationService {
 
     this.scheduleConfig.forEach(({ time, cron: cronExpression }) => {
       const job = cron.schedule(cronExpression, async () => {
-        logger.info(`Running scheduled price notification at ${time}`);
-        await this.sendPriceNotification();
+        logger.info(`Running scheduled price notification at ${time} (${cronExpression})`);
+        try {
+          await this.sendPriceNotification();
+        } catch (err) {
+          logger.error('Scheduled notification job failed', { time, error: err.message });
+        }
       }, {
         scheduled: false,
-        timezone: 'Africa/Lagos' // Adjust timezone as needed
+        timezone: 'Africa/Lagos'
       });
 
       job.start();
@@ -110,16 +114,13 @@ class ScheduledNotificationService {
         tokensCount: allPrices.length
       });
 
-      // Get all users with push tokens
+      // Get all users with valid Expo push tokens (Expo-only; FCM removed)
       const users = await User.find({
-        $or: [
-          { fcmToken: { $ne: null } },
-          { expoPushToken: { $ne: null } }
-        ]
-      }).select('_id fcmToken expoPushToken email username');
+        expoPushToken: { $exists: true, $nin: [null, ''] }
+      }).select('_id expoPushToken email username');
 
       if (users.length === 0) {
-        logger.warn('No users with push tokens found');
+        logger.warn('No users with Expo push tokens found');
         return;
       }
 
@@ -275,16 +276,13 @@ class ScheduledNotificationService {
       // Format the notification message
       const notification = this.formatPriceNotification(allPrices);
 
-      // Get all users with push tokens
+      // Get all users with valid Expo push tokens (Expo-only; FCM removed)
       const users = await User.find({
-        $or: [
-          { fcmToken: { $ne: null } },
-          { expoPushToken: { $ne: null } }
-        ]
-      }).select('_id fcmToken expoPushToken email username');
+        expoPushToken: { $exists: true, $nin: [null, ''] }
+      }).select('_id expoPushToken email username');
 
       if (users.length === 0) {
-        return { success: false, reason: 'No users with push tokens found' };
+        return { success: false, reason: 'No users with Expo push tokens registered. Users must enable notifications in the app.' };
       }
 
       // Send notification to each user
