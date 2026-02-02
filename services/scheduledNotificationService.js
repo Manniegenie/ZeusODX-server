@@ -3,7 +3,7 @@ const CryptoPrice = require('../models/CryptoPrice');
 const { sendPushNotification } = require('./notificationService');
 const User = require('../models/user');
 const logger = require('../utils/logger');
-const { currencyService } = require('./onramppriceservice');
+const { offrampService } = require('./offramppriceservice');
 
 class ScheduledNotificationService {
   constructor() {
@@ -71,30 +71,25 @@ class ScheduledNotificationService {
     try {
       logger.info('Fetching latest crypto prices...');
 
-      // Get NGNZ rate
+      // Get NGNZ rate (from offramp - admin must configure)
       let ngnzRate = null;
       try {
-        const rateInfo = await currencyService.getUsdToNgnRate();
+        const rateInfo = await offrampService.getUsdToNgnRate();
         ngnzRate = {
           symbol: 'NGNZ',
           price: rateInfo.finalPrice,
           hourly_change: 0
         };
       } catch (error) {
-        logger.warn('Failed to fetch NGNZ rate:', error.message);
+        logger.warn('NGNZ rate unavailable (set offramp rate in admin):', error.message);
       }
 
-      // Get latest prices for major tokens
-      const latestPrices = await CryptoPrice.getLatestPrices();
-
-      if ((!latestPrices || latestPrices.length === 0) && !ngnzRate) {
-        logger.warn('No crypto prices found, skipping notification');
-        return;
-      }
+      // Get latest prices for major tokens (from crypto price job)
+      const latestPrices = await CryptoPrice.getLatestPrices() || [];
 
       // Filter for major tokens (BTC, ETH, SOL)
       const majorTokens = ['BTC', 'ETH', 'SOL'];
-      const relevantPrices = (latestPrices || []).filter(price =>
+      const relevantPrices = latestPrices.filter(price =>
         majorTokens.includes(price.symbol)
       );
 
@@ -102,7 +97,10 @@ class ScheduledNotificationService {
       const allPrices = ngnzRate ? [ngnzRate, ...relevantPrices] : relevantPrices;
 
       if (allPrices.length === 0) {
-        logger.warn('No prices found, skipping notification');
+        const reasons = [];
+        if (!ngnzRate) reasons.push('NGNZ/offramp rate not set in admin');
+        if (relevantPrices.length === 0) reasons.push('no BTC/ETH/SOL in crypto_prices (check price job)');
+        logger.warn('No prices for notification:', reasons.join('; '));
         return;
       }
 
@@ -240,29 +238,25 @@ class ScheduledNotificationService {
     try {
       logger.info('Fetching latest crypto prices...');
 
-      // Get NGNZ rate
+      // Get NGNZ rate (from offramp - admin must configure)
       let ngnzRate = null;
       try {
-        const rateInfo = await currencyService.getUsdToNgnRate();
+        const rateInfo = await offrampService.getUsdToNgnRate();
         ngnzRate = {
           symbol: 'NGNZ',
           price: rateInfo.finalPrice,
           hourly_change: 0
         };
       } catch (error) {
-        logger.warn('Failed to fetch NGNZ rate:', error.message);
+        logger.warn('NGNZ rate unavailable (set offramp rate in admin):', error.message);
       }
 
-      // Get latest prices for major tokens
-      const latestPrices = await CryptoPrice.getLatestPrices();
-
-      if ((!latestPrices || latestPrices.length === 0) && !ngnzRate) {
-        return { success: false, reason: 'No crypto prices found' };
-      }
+      // Get latest prices for major tokens (from crypto price job)
+      const latestPrices = await CryptoPrice.getLatestPrices() || [];
 
       // Filter for major tokens (BTC, ETH, SOL)
       const majorTokens = ['BTC', 'ETH', 'SOL'];
-      const relevantPrices = (latestPrices || []).filter(price =>
+      const relevantPrices = latestPrices.filter(price =>
         majorTokens.includes(price.symbol)
       );
 
@@ -270,7 +264,10 @@ class ScheduledNotificationService {
       const allPrices = ngnzRate ? [ngnzRate, ...relevantPrices] : relevantPrices;
 
       if (allPrices.length === 0) {
-        return { success: false, reason: 'No prices found' };
+        const reasons = [];
+        if (!ngnzRate) reasons.push('NGNZ/offramp rate not configured in admin');
+        if (relevantPrices.length === 0) reasons.push('no BTC/ETH/SOL in crypto_prices (run crypto price job)');
+        return { success: false, reason: reasons.join('. ') };
       }
 
       // Format the notification message
