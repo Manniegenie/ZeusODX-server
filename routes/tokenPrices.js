@@ -1,6 +1,38 @@
 const express = require('express');
 const router = express.Router();
 const PriceChange = require('../models/pricechange');
+const GlobalMarkdown = require('../models/pricemarkdown');
+
+// Stablecoins are exempt from markdown (matches portfolio.js logic)
+const STABLECOINS = ['USDT', 'USDC', 'NGNZ'];
+
+/**
+ * Fetch the active global markdown and return the discount multiplier.
+ * Returns 1 (no change) if markdown is inactive or missing.
+ */
+async function getMarkdownMultiplier() {
+  try {
+    const markdown = await GlobalMarkdown.getCurrentMarkdown();
+    if (markdown && markdown.isActive && markdown.markdownPercentage > 0) {
+      return {
+        multiplier: (100 - markdown.markdownPercentage) / 100,
+        percentage: markdown.markdownPercentage,
+        active: true,
+      };
+    }
+  } catch (err) {
+    console.error('Failed to fetch global markdown, returning raw prices:', err.message);
+  }
+  return { multiplier: 1, percentage: 0, active: false };
+}
+
+/**
+ * Apply markdown to a price. Stablecoins are exempt.
+ */
+function applyMarkdown(price, symbol, multiplier) {
+  if (STABLECOINS.includes(symbol)) return price;
+  return price * multiplier;
+}
 
 /**
  * GET /api/token-prices
@@ -35,6 +67,9 @@ router.get('/', async (req, res) => {
 
     const priceResults = await Promise.all(pricePromises);
 
+    // Fetch global markdown once for the entire request
+    const { multiplier, percentage: mdPercent, active: mdActive } = await getMarkdownMultiplier();
+
     // Build response data
     const tokenData = [];
 
@@ -47,29 +82,32 @@ router.get('/', async (req, res) => {
         continue;
       }
 
+      const adjustedPrice = applyMarkdown(priceDoc.price, symbol, multiplier);
+
       const tokenInfo = {
         symbol: symbol,
         name: getTokenName(symbol),
-        price: priceDoc.price,
+        price: adjustedPrice,
         lastUpdated: priceDoc.timestamp,
         source: priceDoc.source || 'binance'
       };
 
-      // Calculate 24h price change if requested
+      // Calculate 24h price change if requested (using adjusted prices for consistency)
       if (shouldIncludeChange) {
         const historicalPrice = await PriceChange.getHistoricalPrice(symbol, 24);
+        const adjustedHistorical = historicalPrice ? applyMarkdown(historicalPrice, symbol, multiplier) : null;
 
-        if (historicalPrice && historicalPrice > 0) {
-          const change = priceDoc.price - historicalPrice;
-          const percentChange = (change / historicalPrice) * 100;
+        if (adjustedHistorical && adjustedHistorical > 0) {
+          const change = adjustedPrice - adjustedHistorical;
+          const percentChange = (change / adjustedHistorical) * 100;
 
           tokenInfo.change24h = parseFloat(percentChange.toFixed(2));
           tokenInfo.changeAbsolute24h = parseFloat(change.toFixed(8));
-          tokenInfo.price24hAgo = parseFloat(historicalPrice.toFixed(8));
+          tokenInfo.price24hAgo = parseFloat(adjustedHistorical.toFixed(8));
         } else {
           tokenInfo.change24h = 0;
           tokenInfo.changeAbsolute24h = 0;
-          tokenInfo.price24hAgo = priceDoc.price;
+          tokenInfo.price24hAgo = adjustedPrice;
         }
       }
 
@@ -124,14 +162,19 @@ router.get('/:symbol', async (req, res) => {
       });
     }
 
-    // Calculate 24h change
+    // Apply global markdown
+    const { multiplier } = await getMarkdownMultiplier();
+    const adjustedPrice = applyMarkdown(latestPrice.price, symbol, multiplier);
+
+    // Calculate 24h change (use adjusted prices for consistency)
     const historicalPrice = await PriceChange.getHistoricalPrice(symbol, 24);
+    const adjustedHistorical = historicalPrice ? applyMarkdown(historicalPrice, symbol, multiplier) : null;
     let change24h = 0;
     let changeAbsolute24h = 0;
 
-    if (historicalPrice && historicalPrice > 0) {
-      const change = latestPrice.price - historicalPrice;
-      change24h = parseFloat(((change / historicalPrice) * 100).toFixed(2));
+    if (adjustedHistorical && adjustedHistorical > 0) {
+      const change = adjustedPrice - adjustedHistorical;
+      change24h = parseFloat(((change / adjustedHistorical) * 100).toFixed(2));
       changeAbsolute24h = parseFloat(change.toFixed(8));
     }
 
@@ -140,10 +183,10 @@ router.get('/:symbol', async (req, res) => {
       data: {
         symbol: symbol,
         name: getTokenName(symbol),
-        price: latestPrice.price,
+        price: adjustedPrice,
         change24h,
         changeAbsolute24h,
-        price24hAgo: historicalPrice || latestPrice.price,
+        price24hAgo: adjustedHistorical || adjustedPrice,
         lastUpdated: latestPrice.timestamp,
         source: latestPrice.source || 'binance'
       },
