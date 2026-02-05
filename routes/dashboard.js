@@ -133,6 +133,8 @@ router.get('/dashboard', async (req, res) => {
     const marketPrices = tokenPricesResult || {};
     const ngnzRate = ngnzRateInfo || null;
 
+    console.log('[DASHBOARD DEBUG] tokenPricesResult from getPricesWithCache:', JSON.stringify(marketPrices));
+
     // Add NGNZ price for market display
     if (ngnzRate && ngnzRate.finalPrice) {
       marketPrices.NGNZ = ngnzRate.finalPrice;

@@ -76,33 +76,38 @@ async function getGlobalMarkdownPercentage() {
 
 // Apply markdown to prices (exempt stablecoins and NGNZ)
 function applyMarkdownToPrices(priceMap, markdownPercentage) {
+  console.log('[MARKDOWN DEBUG] applyMarkdownToPrices called with:', {
+    markdownPercentage,
+    priceMapType: typeof priceMap,
+    isMap: priceMap instanceof Map,
+    priceMapSize: priceMap instanceof Map ? priceMap.size : 'N/A',
+    keys: priceMap instanceof Map ? Array.from(priceMap.keys()) : Object.keys(priceMap || {})
+  });
+
   if (!markdownPercentage || markdownPercentage <= 0) {
+    console.log('[MARKDOWN DEBUG] SKIPPING markdown - percentage is falsy or <= 0:', markdownPercentage);
     return priceMap;
   }
-  
+
   const markedDownPrices = new Map();
   const discountMultiplier = (100 - markdownPercentage) / 100;
-  
+
+  console.log('[MARKDOWN DEBUG] discountMultiplier:', discountMultiplier);
+
   for (const [token, price] of priceMap.entries()) {
     const tokenInfo = SUPPORTED_TOKENS[token];
     if (tokenInfo && (tokenInfo.isStablecoin || tokenInfo.isNairaPegged)) {
       // Don't apply markdown to stablecoins or NGNZ
       markedDownPrices.set(token, price);
+      console.log(`[MARKDOWN DEBUG] ${token}: SKIPPED (stablecoin) - price stays ${price}`);
     } else {
       // Apply markdown to price only
       const markedDownPrice = price * discountMultiplier;
       markedDownPrices.set(token, markedDownPrice);
+      console.log(`[MARKDOWN DEBUG] ${token}: ${price} -> ${markedDownPrice} (reduced by $${(price - markedDownPrice).toFixed(8)})`);
     }
   }
-  
-  logger.info(`Applied ${markdownPercentage}% markdown to ${priceMap.size} token prices`, {
-    discountMultiplier,
-    affectedTokens: Array.from(priceMap.keys()).filter(token => {
-      const tokenInfo = SUPPORTED_TOKENS[token];
-      return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
-    })
-  });
-  
+
   return markedDownPrices;
 }
 
@@ -296,27 +301,29 @@ async function getPricesWithCache(tokenSymbols) {
       priceMap = await getFallbackPrices(normalizedTokens);
     }
     
+    // Log raw prices BEFORE markdown
+    console.log('[MARKDOWN DEBUG] === getPricesWithCache called ===');
+    console.log('[MARKDOWN DEBUG] Raw prices from DB (BEFORE markdown):');
+    for (const [token, price] of priceMap.entries()) {
+      console.log(`[MARKDOWN DEBUG]   ${token}: $${price}`);
+    }
+
     // Apply hardcoded 0.35% markdown to displayed prices (stablecoins/NGNZ exempt)
     const HARDCODED_MARKDOWN_PERCENT = 0.35;
-    logger.info('Applying hardcoded 0.35% markdown to crypto prices', {
-      affectedTokens: Array.from(priceMap.keys()).filter(token => {
-        const tokenInfo = SUPPORTED_TOKENS[token];
-        return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
-      })
-    });
     priceMap = applyMarkdownToPrices(priceMap, HARDCODED_MARKDOWN_PERCENT);
 
-    logger.info('Prices fetched successfully from job-populated database', {
-      tokenCount: priceMap.size,
-      tokens: Array.from(priceMap.keys()),
-      markdownApplied: true,
-      markdownPercentage: `${HARDCODED_MARKDOWN_PERCENT}%`
-    });
-    
+    // Log prices AFTER markdown
+    console.log('[MARKDOWN DEBUG] Prices AFTER 0.35% markdown:');
+    for (const [token, price] of priceMap.entries()) {
+      console.log(`[MARKDOWN DEBUG]   ${token}: $${price}`);
+    }
+
     // Return prices as object
-    return Object.fromEntries(
+    const finalPrices = Object.fromEntries(
       normalizedTokens.map(token => [token, priceMap.get(token) || 0])
     );
+    console.log('[MARKDOWN DEBUG] Final prices returned:', JSON.stringify(finalPrices));
+    return finalPrices;
     
   } catch (error) {
     logger.error('Failed to fetch and process prices', { error: error.message });
