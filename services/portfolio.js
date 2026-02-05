@@ -309,7 +309,7 @@ async function getPricesWithCache(tokenSymbols) {
     }
 
     // Apply hardcoded 0.35% markdown to displayed prices (stablecoins/NGNZ exempt)
-    const HARDCODED_MARKDOWN_PERCENT = 0.35;
+    const HARDCODED_MARKDOWN_PERCENT = 1;
     priceMap = applyMarkdownToPrices(priceMap, HARDCODED_MARKDOWN_PERCENT);
 
     // Log prices AFTER markdown

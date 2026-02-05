@@ -3,7 +3,7 @@ const router = express.Router();
 const PriceChange = require('../models/pricechange');
 
 // Hardcoded 0.4% markdown for displayed prices only
-const PRICE_MARKDOWN_PERCENT = 0.35;
+const PRICE_MARKDOWN_PERCENT = 1;
 const PRICE_MULTIPLIER = (100 - PRICE_MARKDOWN_PERCENT) / 100; // 0.9965
 
 const STABLECOINS = ['USDT', 'USDC', 'NGNZ'];
