@@ -296,25 +296,21 @@ async function getPricesWithCache(tokenSymbols) {
       priceMap = await getFallbackPrices(normalizedTokens);
     }
     
-    // Apply global markdown percentage automatically
-    const markdownInfo = await getGlobalMarkdownPercentage();
-    
-    if (markdownInfo.hasMarkdown) {
-      logger.info('Applying global markdown to all crypto prices', {
-        markdownPercentage: markdownInfo.percentage,
-        affectedTokens: Array.from(priceMap.keys()).filter(token => {
-          const tokenInfo = SUPPORTED_TOKENS[token];
-          return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
-        })
-      });
-      priceMap = applyMarkdownToPrices(priceMap, markdownInfo.percentage);
-    }
-    
-    logger.info('Prices fetched successfully from job-populated database', { 
+    // Apply hardcoded 0.35% markdown to displayed prices (stablecoins/NGNZ exempt)
+    const HARDCODED_MARKDOWN_PERCENT = 0.35;
+    logger.info('Applying hardcoded 0.35% markdown to crypto prices', {
+      affectedTokens: Array.from(priceMap.keys()).filter(token => {
+        const tokenInfo = SUPPORTED_TOKENS[token];
+        return !tokenInfo?.isStablecoin && !tokenInfo?.isNairaPegged;
+      })
+    });
+    priceMap = applyMarkdownToPrices(priceMap, HARDCODED_MARKDOWN_PERCENT);
+
+    logger.info('Prices fetched successfully from job-populated database', {
       tokenCount: priceMap.size,
       tokens: Array.from(priceMap.keys()),
-      markdownApplied: markdownInfo.hasMarkdown,
-      markdownPercentage: markdownInfo.hasMarkdown ? `${markdownInfo.percentage}%` : 'None'
+      markdownApplied: true,
+      markdownPercentage: `${HARDCODED_MARKDOWN_PERCENT}%`
     });
     
     // Return prices as object
