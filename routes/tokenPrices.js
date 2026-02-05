@@ -1,37 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const PriceChange = require('../models/pricechange');
-const GlobalMarkdown = require('../models/pricemarkdown');
 
-// Stablecoins are exempt from markdown (matches portfolio.js logic)
+// Hardcoded 0.4% markdown for displayed prices only
+const PRICE_MARKDOWN_PERCENT = 0.4;
+const PRICE_MULTIPLIER = (100 - PRICE_MARKDOWN_PERCENT) / 100; // 0.996
+
 const STABLECOINS = ['USDT', 'USDC', 'NGNZ'];
 
-/**
- * Fetch the active global markdown and return the discount multiplier.
- * Returns 1 (no change) if markdown is inactive or missing.
- */
-async function getMarkdownMultiplier() {
-  try {
-    const markdown = await GlobalMarkdown.getCurrentMarkdown();
-    if (markdown && markdown.isActive && markdown.markdownPercentage > 0) {
-      return {
-        multiplier: (100 - markdown.markdownPercentage) / 100,
-        percentage: markdown.markdownPercentage,
-        active: true,
-      };
-    }
-  } catch (err) {
-    console.error('Failed to fetch global markdown, returning raw prices:', err.message);
-  }
-  return { multiplier: 1, percentage: 0, active: false };
-}
-
-/**
- * Apply markdown to a price. Stablecoins are exempt.
- */
-function applyMarkdown(price, symbol, multiplier) {
+function applyMarkdown(price, symbol) {
   if (STABLECOINS.includes(symbol)) return price;
-  return price * multiplier;
+  return price * PRICE_MULTIPLIER;
 }
 
 /**
@@ -67,9 +46,6 @@ router.get('/', async (req, res) => {
 
     const priceResults = await Promise.all(pricePromises);
 
-    // Fetch global markdown once for the entire request
-    const { multiplier, percentage: mdPercent, active: mdActive } = await getMarkdownMultiplier();
-
     // Build response data
     const tokenData = [];
 
@@ -82,7 +58,7 @@ router.get('/', async (req, res) => {
         continue;
       }
 
-      const adjustedPrice = applyMarkdown(priceDoc.price, symbol, multiplier);
+      const adjustedPrice = applyMarkdown(priceDoc.price, symbol);
 
       const tokenInfo = {
         symbol: symbol,
@@ -95,7 +71,7 @@ router.get('/', async (req, res) => {
       // Calculate 24h price change if requested (using adjusted prices for consistency)
       if (shouldIncludeChange) {
         const historicalPrice = await PriceChange.getHistoricalPrice(symbol, 24);
-        const adjustedHistorical = historicalPrice ? applyMarkdown(historicalPrice, symbol, multiplier) : null;
+        const adjustedHistorical = historicalPrice ? applyMarkdown(historicalPrice, symbol) : null;
 
         if (adjustedHistorical && adjustedHistorical > 0) {
           const change = adjustedPrice - adjustedHistorical;
@@ -162,13 +138,11 @@ router.get('/:symbol', async (req, res) => {
       });
     }
 
-    // Apply global markdown
-    const { multiplier } = await getMarkdownMultiplier();
-    const adjustedPrice = applyMarkdown(latestPrice.price, symbol, multiplier);
+    const adjustedPrice = applyMarkdown(latestPrice.price, symbol);
 
     // Calculate 24h change (use adjusted prices for consistency)
     const historicalPrice = await PriceChange.getHistoricalPrice(symbol, 24);
-    const adjustedHistorical = historicalPrice ? applyMarkdown(historicalPrice, symbol, multiplier) : null;
+    const adjustedHistorical = historicalPrice ? applyMarkdown(historicalPrice, symbol) : null;
     let change24h = 0;
     let changeAbsolute24h = 0;
 
