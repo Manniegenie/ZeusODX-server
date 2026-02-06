@@ -229,12 +229,11 @@ class SecurityService {
   }
 
   /**
-   * Prevent 2FA code replay attacks
-   * Marks a 2FA code as used for 90 seconds (3 time windows)
+   * Check if a 2FA code has already been used (without marking it)
    *
    * @param {string} userId User ID
    * @param {string} code 2FA code
-   * @returns {Promise<boolean>} True if code was already used, false if first use
+   * @returns {Promise<boolean>} True if code was already used, false if not
    */
   async check2FACodeReplay(userId, code) {
     const replayKey = `2fa_used:${userId}:${code}`;
@@ -244,17 +243,30 @@ class SecurityService {
 
       if (alreadyUsed) {
         logger.warn(`2FA code replay detected for user ${userId}`);
-        return true; // Code already used
+        return true;
       }
 
-      // Mark code as used for 90 seconds (3 TOTP windows)
-      await this.redis.setex(replayKey, 90, '1');
-
-      return false; // First use
+      return false;
     } catch (error) {
       logger.error('Error checking 2FA replay:', error);
-      // Fail open - allow code if Redis fails
       return false;
+    }
+  }
+
+  /**
+   * Mark a 2FA code as used after successful validation
+   * Should only be called AFTER the code has been verified as valid
+   *
+   * @param {string} userId User ID
+   * @param {string} code 2FA code
+   */
+  async mark2FACodeUsed(userId, code) {
+    const replayKey = `2fa_used:${userId}:${code}`;
+
+    try {
+      await this.redis.setex(replayKey, 90, '1');
+    } catch (error) {
+      logger.error('Error marking 2FA code as used:', error);
     }
   }
 

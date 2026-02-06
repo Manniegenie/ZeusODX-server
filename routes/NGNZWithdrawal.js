@@ -323,8 +323,9 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
       });
     }
 
-    // Reset 2FA attempts on success
+    // Reset 2FA attempts on success and mark code as used
     await securityService.reset2FAAttempts(userId);
+    await securityService.mark2FACodeUsed(userId, twoFactorCode);
 
     // SECURITY FIX: Check PIN attempt rate limiting
     const pinCheck = await securityService.checkPINAttempts(userId);
