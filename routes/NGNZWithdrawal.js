@@ -223,19 +223,28 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     });
 
     if (obiexResult.success) {
+      // Store Obiex transaction ID for webhook matching
+      // Keep status as PENDING - webhook will update to SUCCESSFUL when confirmed
+      const obiexTransactionId = obiexResult.data?.id || obiexResult.data?.transactionId;
       await Transaction.findByIdAndUpdate(transactionId, {
         $set: { 
-            status: 'SUCCESSFUL', 
-            completedAt: new Date(), 
-            'metadata.obiexId': obiexResult.data?.id 
+            status: 'PENDING',  // Keep as PENDING until webhook confirms
+            'ngnzWithdrawal.obiex.id': obiexTransactionId,
+            'ngnzWithdrawal.obiex.reference': obiexResult.data?.reference || null,
+            'ngnzWithdrawal.obiex.status': obiexResult.data?.status || 'PROCESSING',
+            'ngnzWithdrawal.sentAt': new Date(),
+            obiexTransactionId: obiexTransactionId, // Store at top level for webhook lookup
+            'metadata.obiexId': obiexTransactionId 
         }
       });
       return { success: true, data: obiexResult.data };
     } else {
+      // Only mark as FAILED if Obiex immediately rejects (not processing)
       await Transaction.findByIdAndUpdate(transactionId, {
         $set: { 
             status: 'FAILED', 
-            'ngnzWithdrawal.failureReason': obiexResult.message 
+            'ngnzWithdrawal.failureReason': obiexResult.message,
+            'ngnzWithdrawal.failedAt': new Date()
         }
       });
       return { success: false, error: obiexResult.message };
@@ -397,10 +406,10 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
     );
 
     if (obiexResult.success) {
-      // Async Notifications
-      sendWithdrawalEmail(user.email, user.username || 'User', amount, 'NGN', withdrawalResult.withdrawalReference).catch(e => logger.error(e));
-      
-      sendWithdrawalNotification(userId, withdrawalResult.amountToObiex, 'NGN', 'completed', {
+      // Withdrawal submitted to Obiex - status is PENDING until webhook confirms
+      // Email will be sent when webhook confirms SUCCESSFUL status
+      // Only send processing notification (not completed)
+      sendWithdrawalNotification(userId, withdrawalResult.amountToObiex, 'NGN', 'processing', {
         reference: withdrawalResult.withdrawalReference,
         bankName: destination.bankName,
         accountNumber: maskAccountNumber(destination.accountNumber),
@@ -410,13 +419,14 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
       return res.json({
         success: true,
-        message: 'Withdrawal processed successfully',
+        message: 'Withdrawal submitted successfully. Status will be updated via webhook.',
         data: {
           withdrawalId: withdrawalResult.withdrawalReference,
           totalAmount: amount,
           amountSentToBank: withdrawalResult.amountToObiex,
           fee: withdrawalResult.feeAmount,
-          balanceAfter: withdrawalResult.user.ngnzBalance
+          balanceAfter: withdrawalResult.user.ngnzBalance,
+          status: 'PENDING' // Status pending webhook confirmation
         }
       });
     } else {

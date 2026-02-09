@@ -4,7 +4,7 @@ const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const webhookAuth = require('../auth/webhookauth');
 const logger = require('../utils/logger');
-const { sendDepositEmail } = require('../services/EmailService');
+const { sendDepositEmail, sendWithdrawalEmail } = require('../services/EmailService');
 const { 
   sendDepositNotification, 
   sendWithdrawalNotification 
@@ -20,7 +20,8 @@ const SUPPORTED_TOKENS = {
   BNB: 'bnb',
   MATIC: 'matic',
   TRX: 'trx',      // Added TRX
-  NGNZ: 'ngnz'     // Changed from NGNB to NGNZ to match user schema
+  NGNZ: 'ngnz',    // Changed from NGNB to NGNZ to match user schema
+  NGNX: 'ngnz'     // Obiex uses NGNX, map to NGNZ for our app
 };
 
 /**
@@ -202,6 +203,11 @@ router.post('/transaction', webhookAuth, async (req, res) => {
       network,
       narration,
       source,
+      // Bank withdrawal fields (for NGNX/NGNZ withdrawals)
+      accountNumber,
+      accountName,
+      bankCode,
+      bankName,
     } = body;
 
     // Validate required fields
@@ -232,7 +238,13 @@ router.post('/transaction', webhookAuth, async (req, res) => {
       return res.status(400).json({ error: 'Amount must be positive' });
     }
 
-    const normalizedCurrency = currency.trim().toUpperCase();
+    let normalizedCurrency = currency.trim().toUpperCase();
+    
+    // Map Obiex NGNX to our app's NGNZ
+    if (normalizedCurrency === 'NGNX') {
+      normalizedCurrency = 'NGNZ';
+      logger.info(`Mapped Obiex currency NGNX to NGNZ for transaction ${transactionId}`);
+    }
 
     // Validate currency is supported
     if (!SUPPORTED_TOKENS[normalizedCurrency]) {
@@ -252,17 +264,29 @@ router.post('/transaction', webhookAuth, async (req, res) => {
       });
     } else if (type === 'WITHDRAWAL') {
       // Find transaction by obiexTransactionId
-      transaction = await Transaction.findOne({ obiexTransactionId: transactionId });
+      // For NGNZ withdrawals, also try finding by reference or ngnzWithdrawal.obiex.id
+      transaction = await Transaction.findOne({ 
+        $or: [
+          { obiexTransactionId: transactionId },
+          { 'ngnzWithdrawal.obiex.id': transactionId },
+          { reference: reference }
+        ]
+      });
       
       if (!transaction) {
         logger.warn(`No transaction found for obiexTransactionId: ${transactionId}`, {
           searchedTransactionId: transactionId,
           webhookReference: reference,
+          currency: normalizedCurrency,
         });
         return res.status(404).json({ error: 'Transaction not found' });
       }
       
       logger.info(`Found withdrawal transaction: ${transaction._id} with obiexTransactionId: ${transaction.obiexTransactionId}, current status: ${transaction.status}`);
+      
+      // Capture original status for idempotency checks (before it gets updated)
+      transaction._originalStatus = transaction.status;
+      
       user = await User.findById(transaction.userId);
     }
 
@@ -289,6 +313,9 @@ router.post('/transaction', webhookAuth, async (req, res) => {
     if (narration) updatePayload.narration = narration;
     if (source) updatePayload.source = source;
     if (createdAt) updatePayload.createdAt = new Date(createdAt);
+    
+    // Note: For NGNZ withdrawals, we manually update the transaction object below
+    // This updatePayload building is kept for potential future use but not currently used for NGNZ withdrawals
 
     let updatedUser = user;
 
@@ -373,9 +400,63 @@ router.post('/transaction', webhookAuth, async (req, res) => {
     // Only save transaction if balance update succeeded (or wasn't needed)
     if (type === 'WITHDRAWAL' && transaction) {
       // Update existing withdrawal transaction
-      Object.assign(transaction, updatePayload);
-      await transaction.save();
-      logger.info(`Updated existing withdrawal transaction: ${transaction._id}`);
+      // For NGNZ withdrawals, use $set to properly update nested fields
+      if (normalizedCurrency === 'NGNZ' && transaction.isNGNZWithdrawal) {
+        // Update top-level fields
+        transaction.status = status;
+        transaction.updatedAt = new Date();
+        transaction.obiexTransactionId = transactionId;
+        if (hash) transaction.hash = hash;
+        if (narration) transaction.narration = narration;
+        
+        // Update nested ngnzWithdrawal fields
+        if (!transaction.ngnzWithdrawal) {
+          transaction.ngnzWithdrawal = {};
+        }
+        if (!transaction.ngnzWithdrawal.obiex) {
+          transaction.ngnzWithdrawal.obiex = {};
+        }
+        transaction.ngnzWithdrawal.obiex.id = transactionId;
+        transaction.ngnzWithdrawal.obiex.reference = reference;
+        transaction.ngnzWithdrawal.obiex.status = status;
+        
+        // Update bank details if provided
+        if (accountNumber || accountName || bankCode || bankName) {
+          if (!transaction.ngnzWithdrawal.destination) {
+            transaction.ngnzWithdrawal.destination = {};
+          }
+          if (accountNumber) {
+            const maskAccountNumber = (acct) => {
+              if (!acct) return '';
+              const s = String(acct).replace(/\s+/g, '');
+              return s.length <= 4 ? s : `${s.slice(0, 2)}****${s.slice(-2)}`;
+            };
+            transaction.ngnzWithdrawal.destination.accountNumberMasked = maskAccountNumber(accountNumber);
+            transaction.ngnzWithdrawal.destination.accountNumberLast4 = String(accountNumber).slice(-4);
+          }
+          if (accountName) transaction.ngnzWithdrawal.destination.accountName = accountName;
+          if (bankCode) transaction.ngnzWithdrawal.destination.bankCode = bankCode;
+          if (bankName) transaction.ngnzWithdrawal.destination.bankName = bankName;
+        }
+        
+        // Update timestamps based on status
+        if (status === 'SUCCESSFUL') {
+          transaction.completedAt = new Date();
+          transaction.ngnzWithdrawal.completedAt = new Date();
+        } else if (['FAILED', 'REJECTED'].includes(status)) {
+          transaction.failedAt = new Date();
+          transaction.ngnzWithdrawal.failedAt = new Date();
+          if (narration) transaction.ngnzWithdrawal.failureReason = narration;
+        }
+        
+        await transaction.save();
+        logger.info(`Updated NGNZ withdrawal transaction: ${transaction._id}, status: ${status}`);
+      } else {
+        // For other withdrawal types, use standard update
+        Object.assign(transaction, updatePayload);
+        await transaction.save();
+        logger.info(`Updated existing withdrawal transaction: ${transaction._id}`);
+      }
     } else {
       // For deposits, use findOneAndUpdate with upsert
       transaction = await Transaction.findOneAndUpdate(
@@ -389,82 +470,160 @@ router.post('/transaction', webhookAuth, async (req, res) => {
     // Handle withdrawal balance updates (after transaction is saved)
     if (type === 'WITHDRAWAL') {
       if (['FAILED', 'REJECTED'].includes(status)) {
-        // Release reserved balance for failed/rejected withdrawals
-        try {
-          const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
-          await releaseReservedBalance(user._id, normalizedCurrency, totalReservedAmount);
-          logger.info(`Released reserved balance for failed/rejected withdrawal: ${totalReservedAmount} ${normalizedCurrency}`);
-
-          // Send withdrawal failed push notification
-          try {
-            const pushResult = await sendWithdrawalNotification(
-              user._id.toString(),
-              parseFloat(amount),
-              normalizedCurrency,
-              'failed',
-              {
-                reference: reference,
-                transactionId: transactionId,
-                reason: narration || 'Withdrawal failed'
-              }
-            );
-            
-            if (pushResult.success) {
-              logger.info(`Withdrawal failed push notification sent to user ${user._id}`);
-            } else if (!pushResult.skipped) {
-              logger.warn(`Failed to send withdrawal failed push notification to user ${user._id}: ${pushResult.message}`);
+        // Check if already processed to prevent double refunds (idempotency)
+        // Use original status captured before transaction was updated
+        const originalStatus = transaction._originalStatus || transaction.status;
+        const wasAlreadyFailed = ['FAILED', 'REJECTED'].includes(originalStatus);
+        
+        // Handle NGNZ withdrawals - refund directly to ngnzBalance
+        if (normalizedCurrency === 'NGNZ' && transaction.isNGNZWithdrawal) {
+          if (!wasAlreadyFailed) {
+            try {
+              // Get the amount that was originally deducted
+              const refundAmount = transaction.ngnzWithdrawal?.requestedAmount || Math.abs(transaction.amount);
+              
+              // Refund to user's ngnzBalance
+              updatedUser = await User.findByIdAndUpdate(
+                user._id,
+                { 
+                  $inc: { ngnzBalance: refundAmount },
+                  $set: { lastBalanceUpdate: new Date() }
+                },
+                { new: true, runValidators: true }
+              );
+              
+              logger.info(`Refunded ${refundAmount} NGNZ to user ${user._id} for failed withdrawal (transaction: ${transaction._id})`);
+            } catch (refundError) {
+              logger.error(`Error refunding NGNZ balance for failed withdrawal (transaction: ${transaction._id}):`, refundError);
+              // Don't throw - log error but continue with notification
             }
-          } catch (pushError) {
-            logger.error(`Error sending withdrawal failed push notification to user ${user._id}:`, pushError);
+          } else {
+            logger.info(`NGNZ withdrawal transaction ${transaction._id} already marked as FAILED/REJECTED, skipping refund to prevent double processing`);
           }
-        } catch (err) {
-          logger.error(`Error releasing reserved balance for failed withdrawal:`, err);
+        } else {
+          // Handle crypto withdrawals - refund directly to main balance (same as NGNZ)
+          if (!wasAlreadyFailed) {
+            try {
+              // Get the amount that was originally deducted from main balance
+              // For crypto withdrawals, reserveUserBalanceInternal deducts 'amount' from main balance
+              const refundAmount = Math.abs(transaction.amount || parseFloat(amount));
+              
+              // Get currency balance field names
+              const currencyLower = SUPPORTED_TOKENS[normalizedCurrency];
+              const balanceField = `${currencyLower}Balance`;
+              const pendingBalanceField = `${currencyLower}PendingBalance`;
+              
+              // Refund to main balance and reduce pending balance atomically
+              // This moves the reserved amount back from pending to main balance
+              updatedUser = await User.findByIdAndUpdate(
+                user._id,
+                { 
+                  $inc: { 
+                    [balanceField]: refundAmount,
+                    [pendingBalanceField]: -refundAmount
+                  },
+                  $set: { lastBalanceUpdate: new Date() }
+                },
+                { new: true, runValidators: true }
+              );
+              
+              logger.info(`Refunded ${refundAmount} ${normalizedCurrency} to user ${user._id} for failed withdrawal (transaction: ${transaction._id})`);
+            } catch (refundError) {
+              logger.error(`Error refunding crypto balance for failed withdrawal (transaction: ${transaction._id}):`, refundError);
+              // Don't throw - log error but continue with notification
+            }
+          } else {
+            logger.info(`Crypto withdrawal transaction ${transaction._id} already marked as FAILED/REJECTED, skipping refund to prevent double processing`);
+          }
+        }
+
+        // Send withdrawal failed push notification (for all withdrawal types)
+        try {
+          const pushResult = await sendWithdrawalNotification(
+            user._id.toString(),
+            parseFloat(amount),
+            normalizedCurrency,
+            'failed',
+            {
+              reference: reference,
+              transactionId: transactionId,
+              reason: narration || 'Withdrawal failed'
+            }
+          );
+          
+          if (pushResult.success) {
+            logger.info(`Withdrawal failed push notification sent to user ${user._id}`);
+          } else if (!pushResult.skipped) {
+            logger.warn(`Failed to send withdrawal failed push notification to user ${user._id}: ${pushResult.message}`);
+          }
+        } catch (pushError) {
+          logger.error(`Error sending withdrawal failed push notification to user ${user._id}:`, pushError);
         }
       } else if (status === 'SUCCESSFUL') {
-        // Reduce pending balance for successful withdrawals
-        try {
-          const currencyLower = SUPPORTED_TOKENS[normalizedCurrency];
-          const pendingBalanceField = `${currencyLower}PendingBalance`;
-          
-          const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
-          let newPendingBalance = Math.max(0, (user[pendingBalanceField] || 0) - totalReservedAmount);
-          
-          updatedUser = await User.findByIdAndUpdate(
-            user._id,
-            { 
-              [pendingBalanceField]: newPendingBalance,
-              lastBalanceUpdate: new Date()
-            },
-            { new: true, runValidators: true }
-          );
-
-          logger.info(`Reduced user ${user._id} pending balance field ${pendingBalanceField} by ${totalReservedAmount} (amount: ${amount} + fee: ${transaction.fee || 0}). New value: ${newPendingBalance}`);
-
-          // Send withdrawal completed push notification
+        // For NGNZ withdrawals, just send email - balance already deducted, no pending balance
+        if (normalizedCurrency === 'NGNZ' && transaction.isNGNZWithdrawal) {
           try {
-            const pushResult = await sendWithdrawalNotification(
-              user._id.toString(),
-              parseFloat(amount),
-              normalizedCurrency,
-              'completed',
-              {
-                reference: reference,
-                transactionId: transactionId,
-                hash: hash,
-                fee: transaction.fee || 0
-              }
-            );
+            const withdrawalAmount = Math.abs(transaction.amount || parseFloat(amount));
+            const userName = user.firstName || user.username || 'User';
             
-            if (pushResult.success) {
-              logger.info(`Withdrawal completed push notification sent to user ${user._id} for ${amount} ${normalizedCurrency}`);
-            } else if (!pushResult.skipped) {
-              logger.warn(`Failed to send withdrawal completed push notification to user ${user._id}: ${pushResult.message}`);
-            }
-          } catch (pushError) {
-            logger.error(`Error sending withdrawal completed push notification to user ${user._id}:`, pushError);
+            await sendWithdrawalEmail(
+              user.email,
+              userName,
+              withdrawalAmount,
+              'NGN',
+              transaction.reference || reference
+            );
+            logger.info(`NGNZ withdrawal confirmation email sent to ${user.email} for ${withdrawalAmount} NGN`);
+          } catch (emailError) {
+            // Log email error but don't fail the transaction
+            logger.error(`Failed to send NGNZ withdrawal confirmation email to user ${user._id}:`, emailError);
           }
-        } catch (err) {
-          logger.error(`Error reducing pending balance for user ${user._id}:`, err);
+        } else {
+          // Reduce pending balance for successful crypto withdrawals (legacy behavior)
+          try {
+            const currencyLower = SUPPORTED_TOKENS[normalizedCurrency];
+            const pendingBalanceField = `${currencyLower}PendingBalance`;
+            
+            const totalReservedAmount = parseFloat(amount) + (transaction.fee || 0);
+            let newPendingBalance = Math.max(0, (user[pendingBalanceField] || 0) - totalReservedAmount);
+            
+            updatedUser = await User.findByIdAndUpdate(
+              user._id,
+              { 
+                [pendingBalanceField]: newPendingBalance,
+                lastBalanceUpdate: new Date()
+              },
+              { new: true, runValidators: true }
+            );
+
+            logger.info(`Reduced user ${user._id} pending balance field ${pendingBalanceField} by ${totalReservedAmount} (amount: ${amount} + fee: ${transaction.fee || 0}). New value: ${newPendingBalance}`);
+          } catch (err) {
+            logger.error(`Error reducing pending balance for user ${user._id}:`, err);
+          }
+        }
+
+        // Send withdrawal completed push notification (for all withdrawal types)
+        try {
+          const pushResult = await sendWithdrawalNotification(
+            user._id.toString(),
+            parseFloat(amount),
+            normalizedCurrency,
+            'completed',
+            {
+              reference: reference,
+              transactionId: transactionId,
+              hash: hash,
+              fee: transaction.fee || 0
+            }
+          );
+          
+          if (pushResult.success) {
+            logger.info(`Withdrawal completed push notification sent to user ${user._id} for ${amount} ${normalizedCurrency}`);
+          } else if (!pushResult.skipped) {
+            logger.warn(`Failed to send withdrawal completed push notification to user ${user._id}: ${pushResult.message}`);
+          }
+        } catch (pushError) {
+          logger.error(`Error sending withdrawal completed push notification to user ${user._id}:`, pushError);
         }
       }
     }
