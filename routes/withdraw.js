@@ -397,7 +397,7 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
       userId: user._id, 
       type: 'WITHDRAWAL', 
       currency: internalCurrency, 
-      amount: amount, // Save the actual total amount withdrawn from wallet
+      amount: -amount, // Negative for withdrawals (matches convention: withdrawals are negative)
       address, 
       network: internalNetwork, 
       status: 'PENDING', 

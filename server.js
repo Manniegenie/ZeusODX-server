@@ -390,6 +390,61 @@ const migrateSwapDirections = async () => {
   }
 };
 
+// TEMPORARY MIGRATION: Fix crypto withdrawal amounts (make negative to match convention)
+// TODO: Remove this migration after it has run successfully in production
+const migrateCryptoWithdrawalAmounts = async () => {
+  try {
+    const db = mongoose.connection.db;
+    const migrationsCollection = db.collection('migrations');
+
+    // Check if this migration has already run
+    const migrationId = 'fix_crypto_withdrawal_amounts_negative';
+    const existingMigration = await migrationsCollection.findOne({ _id: migrationId });
+
+    if (existingMigration) {
+      console.log("ℹ️  Crypto withdrawal amounts migration already completed, skipping");
+      return;
+    }
+
+    console.log("🔄 Running crypto withdrawal amounts migration...");
+
+    const Transaction = require('./models/transaction');
+    
+    // Find all WITHDRAWAL transactions with positive amounts
+    // Exclude NGNZ withdrawals (they already have negative amounts)
+    const transactions = await Transaction.find({
+      type: 'WITHDRAWAL',
+      amount: { $gt: 0 }, // Positive amounts only
+      $or: [
+        { isNGNZWithdrawal: { $exists: false } },
+        { isNGNZWithdrawal: { $ne: true } }
+      ],
+      currency: { $ne: 'NGNZ' } // Double-check: exclude NGNZ currency
+    });
+
+    let modifiedCount = 0;
+    for (const transaction of transactions) {
+      transaction.amount = -Math.abs(transaction.amount); // Make negative
+      await transaction.save();
+      modifiedCount++;
+    }
+    
+    const result = { modifiedCount };
+
+    console.log(`✅ Crypto withdrawal amounts migration completed: ${result.modifiedCount} transactions updated`);
+
+    // Mark migration as complete
+    await migrationsCollection.insertOne({
+      _id: migrationId,
+      completedAt: new Date(),
+      modifiedCount: result.modifiedCount
+    });
+
+  } catch (error) {
+    console.error("❌ Error running crypto withdrawal amounts migration:", error.message);
+  }
+};
+
 // Database Index Fix Function
 const fixCryptoFeeIndexes = async () => {
   try {
@@ -654,6 +709,9 @@ const startServer = async () => {
 
     // Run one-time swap direction migration
     await migrateSwapDirections();
+
+    // TEMPORARY: Run crypto withdrawal amounts migration
+    await migrateCryptoWithdrawalAmounts();
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
