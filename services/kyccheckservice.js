@@ -208,16 +208,16 @@ class KYCLimitService {
 
       logger.info(`[KYC] Utility spending for ${userId}: daily=${dailyTotal}, monthly=${monthlyTotal}, billCount=${billTransactions.length}`);
     } else if (isCryptoTransaction) {
-      // For crypto transactions, only count withdrawal transactions
-      const regularTransactions = await this.getSuccessfulTransactions(userId, startOfMonth);
+      // For crypto transactions, count withdrawal or internal transfer transactions based on transactionType
+      const regularTransactions = await this.getSuccessfulTransactions(userId, startOfMonth, transactionType);
       dailyTotal = await this.sumTransactionsByDate(regularTransactions, startOfDay);
       monthlyTotal = await this.sumTransactionsByDate(regularTransactions, startOfMonth);
 
-      logger.info(`[KYC] Crypto spending for ${userId}: daily=${dailyTotal}, monthly=${monthlyTotal}, txCount=${regularTransactions.length}`);
+      logger.info(`[KYC] Crypto spending for ${userId}: daily=${dailyTotal}, monthly=${monthlyTotal}, txCount=${regularTransactions.length}, type=${transactionType}`);
     } else {
       // For NGNZ/other transactions, count both (original behavior as fallback)
       const [regularTransactions, billTransactions] = await Promise.all([
-        this.getSuccessfulTransactions(userId, startOfMonth),
+        this.getSuccessfulTransactions(userId, startOfMonth, transactionType),
         this.getSuccessfulBillTransactions(userId, startOfMonth)
       ]);
 
@@ -233,11 +233,17 @@ class KYCLimitService {
     return spending;
   }
 
-  async getSuccessfulTransactions(userId, sinceDate) {
+  async getSuccessfulTransactions(userId, sinceDate, transactionType = 'WITHDRAWAL') {
+    // For INTERNAL_TRANSFER limit checks, count INTERNAL_TRANSFER_SENT transactions
+    // For WITHDRAWAL limit checks, count WITHDRAWAL transactions
+    const transactionTypes = transactionType === 'INTERNAL_TRANSFER' 
+      ? ['INTERNAL_TRANSFER_SENT']
+      : ['WITHDRAWAL'];
+    
     return await Transaction.find({
       userId,
-      type: 'WITHDRAWAL',
-      status: { $in: ['SUCCESSFUL', 'CONFIRMED', 'APPROVED'] },
+      type: { $in: transactionTypes },
+      status: { $in: ['SUCCESSFUL', 'CONFIRMED', 'APPROVED', 'COMPLETED'] },
       createdAt: { $gte: sinceDate }
     }).lean();
   }
@@ -255,9 +261,12 @@ class KYCLimitService {
     for (const tx of transactions) {
       if (tx.createdAt >= sinceDate) {
         try {
-          sum += await this.convertToNaira(tx.amount, tx.currency);
+          // Use absolute value since withdrawals have negative amounts but should count as positive spending
+          const amountToAdd = Math.abs(tx.amount);
+          sum += await this.convertToNaira(amountToAdd, tx.currency);
         } catch (e) {
-          sum += tx.amount; // Fallback to raw amount if conversion fails
+          // Fallback to absolute value of raw amount if conversion fails
+          sum += Math.abs(tx.amount);
         }
       }
     }
