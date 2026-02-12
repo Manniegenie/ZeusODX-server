@@ -20,7 +20,7 @@ function isTokenSupported(token) {
 /**
  * Gets user balance information for a specific currency
  * @param {Object} user - User document
- * @param {string} currency - Currency symbol (BTC, ETH, SOL, USDT, USDC, NGNB)
+ * @param {string} currency - Currency symbol (BTC, ETH, SOL, USDT, USDC, NGNZ)
  * @returns {Object} Balance information
  */
 function getUserBalanceInfo(user, currency) {
@@ -60,7 +60,7 @@ function getUserBalanceInfo(user, currency) {
 /**
  * Validates if user has sufficient balance for a transaction
  * @param {string} userId - User ID
- * @param {string} currency - Currency symbol (BTC, ETH, SOL, USDT, USDC, NGNB)
+ * @param {string} currency - Currency symbol (BTC, ETH, SOL, USDT, USDC, NGNZ)
  * @param {number} amount - Amount required in the specified currency
  * @param {Object} options - Additional validation options
  * @returns {Promise<Object>} Validation result
@@ -243,9 +243,9 @@ async function getCurrentPrice(currency) {
       };
     }
     
-    // Special handling for NGNB (naira-pegged stablecoin)
-    if (currencyUpper === 'NGNB') {
-      // NGNB is pegged to Naira, approximate USD value
+    // Special handling for NGNZ (naira-pegged stablecoin)
+    if (currencyUpper === 'NGNZ') {
+      // NGNZ is pegged to Naira, approximate USD value
       const ngnToUsdRate = 1 / 1554.42; // Approximate NGN to USD rate
       return {
         success: true,
@@ -341,12 +341,12 @@ function isStablecoin(currency) {
 }
 
 /**
- * Checks if a currency is NGNB (naira-pegged stablecoin)
+ * Checks if a currency is NGNZ (naira-pegged stablecoin)
  * @param {string} currency - Currency symbol
- * @returns {boolean} True if NGNB, false otherwise
+ * @returns {boolean} True if NGNZ, false otherwise
  */
-function isNGNB(currency) {
-  return currency.toUpperCase() === 'NGNB';
+function isNGNZ(currency) {
+  return currency.toUpperCase() === 'NGNZ';
 }
 
 module.exports = {
@@ -356,7 +356,7 @@ module.exports = {
   calculateUSDValue,
   isTokenSupported,
   isStablecoin,
-  isNGNB,
+  isNGNZ,
   getUserBalanceInfo,
   VALIDATION_CONFIG,
 };
@@ -423,9 +423,9 @@ async function getCurrentPrice(currency) {
       };
     }
     
-    // Special handling for NGNB (naira-pegged stablecoin)
-    if (currencyUpper === 'NGNB') {
-      // NGNB is pegged to Naira, approximate USD value
+    // Special handling for NGNZ (naira-pegged stablecoin)
+    if (currencyUpper === 'NGNZ') {
+      // NGNZ is pegged to Naira, approximate USD value
       const ngnToUsdRate = 1 / 1554.42; // Approximate NGN to USD rate
       return {
         success: true,
@@ -521,12 +521,12 @@ function isStablecoin(currency) {
 }
 
 /**
- * Checks if a currency is NGNB (naira-pegged stablecoin)
+ * Checks if a currency is NGNZ (naira-pegged stablecoin)
  * @param {string} currency - Currency symbol
- * @returns {boolean} True if NGNB, false otherwise
+ * @returns {boolean} True if NGNZ, false otherwise
  */
-function isNGNB(currency) {
-  return currency.toUpperCase() === 'NGNB';
+function isNGNZ(currency) {
+  return currency.toUpperCase() === 'NGNZ';
 }
 
 module.exports = {
@@ -536,7 +536,7 @@ module.exports = {
   calculateUSDValue,
   isTokenSupported,
   isStablecoin,
-  isNGNB,
+  isNGNZ,
   getUserBalanceInfo,
   VALIDATION_CONFIG,
 };

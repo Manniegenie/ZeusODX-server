@@ -255,7 +255,7 @@ function formatAmount(amount, currency, type = '', isNegative = false) {
   const sign = isNegative ? '-' : (type === 'SWAP' && amount > 0 ? '+' : '');
   const absAmount = Math.abs(amount);
 
-  if (currency === 'NGNB' || currency === 'NGNZ') {
+  if (currency === 'NGNZ') {
     return `${sign}₦${absAmount.toLocaleString()}`;
   }
 
@@ -532,7 +532,7 @@ router.post('/all-utilities', async (req, res) => {
     ]);
 
     const formattedUtilities = transactions.map(tx => {
-      const amount = tx.amountNGNB || tx.amountNaira;
+      const amount = tx.amountNGNZ || tx.amountNaira;
       const createdAtISO = new Date(tx.createdAt).toISOString();
       return {
         id: tx._id,
@@ -778,7 +778,7 @@ router.post('/complete-history', async (req, res) => {
         BillTransaction.countDocuments(billFilter)
       ]);
       const formattedBills = billTxs.map(tx => {
-        const amount = tx.amountNGNB || tx.amountNaira;
+        const amount = tx.amountNGNZ || tx.amountNaira;
         const createdAtISO = new Date(tx.createdAt).toISOString();
         
         // Build details object

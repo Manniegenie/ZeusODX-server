@@ -56,7 +56,7 @@ const BETTING_SERVICES = [
   'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet', 'NairaBet', 'SupaBet'
 ];
 
-// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
+// Supported tokens - aligned with user schema (DOGE REMOVED)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' },
@@ -69,7 +69,7 @@ const SUPPORTED_TOKENS = {
   NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations (NGNB changed to NGNZ)
+// Token field mapping for balance operations
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth',

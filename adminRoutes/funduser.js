@@ -13,8 +13,7 @@ const currencyFieldMap = {
   BNB: 'bnbBalance',      // Added
   MATIC: 'maticBalance',  // Added
   TRX: 'trxBalance',
-  NGNB: 'ngnzBalance',
-  NGNZ: 'ngnzBalance'     // Alias for NGNB
+  NGNZ: 'ngnzBalance'
 };
 
 /**
@@ -45,7 +44,7 @@ router.post('/fund-user', async (req, res) => {
     if (!fieldToUpdate) {
       return res.status(400).json({ 
         success: false, 
-        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, BNB, MATIC, TRX, NGNB/NGNZ` 
+        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, BNB, MATIC, TRX, NGNZ` 
       });
     }
 
@@ -134,7 +133,7 @@ router.post('/deduct-user', async (req, res) => {
     if (!fieldToUpdate) {
       return res.status(400).json({ 
         success: false, 
-        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, BNB, MATIC, TRX, NGNB/NGNZ` 
+        message: `Unsupported currency: ${currency}. Supported: BTC, ETH, SOL, USDT, USDC, BNB, MATIC, TRX, NGNZ` 
       });
     }
 

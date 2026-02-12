@@ -41,7 +41,7 @@ router.post('/deduct', async (req, res) => {
       balanceField = 'solBalance';
     } else if (currencyKey.startsWith('eth')) {
       balanceField = 'ethBalance';
-    } else if (currencyKey.startsWith('ngnz') || currencyKey.startsWith('ngnb')) {
+    } else if (currencyKey.startsWith('ngnz')) {
       balanceField = 'ngnzBalance';
     } else if (currencyKey.startsWith('bnb')) {
       balanceField = 'bnbBalance';

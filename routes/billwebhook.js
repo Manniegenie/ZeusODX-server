@@ -9,7 +9,7 @@
  *    - failed: releaseReservedBalance() (if balance was reserved)
  * 
  * This handler works with:
- * - BillTransaction schema (NGNB-focused with backward compatibility)
+ * - BillTransaction schema (NGNZ)
  * - Portfolio service (balance tracking for supported tokens)
  * - User schema (balance fields and pending balance tracking)
  */
@@ -242,12 +242,12 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
     // Handle different webhook statuses
     switch (webhookData.status) {
       case 'completed':
-        logger.info(`Processing completed NGNB bill transaction: ${webhookData.order_id}`);
+        logger.info(`Processing completed NGNZ bill transaction: ${webhookData.order_id}`);
         
         // For completed transactions: release pending balance and update portfolio
         try {
-          const currency = transaction.paymentCurrency || 'NGNB';
-          const amount = transaction.amountNGNB || transaction.amountCrypto || transaction.amountNaira;
+          const currency = transaction.paymentCurrency || 'NGNZ';
+          const amount = transaction.amountNGNZ || transaction.amountCrypto || transaction.amountNaira;
           
           // Validate currency is supported by portfolio service
           if (!isTokenSupported(currency)) {
@@ -268,7 +268,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           updateData.metaData.balance_completed_at = new Date();
           updateData.metaData.pending_balance_released = true;
           
-          logger.info(`Completed NGNB balance processing for bill payment: ${transaction.userId}`, {
+          logger.info(`Completed NGNZ balance processing for bill payment: ${transaction.userId}`, {
             amount,
             currency,
             billType: transaction.billType,
@@ -294,7 +294,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           if (productType === 'AIRTIME' || productType === 'DATA') {
             await sendAirtimePurchaseNotification(
               transaction.userId,
-              transaction.amountNGNB || transaction.amountNaira || amount,
+              transaction.amountNGNZ || transaction.amountNaira || amount,
               transaction.metaData?.service_name || transaction.metaData?.service_id || 'UNKNOWN',
               transaction.metaData?.phone || transaction.metaData?.customerId || 'N/A',
               'completed',
@@ -310,7 +310,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           } else {
             await sendPaymentNotification(
               transaction.userId,
-              transaction.amountNGNB || transaction.amountNaira || amount,
+              transaction.amountNGNZ || transaction.amountNaira || amount,
               currency,
               `${productType} payment completed`,
               {
@@ -339,12 +339,12 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
         break;
         
       case 'refunded':
-        logger.info(`Processing refunded NGNB bill transaction: ${webhookData.order_id}`);
+        logger.info(`Processing refunded NGNZ bill transaction: ${webhookData.order_id}`);
         
-        // Release the reserved balance (return NGNB funds to user)
+        // Release the reserved balance (return NGNZ funds to user)
         try {
-          const currency = transaction.paymentCurrency || 'NGNB';
-          const amount = transaction.amountNGNB || transaction.amountCrypto || transaction.amountNaira;
+          const currency = transaction.paymentCurrency || 'NGNZ';
+          const amount = transaction.amountNGNZ || transaction.amountCrypto || transaction.amountNaira;
           
           // Validate currency is supported by portfolio service
           if (!isTokenSupported(currency)) {
@@ -366,7 +366,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           updateData.metaData.refund_amount = amount;
           updateData.metaData.refund_currency = currency;
           
-          logger.info(`Released reserved NGNB balance for refunded bill payment: ${transaction.userId}`, {
+          logger.info(`Released reserved NGNZ balance for refunded bill payment: ${transaction.userId}`, {
             amount,
             currency,
             billType: transaction.billType,
@@ -392,7 +392,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           if (productType === 'AIRTIME' || productType === 'DATA') {
             await sendAirtimePurchaseNotification(
               transaction.userId,
-              transaction.amountNGNB || transaction.amountNaira || amount,
+              transaction.amountNGNZ || transaction.amountNaira || amount,
               transaction.metaData?.service_name || transaction.metaData?.service_id || 'UNKNOWN',
               transaction.metaData?.phone || transaction.metaData?.customerId || 'N/A',
               'failed',
@@ -409,7 +409,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           } else {
             await sendPaymentNotification(
               transaction.userId,
-              transaction.amountNGNB || transaction.amountNaira || amount,
+              transaction.amountNGNZ || transaction.amountNaira || amount,
               currency,
               `${productType} payment refunded`,
               {
@@ -439,13 +439,13 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
         break;
         
       case 'failed':
-        logger.info(`Processing failed NGNB bill transaction: ${webhookData.order_id}`);
+        logger.info(`Processing failed NGNZ bill transaction: ${webhookData.order_id}`);
         
         // If balance was reserved, release it since transaction failed
         if (transaction.balanceReserved) {
           try {
-            const currency = transaction.paymentCurrency || 'NGNB';
-            const amount = transaction.amountNGNB || transaction.amountCrypto || transaction.amountNaira;
+            const currency = transaction.paymentCurrency || 'NGNZ';
+            const amount = transaction.amountNGNZ || transaction.amountCrypto || transaction.amountNaira;
             
             // Validate currency is supported by portfolio service
             if (!isTokenSupported(currency)) {
@@ -464,7 +464,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
             updateData.metaData.failed_amount = amount;
             updateData.metaData.failed_currency = currency;
             
-            logger.info(`Released reserved NGNB balance for failed transaction: ${transaction.userId}`, {
+            logger.info(`Released reserved NGNZ balance for failed transaction: ${transaction.userId}`, {
               amount,
               currency,
               billType: transaction.billType,
@@ -487,7 +487,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
           const billType = transaction.billType || 'BILL';
           const productType = billType.toUpperCase();
           const currency = transaction.paymentCurrency || 'NGNZ';
-          const amount = transaction.amountNGNB || transaction.amountCrypto || transaction.amountNaira;
+          const amount = transaction.amountNGNZ || transaction.amountCrypto || transaction.amountNaira;
           
           if (productType === 'AIRTIME' || productType === 'DATA') {
             await sendAirtimePurchaseNotification(
@@ -563,7 +563,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
       status: webhookData.status,
       transaction_id: updatedTransaction._id,
       processing_time: processingTime,
-      amount_ngnb: updatedTransaction.amountNGNB,
+      amount_ngnz: updatedTransaction.amountNGNZ,
       bill_type: updatedTransaction.billType,
       balance_reserved: updatedTransaction.balanceReserved,
       portfolio_updated: updatedTransaction.portfolioUpdated,
@@ -580,7 +580,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
         transaction_id: updatedTransaction._id,
         processed_at: updateData.webhookProcessedAt,
         bill_type: updatedTransaction.billType,
-        amount_ngnb: updatedTransaction.amountNGNB,
+        amount_ngnz: updatedTransaction.amountNGNZ,
         balance_status: {
           reserved: updatedTransaction.balanceReserved,
           portfolio_updated: updatedTransaction.portfolioUpdated,
@@ -625,7 +625,7 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
 router.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
-    service: 'eBills Webhook Handler (NGNB)',
+    service: 'eBills Webhook Handler (NGNZ)',
     timestamp: new Date().toISOString(),
     endpoints: {
       ebills: '/webhook/ebills',
@@ -633,7 +633,7 @@ router.get('/health', (req, res) => {
       test_signature: '/webhook/test-signature'
     },
     features: [
-      'NGNB balance management',
+      'NGNZ balance management',
       'Balance reservation tracking', 
       'Comprehensive error logging',
       'Signature verification',
@@ -707,7 +707,7 @@ router.get('/stats', async (req, res) => {
         $group: {
           _id: '$status',
           count: { $sum: 1 },
-          totalAmount: { $sum: '$amountNGNB' },
+          totalAmount: { $sum: '$amountNGNZ' },
           avgProcessingTime: { 
             $avg: { 
               $subtract: ['$webhookProcessedAt', '$createdAt'] 

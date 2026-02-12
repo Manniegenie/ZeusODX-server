@@ -122,7 +122,7 @@ router.patch('/regenerate-by-phone', async (req, res) => {
     // Check current wallet status
     const hasWallets = user.wallets && Object.values(user.wallets).some(wallet => 
       wallet && wallet.address && wallet.address !== null && 
-      wallet.address !== "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS"
+      wallet.address !== "PLACEHOLDER_FOR_NGNZ_WALLET_ADDRESS"
     );
 
     // Check if wallets are already generated or in progress (unless force is true)
@@ -257,15 +257,15 @@ router.patch('/regenerate-by-phone', async (req, res) => {
         user.wallets.set(key, value);
       }
     } else {
-      // Update all wallets, preserve NGNB if it exists
-      const existingNGNB = user.wallets?.NGNB || null;
+      // Update all wallets, preserve NGNZ if it exists
+      const existingNGNZ = user.wallets?.NGNZ || null;
       user.wallets = {
         ...user.wallets.toObject(),
         ...updatedWallets,
       };
-      // Restore NGNB if it existed
-      if (existingNGNB) {
-        user.wallets.NGNB = existingNGNB;
+      // Restore NGNZ if it existed
+      if (existingNGNZ) {
+        user.wallets.NGNZ = existingNGNZ;
       }
     }
 
@@ -362,13 +362,13 @@ router.post('/generate-wallets-by-phone', async (req, res) => {
 
     const hasWallets = user.wallets && Object.values(user.wallets).some(wallet => 
       wallet && wallet.address && wallet.address !== null && 
-      wallet.address !== "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS"
+      wallet.address !== "PLACEHOLDER_FOR_NGNZ_WALLET_ADDRESS"
     );
 
     const existingWalletsCount = user.wallets ? Object.keys(user.wallets).filter(key => 
       user.wallets[key] && user.wallets[key].address && 
       user.wallets[key].address !== null && 
-      user.wallets[key].address !== "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS"
+      user.wallets[key].address !== "PLACEHOLDER_FOR_NGNZ_WALLET_ADDRESS"
     ).length : 0;
 
     if (!force) {
@@ -480,10 +480,10 @@ router.get('/status-by-phone', async (req, res) => {
       });
     }
 
-    // Count how many wallets have been generated (excluding NGNB placeholder)
+    // Count how many wallets have been generated (excluding NGNZ placeholder)
     const walletCount = user.wallets ? Object.keys(user.wallets).filter(key => 
-      key !== 'NGNB' && user.wallets[key] && user.wallets[key].address && 
-      user.wallets[key].address !== null && user.wallets[key].address !== "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS"
+      key !== 'NGNZ' && user.wallets[key] && user.wallets[key].address && 
+      user.wallets[key].address !== null && user.wallets[key].address !== "PLACEHOLDER_FOR_NGNZ_WALLET_ADDRESS"
     ).length : 0;
 
     // List all supported wallet types - DOGE REMOVED
@@ -501,7 +501,7 @@ router.get('/status-by-phone', async (req, res) => {
       supportedWallets.forEach(key => {
         const wallet = user.wallets[key];
         walletDetails[key] = {
-          hasAddress: !!(wallet && wallet.address && wallet.address !== null && wallet.address !== "PLACEHOLDER_FOR_NGNB_WALLET_ADDRESS"),
+          hasAddress: !!(wallet && wallet.address && wallet.address !== null && wallet.address !== "PLACEHOLDER_FOR_NGNZ_WALLET_ADDRESS"),
           network: wallet ? wallet.network : null,
           hasReferenceId: !!(wallet && wallet.walletReferenceId)
         };

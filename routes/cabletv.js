@@ -23,7 +23,7 @@ registerCache('cabletv_userCache', userCache);
 const CABLE_TV_SERVICES = ['dstv', 'gotv', 'startimes', 'showmax'];
 const VALID_SUBSCRIPTION_TYPES = ['change', 'renew'];
 
-// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
+// Supported tokens - aligned with user schema (DOGE REMOVED)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' }, 
@@ -36,7 +36,7 @@ const SUPPORTED_TOKENS = {
   NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations (NGNB changed to NGNZ)
+// Token field mapping for balance operations
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth', 
