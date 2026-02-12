@@ -435,16 +435,43 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
         }
       });
     } else {
-      // Async Failure Notification
+      // Obiex failed but we already debited the wallet — refund the user and mark transaction failed
+      const refundAmount = amount;
+      try {
+        await User.findByIdAndUpdate(
+          userId,
+          { $inc: { ngnzBalance: refundAmount }, $set: { lastBalanceUpdate: new Date() } },
+          { new: true }
+        );
+        await Transaction.findByIdAndUpdate(withdrawalResult.transaction._id, {
+          status: 'FAILED',
+          failedAt: new Date(),
+          failureReason: obiexResult.error || 'Provider rejected withdrawal'
+        });
+        logger.info('Refunded NGNZ after Obiex failure', {
+          userId,
+          amount: refundAmount,
+          transactionId: withdrawalResult.transaction._id,
+          obiexError: obiexResult.error
+        });
+      } catch (refundErr) {
+        logger.error('Critical: failed to refund user after Obiex failure', {
+          userId,
+          amount: refundAmount,
+          transactionId: withdrawalResult.transaction._id,
+          error: refundErr.message
+        });
+      }
+
       sendWithdrawalNotification(userId, amount, 'NGN', 'failed', {
         reason: obiexResult.error || 'Provider processing error',
         reference: withdrawalResult.withdrawalReference
       }).catch(e => logger.error('Push Error', e));
 
-      return res.status(502).json({ 
-          success: false, 
-          message: 'Withdrawal failed at provider', 
-          error: obiexResult.error 
+      return res.status(502).json({
+          success: false,
+          message: 'Withdrawal failed at provider. Your balance has been refunded.',
+          error: obiexResult.error
       });
     }
 
