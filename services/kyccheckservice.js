@@ -109,19 +109,34 @@ class KYCLimitService {
       // Get spending filtered by transaction type category
       const currentSpending = await this.getCurrentSpending(userId, transactionType);
       const newDailyTotal = currentSpending.daily + amountInNaira;
+      const newMonthlyTotal = currentSpending.monthly + amountInNaira;
 
-      logger.info(`[KYC] Spending check for ${userId}: current=${currentSpending.daily}, requested=${amountInNaira}, limit=${kycLimits.daily}, type=${transactionType}`);
+      logger.info(`[KYC] Spending check for ${userId}: daily=${currentSpending.daily}, monthly=${currentSpending.monthly}, requested=${amountInNaira}, dailyLimit=${kycLimits.daily}, monthlyLimit=${kycLimits.monthly}, type=${transactionType}`);
 
-      // Validation
+      // Daily limit validation
       if (newDailyTotal > kycLimits.daily) {
         const availableAmount = Math.max(0, kycLimits.daily - currentSpending.daily);
-        logger.warn(`[KYC] Limit Exceeded for ${userId}. Available: ₦${availableAmount}`);
+        logger.warn(`[KYC] Daily limit exceeded for ${userId}. Available: ₦${availableAmount}`);
 
         return this.createErrorResponse('LIMIT_EXCEEDED', `Daily limit exceeded`, {
           kycLevel: userKycLevel,
           requestedAmount: amountInNaira,
           currentLimit: kycLimits.daily,
           availableAmount,
+          currency
+        });
+      }
+
+      // Monthly limit validation
+      if (kycLimits.monthly != null && newMonthlyTotal > kycLimits.monthly) {
+        const availableMonthly = Math.max(0, kycLimits.monthly - currentSpending.monthly);
+        logger.warn(`[KYC] Monthly limit exceeded for ${userId}. Available: ₦${availableMonthly}`);
+
+        return this.createErrorResponse('LIMIT_EXCEEDED', `Monthly limit exceeded`, {
+          kycLevel: userKycLevel,
+          requestedAmount: amountInNaira,
+          currentLimit: kycLimits.monthly,
+          availableAmount: availableMonthly,
           currency
         });
       }
@@ -179,6 +194,29 @@ class KYCLimitService {
     return prices[currency] * rate.finalPrice;
   }
 
+  /**
+   * Get spending category for a transaction type (for cache keys and invalidation).
+   */
+  getSpendingCategory(transactionType) {
+    const isUtility = ['AIRTIME', 'BILL_PAYMENT', 'UTILITY'].includes(transactionType);
+    const isCrypto = ['WITHDRAWAL', 'SWAP', 'CRYPTO', 'INTERNAL_TRANSFER'].includes(transactionType);
+    return isUtility ? 'utility' : (isCrypto ? 'crypto' : 'ngnz');
+  }
+
+  /**
+   * Invalidate cached spending for a user so the next limit check uses fresh data.
+   * Call after a transaction completes (withdrawal, bill, internal transfer).
+   * @param {string} userId - User ID
+   * @param {string} transactionType - One of WITHDRAWAL, NGNZ, NGNZ_TRANSFER, INTERNAL_TRANSFER, BILL_PAYMENT, AIRTIME, UTILITY
+   */
+  invalidateSpending(userId, transactionType) {
+    const category = this.getSpendingCategory(transactionType);
+    const cacheKey = `spending_${userId}_${category}`;
+    this.cache.userSpending.delete(cacheKey);
+    this.cache.cacheExpiry.delete(cacheKey);
+    logger.info(`[KYC] Invalidated spending cache for ${userId} (${category})`);
+  }
+
   async getCurrentSpending(userId, transactionType = 'WITHDRAWAL') {
     // Determine the spending category based on transaction type
     const isUtilityTransaction = ['AIRTIME', 'BILL_PAYMENT', 'UTILITY'].includes(transactionType);
@@ -186,7 +224,7 @@ class KYCLimitService {
     const isNgnzTransaction = ['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType);
 
     // Use category-specific cache key
-    const category = isUtilityTransaction ? 'utility' : (isCryptoTransaction ? 'crypto' : 'ngnz');
+    const category = this.getSpendingCategory(transactionType);
     const cacheKey = `spending_${userId}_${category}`;
 
     if (this.cache.userSpending.has(cacheKey) && Date.now() < this.cache.cacheExpiry.get(cacheKey)) {
@@ -234,18 +272,27 @@ class KYCLimitService {
   }
 
   async getSuccessfulTransactions(userId, sinceDate, transactionType = 'WITHDRAWAL') {
-    // For INTERNAL_TRANSFER limit checks, count INTERNAL_TRANSFER_SENT transactions
-    // For WITHDRAWAL limit checks, count WITHDRAWAL transactions
-    const transactionTypes = transactionType === 'INTERNAL_TRANSFER' 
-      ? ['INTERNAL_TRANSFER_SENT']
-      : ['WITHDRAWAL'];
-    
-    return await Transaction.find({
+    // For INTERNAL_TRANSFER limit checks, count INTERNAL_TRANSFER_SENT (crypto)
+    // For WITHDRAWAL limit checks, count WITHDRAWAL (crypto)
+    // For NGNZ/NGNZ_TRANSFER, count both WITHDRAWAL and INTERNAL_TRANSFER_SENT in NGNZ only
+    let transactionTypes;
+    const query = {
       userId,
-      type: { $in: transactionTypes },
       status: { $in: ['SUCCESSFUL', 'CONFIRMED', 'APPROVED', 'COMPLETED'] },
       createdAt: { $gte: sinceDate }
-    }).lean();
+    };
+
+    if (transactionType === 'INTERNAL_TRANSFER') {
+      transactionTypes = ['INTERNAL_TRANSFER_SENT'];
+    } else if (['NGNZ', 'NGNZ_TRANSFER'].includes(transactionType)) {
+      transactionTypes = ['WITHDRAWAL', 'INTERNAL_TRANSFER_SENT'];
+      query.currency = { $in: ['NGNZ', 'NGN'] };
+    } else {
+      transactionTypes = ['WITHDRAWAL'];
+    }
+
+    query.type = { $in: transactionTypes };
+    return await Transaction.find(query).lean();
   }
 
   async getSuccessfulBillTransactions(userId, sinceDate) {
@@ -260,13 +307,17 @@ class KYCLimitService {
     let sum = 0;
     for (const tx of transactions) {
       if (tx.createdAt >= sinceDate) {
+        if (!tx.currency) {
+          logger.warn('[KYC] Transaction missing currency, skipping for spending sum', { txId: tx._id });
+          continue;
+        }
         try {
           // Use absolute value since withdrawals have negative amounts but should count as positive spending
           const amountToAdd = Math.abs(tx.amount);
           sum += await this.convertToNaira(amountToAdd, tx.currency);
         } catch (e) {
-          // Fallback to absolute value of raw amount if conversion fails
-          sum += Math.abs(tx.amount);
+          logger.warn('[KYC] Conversion failed for transaction, skipping', { txId: tx._id, currency: tx.currency, error: e.message });
+          // Skip rather than use wrong fallback (amount could be in different currency)
         }
       }
     }
@@ -290,7 +341,9 @@ class KYCLimitService {
 const kycLimitService = new KYCLimitService();
 
 module.exports = {
-  validateTransactionLimit: (userId, amount, currency, transactionType) => 
+  validateTransactionLimit: (userId, amount, currency, transactionType) =>
     kycLimitService.validateTransactionLimit(userId, amount, currency, transactionType),
+  invalidateSpending: (userId, transactionType) =>
+    kycLimitService.invalidateSpending(userId, transactionType),
   service: kycLimitService
 };

@@ -9,6 +9,7 @@ const {
   sendDepositNotification, 
   sendWithdrawalNotification 
 } = require('../services/notificationService');
+const { invalidateSpending } = require('../services/kyccheckservice');
 
 // Supported tokens - aligned with user schema balance fields
 const SUPPORTED_TOKENS = {
@@ -624,6 +625,16 @@ router.post('/transaction', webhookAuth, async (req, res) => {
           }
         } catch (pushError) {
           logger.error(`Error sending withdrawal completed push notification to user ${user._id}:`, pushError);
+        }
+      }
+
+      // Invalidate KYC spending cache so next limit check uses fresh data
+      if (status === 'SUCCESSFUL' && transaction.userId) {
+        try {
+          const txType = normalizedCurrency === 'NGNZ' ? 'NGNZ' : 'WITHDRAWAL';
+          invalidateSpending(transaction.userId.toString(), txType);
+        } catch (invErr) {
+          logger.warn('KYC spending cache invalidation failed', { userId: transaction.userId, error: invErr.message });
         }
       }
     }

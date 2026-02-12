@@ -23,6 +23,7 @@ const {
   isTokenSupported 
 } = require('../services/portfolio');
 const { sendPaymentNotification, sendAirtimePurchaseNotification } = require('../services/notificationService');
+const { invalidateSpending } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -335,9 +336,16 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
             error: notificationError.message
           });
         }
-        
+
+        // Invalidate KYC spending cache so next limit check uses fresh utility spending
+        try {
+          invalidateSpending(transaction.userId.toString(), 'BILL_PAYMENT');
+        } catch (invErr) {
+          logger.warn('KYC spending cache invalidation failed', { userId: transaction.userId, error: invErr.message });
+        }
+
         break;
-        
+
       case 'refunded':
         logger.info(`Processing refunded NGNZ bill transaction: ${webhookData.order_id}`);
         
@@ -435,9 +443,15 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
             error: notificationError.message
           });
         }
-        
+
+        try {
+          invalidateSpending(transaction.userId.toString(), 'BILL_PAYMENT');
+        } catch (invErr) {
+          logger.warn('KYC spending cache invalidation failed', { userId: transaction.userId, error: invErr.message });
+        }
+
         break;
-        
+
       case 'failed':
         logger.info(`Processing failed NGNZ bill transaction: ${webhookData.order_id}`);
         
@@ -535,9 +549,15 @@ router.post('/ebills', express.raw({ type: 'application/json' }), async (req, re
             error: notificationError.message
           });
         }
-        
+
+        try {
+          invalidateSpending(transaction.userId.toString(), 'BILL_PAYMENT');
+        } catch (invErr) {
+          logger.warn('KYC spending cache invalidation failed', { userId: transaction.userId, error: invErr.message });
+        }
+
         break;
-        
+
       default:
         logger.warn(`Unexpected webhook status: ${webhookData.status} for order ${webhookData.order_id}`);
         // Still update the transaction but don't process balance changes

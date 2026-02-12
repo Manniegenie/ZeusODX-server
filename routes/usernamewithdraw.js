@@ -5,7 +5,7 @@ const router = express.Router();
 const User = require('../models/user');
 const Transaction = require('../models/transaction');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
-const { validateTransactionLimit } = require('../services/kyccheckservice');
+const { validateTransactionLimit, invalidateSpending } = require('../services/kyccheckservice');
 const { sendTransferNotification } = require('../services/notificationService');
 const { sendDepositEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
@@ -601,7 +601,9 @@ router.post('/internal', async (req, res) => {
     const recipient = recipientLookup.recipient;
 
     // KYC / Transaction Limit Check
-    const kycCheck = await validateTransactionLimit(senderUserId, amount, currency, 'INTERNAL_TRANSFER');
+    // NGNZ transfers use NGNZ limits; other currencies use crypto (INTERNAL_TRANSFER) limits
+    const kycTransactionType = (currency === 'NGNZ' || currency === 'NGN') ? 'NGNZ_TRANSFER' : 'INTERNAL_TRANSFER';
+    const kycCheck = await validateTransactionLimit(senderUserId, amount, currency, kycTransactionType);
     if (!kycCheck.allowed) {
       logger.warn(`KYC Limit Block: User ${senderUserId} attempted ${amount} ${currency}. Reason: ${kycCheck.message}`);
       return res.status(403).json({ success: false, message: 'Transaction exceeds your current KYC limit.' });
@@ -675,6 +677,10 @@ router.post('/internal', async (req, res) => {
         message: transferResult.message
       });
     }
+
+    // Invalidate KYC spending cache so next limit check uses fresh data
+    const spendingTransactionType = (currency === 'NGNZ' || currency === 'NGN') ? 'NGNZ_TRANSFER' : 'INTERNAL_TRANSFER';
+    invalidateSpending(senderUserId, spendingTransactionType);
 
     const processingTime = Date.now() - startTime;
     logger.info('✅ Internal transfer completed successfully', {
