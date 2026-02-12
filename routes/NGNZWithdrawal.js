@@ -35,8 +35,13 @@ const CACHE_TTL = 5000;
 // NGNZ Withdrawal Fee Constants
 // - Operational: What is actually subtracted from the payout to the provider
 // - Recorded: What is displayed to the user and stored in the transaction history
-const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = 30; 
-const NGNZ_WITHDRAWAL_FEE_RECORDED = 100;    
+const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = 30;
+const NGNZ_WITHDRAWAL_FEE_RECORDED = 100;
+
+// Obiex provider minimum: amount sent to Obiex (after our fee) must be >= 1000 NGNX
+const OBIEX_NGNZ_MIN_AMOUNT = 1000;
+// App minimum: reject withdrawals of 1100 or less (covers provider min + fees + buffer)
+const NGNZ_WITHDRAWAL_MIN_AMOUNT = 1100;
 
 // --- HELPER FUNCTIONS ---
 
@@ -90,14 +95,14 @@ function validateWithdrawalRequest(data) {
   if (!data.amount || data.amount <= 0) errors.push('Amount must be a positive number');
   if (!data.destination?.accountNumber) errors.push('Account number is required');
   if (!data.destination?.bankCode) errors.push('Bank code is required');
-  
-  const minimumWithdrawal = NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1;
-  if (data.amount < minimumWithdrawal) {
-    errors.push(`Minimum withdrawal is ₦${minimumWithdrawal}`);
+
+  // Reject 1100 or less (provider min 1000 + fees; we use 1100 as app minimum)
+  if (data.amount <= NGNZ_WITHDRAWAL_MIN_AMOUNT) {
+    errors.push(`Minimum withdrawal is ₦${(NGNZ_WITHDRAWAL_MIN_AMOUNT + 1).toLocaleString()}`);
   }
   if (!data.twoFactorCode) errors.push('2FA code is required');
   if (!data.passwordpin || !/^\d{6}$/.test(data.passwordpin)) errors.push('Valid 6-digit PIN is required');
-  
+
   return errors;
 }
 
