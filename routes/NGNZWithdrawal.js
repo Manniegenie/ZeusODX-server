@@ -468,10 +468,10 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
         reference: withdrawalResult.withdrawalReference
       }).catch(e => logger.error('Push Error', e));
 
+      const providerMessage = obiexResult.error || 'Withdrawal failed at provider.';
       return res.status(502).json({
-          success: false,
-          message: 'Withdrawal failed at provider. Your balance has been refunded.',
-          error: obiexResult.error
+        success: false,
+        message: `${providerMessage} Your balance has been refunded.`
       });
     }
 
