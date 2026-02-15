@@ -393,39 +393,43 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
     if (!isTokenSupported('NGNZ')) return res.status(400).json({ success: false, message: 'Currency not supported' });
 
-    // 3. Execution (Deduct Balance + Create Transaction) WITH DISTRIBUTED LOCK
-    // SECURITY FIX: Use distributed lock to prevent race conditions
+    // 3. Execution (Deduct + Create Tx + Obiex) UNDER ONE LOCK
+    // Hold lock for full flow so double-tap gets "Another withdrawal in progress" instead of "balance changed"
     const lockKey = `withdrawal:${userId}:NGNZ`;
 
-    const withdrawalResult = await withLock(
+    const { withdrawalResult, obiexResult } = await withLock(
       lockKey,
       async () => {
-        return await executeNGNZWithdrawal(
+        const withdrawal = await executeNGNZWithdrawal(
           userId,
           { amount, destination, narration },
           correlationId,
           systemContext,
           idempotencyKey
         );
+        const obiex = await processObiexWithdrawal(
+          userId,
+          { amount, destination, narration },
+          withdrawal.amountToObiex,
+          withdrawal.withdrawalReference,
+          withdrawal.transaction._id
+        );
+        return { withdrawalResult: withdrawal, obiexResult: obiex };
       },
       {
-        ttl: 15000,        // Lock timeout: 15 seconds (longer for bank transfers)
-        maxWaitTime: 5000, // Wait up to 5 seconds for lock
-        retryInterval: 50  // Check every 50ms
+        ttl: 30000,        // 30s: cover deduct + Obiex API call
+        maxWaitTime: 5000, // Second request waits up to 5s then gets "Another withdrawal in progress"
+        retryInterval: 50
       }
     ).catch(error => {
-      logger.error(`Failed to acquire NGNZ withdrawal lock for user ${userId}:`, error.message);
+      // Only log as lock failure when it actually is; otherwise we mislabel balance/other errors
+      if (error.message && error.message.includes('Failed to acquire lock')) {
+        logger.error(`Failed to acquire NGNZ withdrawal lock for user ${userId}:`, error.message);
+      } else {
+        logger.warn(`NGNZ withdrawal failed inside lock for user ${userId}:`, { error: error.message });
+      }
       throw error; // Re-throw to be caught by outer try-catch
     });
-
-    // 4. External Payout (Obiex)
-    const obiexResult = await processObiexWithdrawal(
-        userId, 
-        { amount, destination, narration }, 
-        withdrawalResult.amountToObiex, 
-        withdrawalResult.withdrawalReference, 
-        withdrawalResult.transaction._id
-    );
 
     if (obiexResult.success) {
       // Withdrawal submitted to Obiex - status is PENDING until webhook confirms
@@ -513,7 +517,7 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
       });
       return res.status(400).json({
         success: false,
-        message: 'Insufficient NGNZ balance. Your balance may have changed. Please refresh and try again.'
+        message: 'Insufficient NGNZ balance. Your balance may have changed. If you just submitted a withdrawal, it may already have been processed—please refresh and check your transaction history.'
       });
     }
 
