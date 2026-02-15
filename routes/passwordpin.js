@@ -5,6 +5,7 @@ const User = require('../models/user');
 const PendingUser = require("../models/pendinguser");
 const config = require("./config");
 const logger = require('../utils/logger');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 // Function to generate unique username from first name
 const generateUniqueUsername = async (firstName) => {
@@ -307,6 +308,11 @@ router.post('/password-pin', async (req, res) => {
 
     // Remove pending user after successful account creation
     await PendingUser.deleteOne({ _id: pendingUser._id });
+
+    // Track AppsFlyer sign_up event (non-blocking)
+    trackEvent(newUser._id, 'sign_up', { registrationMethod: 'phone' }, req).catch(err => {
+      logger.warn('Failed to track AppsFlyer sign_up event', { userId: newUser._id, error: err.message });
+    });
 
     // NO BACKGROUND WALLET GENERATION - Wallets will be generated on-demand when requested
 

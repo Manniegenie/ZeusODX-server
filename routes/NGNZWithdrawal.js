@@ -281,6 +281,22 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
     const kycCheck = await validateTransactionLimit(userId, amount, 'NGNZ', 'NGNZ');
     if (!kycCheck.allowed) return res.status(400).json({ success: false, message: kycCheck.message });
 
+    // Early NGNZ balance check (fail fast before 2FA/PIN and lock)
+    const balanceCheck = await validateBalance(userId, 'NGNZ', amount, { logValidation: false });
+    if (!balanceCheck.success) {
+      logger.warn('NGNZ withdrawal rejected: insufficient balance', {
+        userId,
+        amount,
+        availableBalance: balanceCheck.availableBalance,
+        correlationId
+      });
+      return res.status(400).json({
+        success: false,
+        message: balanceCheck.message || 'Insufficient NGNZ balance. Please check your balance and try again.',
+        ...(balanceCheck.availableBalance != null && { availableBalance: balanceCheck.availableBalance })
+      });
+    }
+
     const bvnCheck = await bvnCheckService.checkBVNVerified(userId);
     if (!bvnCheck.success) return res.status(400).json({ success: false, message: bvnCheck.message });
 
@@ -476,6 +492,34 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
     }
 
   } catch (err) {
+    const isInsufficientBalance = err.message && err.message.includes('Insufficient NGNZ balance');
+    const isLockFailure = err.message && err.message.includes('Failed to acquire lock');
+
+    if (isInsufficientBalance) {
+      logger.warn('NGNZ withdrawal failed: insufficient balance (race or stale check)', {
+        userId: req.user?.id,
+        amount: req.body?.amount,
+        correlationId,
+        error: err.message
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Insufficient NGNZ balance. Your balance may have changed. Please refresh and try again.'
+      });
+    }
+
+    if (isLockFailure) {
+      logger.warn('NGNZ withdrawal failed: could not acquire lock (another withdrawal in progress)', {
+        userId: req.user?.id,
+        correlationId,
+        error: err.message
+      });
+      return res.status(409).json({
+        success: false,
+        message: 'Another withdrawal is in progress. Please wait a moment and try again.'
+      });
+    }
+
     logger.error('NGNZ withdrawal terminal error', { error: err.stack, correlationId });
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }

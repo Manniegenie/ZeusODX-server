@@ -7,6 +7,7 @@ const User = require("../models/user");
 const config = require("./config");
 const logger = require("../utils/logger");
 const { sendLoginEmail } = require("../services/EmailService");
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
@@ -177,6 +178,11 @@ router.post(
       }
 
       await user.save();
+
+      // Track AppsFlyer login_ event (non-blocking)
+      trackEvent(user._id, 'login_', { loginMethod: 'pin' }, req).catch(err => {
+        logger.warn('Failed to track AppsFlyer login_ event', { userId: user._id, error: err.message });
+      });
 
       // Fire-and-forget login email (doesn't block response)
       if (shouldEmailLogin) {
