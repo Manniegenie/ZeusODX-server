@@ -5,6 +5,7 @@ const User = require("../models/user");
 // FIXED import case to match file name
 const { sendEmailVerificationOTP } = require("../services/EmailService");
 const logger = require("../utils/logger");
+const { trackEvent } = require("../utils/appsFlyerHelper");
 
 function generateOTP(length = 6) {
   const digits = '0123456789';
@@ -179,6 +180,10 @@ router.post("/verify", async (req, res) => {
     logger.info("Email verification completed successfully", {
       userId,
       email: user.email.slice(0, 3) + "****"
+    });
+
+    trackEvent(user._id.toString(), 'Email Verified', {}, req).catch(err => {
+      logger.warn('Failed to track AppsFlyer Email Verified event', { userId, error: err.message });
     });
 
     return res.status(200).json({

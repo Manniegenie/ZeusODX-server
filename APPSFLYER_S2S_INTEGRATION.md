@@ -8,22 +8,15 @@
 - ✅ Sign up event tracking integrated (`routes/passwordpin.js`)
 - ✅ Login event tracking integrated (`routes/signin.js`)
 - ✅ Environment variables added to `.env.example`
+- ✅ **Swap_** - Integrated in `routes/swap.js` and `routes/NGNZSwaps.js`
+- ✅ **Withdrawal** - Integrated in `routes/NGNZWithdrawal.js`
+- ✅ **Utility** - Integrated in `routes/airtime.js`, `routes/data.js`, `routes/electricity.js`, `routes/cabletv.js`, `routes/betting.js`
+- ✅ **Email Verified** - Integrated in `routes/EmailVerify.js`
+- ✅ **KYC_2** - Integrated in `routes/kycwebhook.js` (when document KYC is approved)
 
-### Pending Integration
-The following events need to be integrated into their respective routes:
-
-1. **Swap_** - Add to swap routes (`routes/swap.js` or `routes/NGNZSwaps.js`)
-2. **Withdrawal** - Add to withdrawal routes (`routes/withdraw.js` or `routes/NGNZWithdrawal.js`)
-3. **Deposit** - Add to deposit routes (`routes/deposit.js`)
-4. **Utility** - Add to utility routes:
-   - `routes/airtime.js`
-   - `routes/data.js`
-   - `routes/electricity.js`
-   - `routes/cabletv.js`
-   - `routes/betting.js`
-5. **Email Verified** - Add to email verification route (`routes/EmailVerify.js`)
-6. **KYC_1** - Add to KYC Level 1 completion (already happens in signup, but may need separate tracking)
-7. **KYC_2** - Add to KYC Level 2 completion (`routes/KYC.js` or `routes/EnhancedKYC.js`)
+### Pending / Deferred
+- **Deposit** - To be added when a clear user-facing deposit-completion flow exists (e.g. NGNZ credited via bank/collections or Obiex).
+- **KYC_1** - Optional; signup already fires `sign_up`; add separate KYC_1 only if Level 1 completion is a distinct step.
 
 ## 📋 How to Integrate Events
 
@@ -190,16 +183,14 @@ The helper automatically detects platform from:
 ### Modified
 - `routes/passwordpin.js` - Added sign_up event tracking
 - `routes/signin.js` - Added login_ event tracking
+- `routes/swap.js` - Added Swap_ event (fromCurrency, toCurrency, amount)
+- `routes/NGNZSwaps.js` - Added Swap_ event
+- `routes/NGNZWithdrawal.js` - Added Withdrawal event (amount, currency, method)
+- `routes/airtime.js` - Added Utility event (utilityType: airtime)
+- `routes/data.js` - Added Utility event (utilityType: data)
+- `routes/electricity.js` - Added Utility event (utilityType: electricity)
+- `routes/cabletv.js` - Added Utility event (utilityType: cabletv)
+- `routes/betting.js` - Added Utility event (utilityType: betting)
+- `routes/EmailVerify.js` - Added Email Verified event
+- `routes/kycwebhook.js` - Added KYC_2 event (when document KYC approved; req=null for webhook)
 - `.env.example` - Added AppsFlyer S2S credentials
-
-### To Be Modified
-- `routes/swap.js` or `routes/NGNZSwaps.js` - Add Swap_ event
-- `routes/withdraw.js` or `routes/NGNZWithdrawal.js` - Add Withdrawal event
-- `routes/deposit.js` - Add Deposit event
-- `routes/airtime.js` - Add Utility event
-- `routes/data.js` - Add Utility event
-- `routes/electricity.js` - Add Utility event
-- `routes/cabletv.js` - Add Utility event
-- `routes/betting.js` - Add Utility event
-- `routes/EmailVerify.js` - Add Email Verified event
-- `routes/KYC.js` or `routes/EnhancedKYC.js` - Add KYC_2 event

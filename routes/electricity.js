@@ -12,6 +12,7 @@ const { sendPaymentNotification } = require('../services/notificationService');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -1087,6 +1088,14 @@ router.post('/purchase', async (req, res) => {
         error: emailError.message
       });
     }
+
+    trackEvent(userId, 'Utility', {
+      amount,
+      utilityType: 'electricity',
+      provider: ebillsResponse.data.biller || service_id
+    }, req).catch(err => {
+      logger.warn('Failed to track AppsFlyer Utility event', { userId, error: err.message });
+    });
 
     // Step 12: Return response - maintaining PayBeta format for compatibility
     return res.status(200).json({

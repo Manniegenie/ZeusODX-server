@@ -303,10 +303,12 @@ router.get('/dashboard', async (req, res) => {
         }
       ]),
 
+      // Exclude internal transfers from volume so platform volume is not double-counted or inflated
       Transaction.aggregate([
         {
           $match: {
-            createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+            createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+            type: { $nin: ['INTERNAL_TRANSFER_SENT', 'INTERNAL_TRANSFER_RECEIVED'] }
           }
         },
         {

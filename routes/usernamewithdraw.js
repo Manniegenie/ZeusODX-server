@@ -304,12 +304,12 @@ async function createInternalTransferTransactions(transferData) {
   try {
     const transferReference = `INT_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Create sender transaction (debit)
+    // Create sender transaction (debit) — amount stored negative for outflows (matches WITHDRAWAL convention)
     const senderTransaction = await Transaction.create({
       userId: senderUserId,
       type: 'INTERNAL_TRANSFER_SENT',
       currency: currency.toUpperCase(),
-      amount,
+      amount: -Math.abs(amount),
       recipientUserId,
       recipientUsername,
       recipientFullName: recipient.fullName,
@@ -671,6 +671,16 @@ router.post('/internal', async (req, res) => {
     });
 
     if (!transferResult.success) {
+      if (transactionsCreated && senderTransaction && recipientTransaction) {
+        try {
+          await Transaction.updateMany(
+            { _id: { $in: [senderTransaction._id, recipientTransaction._id] } },
+            { $set: { status: 'FAILED', failedAt: new Date(), failureReason: transferResult.message || 'Transfer execution failed' } }
+          );
+        } catch (updateError) {
+          logger.error('Failed to mark internal transfer transactions as FAILED', { error: updateError.message });
+        }
+      }
       return res.status(500).json({
         success: false,
         error: 'TRANSFER_EXECUTION_FAILED',

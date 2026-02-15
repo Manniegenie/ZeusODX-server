@@ -103,7 +103,7 @@ const transactionSchema = new mongoose.Schema({
   currency: { type: String, required: true },
   address: { type: String },
 
-  // Core amounts: for withdrawals, this is NEGATIVE (your existing convention)
+  // Core amounts: outflows are NEGATIVE (WITHDRAWAL, INTERNAL_TRANSFER_SENT); inflows positive (DEPOSIT, INTERNAL_TRANSFER_RECEIVED)
   amount: { type: Number, required: true },
 
   fee: { type: Number, default: 0 },

@@ -25,6 +25,7 @@ const logger = require('../utils/logger');
 // IDEMPOTENCY MIDDLEWARE
 // Ensure your middleware file is named 'idempotency.middleware.js' as per your recent update
 const { idempotencyMiddleware } = require('../utils/Idempotency');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -437,6 +438,14 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
         fee: withdrawalResult.feeAmount,
         totalAmount: amount
       }).catch(e => logger.error('Push Error', e));
+
+      trackEvent(userId, 'Withdrawal', {
+        amount,
+        currency: 'NGN',
+        method: 'bank_transfer'
+      }, req).catch(err => {
+        logger.warn('Failed to track AppsFlyer Withdrawal event', { userId, error: err.message });
+      });
 
       return res.json({
         success: true,

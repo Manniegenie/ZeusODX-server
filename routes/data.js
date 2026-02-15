@@ -11,6 +11,7 @@ const { validateTransactionLimit } = require('../services/kyccheckservice');
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -811,6 +812,14 @@ router.post('/purchase', async (req, res) => {
           error: emailError.message
         });
       }
+
+      trackEvent(userId, 'Utility', {
+        amount,
+        utilityType: 'data',
+        provider: payBetaResponse.data.biller || requestBody.service_id
+      }, req).catch(err => {
+        logger.warn('Failed to track AppsFlyer Utility event', { userId, error: err.message });
+      });
       
       return res.status(200).json({
         success: true,

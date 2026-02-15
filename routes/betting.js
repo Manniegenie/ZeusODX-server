@@ -10,6 +10,7 @@ const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -618,6 +619,14 @@ router.post('/fund', async (req, res) => {
           error: emailError.message
         });
       }
+
+      trackEvent(userId, 'Utility', {
+        amount,
+        utilityType: 'betting',
+        provider: ebillsResponse.data.service_name
+      }, req).catch(err => {
+        logger.warn('Failed to track AppsFlyer Utility event', { userId, error: err.message });
+      });
 
       return res.status(200).json({
         success: true,
