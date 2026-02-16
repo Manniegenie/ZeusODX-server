@@ -162,4 +162,130 @@ router.post('/appsflyer-id', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/user/display-currency
+ * Get user's preferred display currency for portfolio balance (USD or NGN)
+ */
+router.get('/display-currency', async (req, res) => {
+  const startTime = Date.now();
+  let userId = null;
+
+  try {
+    userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'Authentication required'
+      });
+    }
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_USER_ID',
+        message: 'Invalid user ID format'
+      });
+    }
+
+    const user = await User.findById(userId)
+      .select('displayCurrency')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: 'User not found'
+      });
+    }
+
+    const displayCurrency = user.displayCurrency || 'USD';
+    res.json({
+      success: true,
+      data: { displayCurrency }
+    });
+  } catch (error) {
+    logger.error('Error fetching display currency', {
+      error: error.message,
+      userId,
+      processingTime: Date.now() - startTime
+    });
+    res.status(500).json({
+      success: false,
+      error: 'SERVER_ERROR',
+      message: 'An error occurred while fetching preference.'
+    });
+  }
+});
+
+/**
+ * PUT /api/user/display-currency
+ * Set user's preferred display currency for portfolio balance (USD or NGN)
+ * Body: { displayCurrency: 'USD' | 'NGN' }
+ */
+router.put('/display-currency', async (req, res) => {
+  const startTime = Date.now();
+  let userId = null;
+
+  try {
+    userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'Authentication required'
+      });
+    }
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_USER_ID',
+        message: 'Invalid user ID format'
+      });
+    }
+
+    const { displayCurrency } = req.body;
+    if (!displayCurrency || !['USD', 'NGN'].includes(displayCurrency)) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_INPUT',
+        message: 'displayCurrency must be "USD" or "NGN"'
+      });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { displayCurrency },
+      { new: true, runValidators: true }
+    )
+      .select('displayCurrency')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Display currency updated',
+      data: { displayCurrency: user.displayCurrency }
+    });
+  } catch (error) {
+    logger.error('Error updating display currency', {
+      error: error.message,
+      userId,
+      processingTime: Date.now() - startTime
+    });
+    res.status(500).json({
+      success: false,
+      error: 'SERVER_ERROR',
+      message: 'An error occurred while updating preference.'
+    });
+  }
+});
+
 module.exports = router;

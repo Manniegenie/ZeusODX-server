@@ -105,6 +105,9 @@ const userSchema = new mongoose.Schema({
   blockedAt: { type: Date, default: null },
   unblockedAt: { type: Date, default: null },
 
+  // User preferences
+  displayCurrency: { type: String, enum: ['USD', 'NGN'], default: 'USD' },
+
   // Wallets (expanded to include canonical network variants)
   wallets: {
     // Bitcoin variants
