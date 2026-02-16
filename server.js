@@ -500,6 +500,7 @@ const kycwebhookRoutes = require('./routes/kycwebhook');
 const VerificationProgressRoutes = require('./routes/VerificationProgress');
 const EnhancedKYCRoutes = require('./routes/EnhancedKYC');
 const NGNZWithdrawal = require('./routes/NGNZWithdrawal');
+const maxWithdrawableRoutes = require('./routes/maxWithdrawable');
 const NINRoutes = require('./routes/NIN');
 const EmailVerifyRoutes = require('./routes/EmailVerify')
 const KYCRoutes = require('./routes/KYC');
@@ -614,6 +615,7 @@ app.use("/giftcardcountry", authenticateToken, giftcardcountryRoutes);
 app.use("/verification", authenticateToken, VerificationProgressRoutes);
 app.use("/enhanced-kyc", authenticateToken, EnhancedKYCRoutes);
 app.use("/ngnz-withdrawal", authenticateToken, NGNZWithdrawal);
+app.use("/withdrawal", authenticateToken, maxWithdrawableRoutes);
 app.use("/nin", authenticateToken, NINRoutes);
 app.use("/email", authenticateToken, EmailVerifyRoutes)
 app.use("/kyc", authenticateToken, KYCRoutes);

@@ -1305,18 +1305,28 @@ router.get('/platform-stats', async (req, res) => {
 
 /**
  * GET /analytics/volumes
- * Returns total deposit and withdrawal volumes (USD, using trade volume logic)
+ * Returns total deposit and withdrawal volumes in USD.
+ *
+ * CALCULATION BREAKDOWN:
+ * 1. Deposit volume: sum of all Transaction documents with type=DEPOSIT, status in
+ *    [SUCCESSFUL, COMPLETED, CONFIRMED]. Grouped by currency; each currency's
+ *    totalAmount = sum(abs(amount)). Then each currency total is converted to USD
+ *    and summed → totalDepositUSD.
+ * 2. Withdrawal volume: same pattern for type=WITHDRAWAL. Uses abs(amount) because
+ *    NGNZ withdrawals store negative amount; crypto withdrawals may store positive.
+ * 3. USD conversion: NGNZ → amount/offrampRate; USD → amount; other tokens → amount*price
+ *    (prices from getPricesWithCache). Currencies without a price contribute 0.
  */
 router.get('/volumes', async (req, res) => {
   try {
-    // Get offramp rate for NGNZ
+    // 1) NGNZ→USD rate (from NairaMarkdown.offrampRate, fallback 1554.42)
     const nairaMarkdown = await NairaMarkdown.findOne();
     let offrampRate = nairaMarkdown?.offrampRate || 1554.42;
     if (!offrampRate || isNaN(offrampRate) || Number(offrampRate) === 0) {
       offrampRate = 1554.42;
     }
 
-    // Aggregate deposits (some historical rows may have negative amounts; use abs for robustness)
+    // 2) Deposit volume: only type=DEPOSIT, successful statuses, group by currency, sum abs(amount)
     const depositAgg = await Transaction.aggregate([
       {
         $match: {
@@ -1334,11 +1344,7 @@ router.get('/volumes', async (req, res) => {
       }
     ]);
 
-    // Aggregate withdrawals
-    // IMPORTANT:
-    // - NGNZ withdrawals use negative `amount` (by convention)
-    // - Crypto withdrawals in `routes/withdraw.js` currently save POSITIVE `amount`
-    // So we must use abs(amount) and not rely on sign.
+    // 3) Withdrawal volume: only type=WITHDRAWAL, same statuses; abs(amount) for sign-agnostic sum
     const withdrawalAgg = await Transaction.aggregate([
       {
         $match: {
@@ -1356,15 +1362,13 @@ router.get('/volumes', async (req, res) => {
       }
     ]);
 
-    // Get all unique currencies
+    // 4) Collect all currencies that appear in either deposit or withdrawal
     const allCurrencies = Array.from(new Set([
       ...depositAgg.map(d => d._id),
       ...withdrawalAgg.map(w => w._id)
     ])).filter(Boolean);
 
-    // Get prices for all currencies that require market pricing
-    // - NGNZ is derived from offramp rate
-    // - USD is 1
+    // 5) Fetch USD prices for crypto (NGNZ and USD handled in toUSD)
     const priceCurrencies = allCurrencies.filter((c) => c && c !== 'NGNZ' && c !== 'USD' && SUPPORTED_TOKENS[c]);
     let prices = {};
     try {
@@ -1373,7 +1377,7 @@ router.get('/volumes', async (req, res) => {
       prices = {};
     }
 
-    // Helper to convert to USD
+    // 6) Convert a currency amount to USD: USD→1, NGNZ→/offrampRate, others→*price (0 if no price)
     function toUSD(currency, amount) {
       const cur = String(currency || '').toUpperCase();
       const amt = Number(amount) || 0;
@@ -1386,7 +1390,7 @@ router.get('/volumes', async (req, res) => {
       return price ? amt * Number(price) : 0;
     }
 
-    // Sum all deposits and withdrawals in USD
+    // 7) Sum deposit totals per currency into totalDepositUSD; same for withdrawals
     let totalDepositUSD = 0;
     let totalWithdrawalUSD = 0;
     for (const d of depositAgg) {
