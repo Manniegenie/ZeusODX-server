@@ -655,9 +655,6 @@ const startServer = async () => {
     // Run one-time swap direction migration
     await migrateSwapDirections();
 
-    // TEMPORARY: Run crypto withdrawal amounts migration
-    await migrateCryptoWithdrawalAmounts();
-
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
       console.log('📦 Body parser limit: 100MB (for KYC image uploads, driver\'s license, etc.)');
