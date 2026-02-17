@@ -9,7 +9,7 @@ const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const GlobalMarkdown = require('../models/pricemarkdown');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
-const { validateTransactionLimit, invalidateSpending } = require('../services/kyccheckservice');
+const { invalidateSpending } = require('../services/kyccheckservice');
 
 const router = express.Router();
 
@@ -833,13 +833,6 @@ router.post('/quote/:quoteId', async (req, res) => {
         balanceError: true,
         availableBalance: validation.availableBalance
       });
-    }
-
-    // KYC / Transaction Limit Check
-    const kycCheck = await validateTransactionLimit(userId, quote.amount, quote.sourceCurrency, 'SWAP');
-    if (!kycCheck.allowed) {
-      logger.warn(`KYC Limit Block: User ${userId} attempted swap ${quote.amount} ${quote.sourceCurrency}. Reason: ${kycCheck.message}`);
-      return res.status(403).json({ success: false, message: 'Transaction exceeds your current KYC limit.' });
     }
 
     // Execute Obiex swap and update balances
