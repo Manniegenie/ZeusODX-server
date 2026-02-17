@@ -10,7 +10,6 @@ const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -57,7 +56,7 @@ const BETTING_SERVICES = [
   'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet', 'NairaBet', 'SupaBet'
 ];
 
-// Supported tokens - aligned with user schema (DOGE REMOVED)
+// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' },
@@ -70,7 +69,7 @@ const SUPPORTED_TOKENS = {
   NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations
+// Token field mapping for balance operations (NGNB changed to NGNZ)
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth',
@@ -619,14 +618,6 @@ router.post('/fund', async (req, res) => {
           error: emailError.message
         });
       }
-
-      trackEvent(userId, 'Utility', {
-        amount,
-        utilityType: 'betting',
-        provider: ebillsResponse.data.service_name
-      }, req).catch(err => {
-        logger.warn('Failed to track AppsFlyer Utility event', { userId, error: err.message });
-      });
 
       return res.status(200).json({
         success: true,

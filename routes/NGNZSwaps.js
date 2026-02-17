@@ -9,7 +9,6 @@ const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -1494,14 +1493,6 @@ router.post('/quote/:quoteId', async (req, res) => {
         trackingEnabled: true
       }
     };
-
-    trackEvent(req.user.id, 'Swap_', {
-      fromCurrency: quote.sourceCurrency,
-      toCurrency: quote.targetCurrency,
-      amount: quote.amount
-    }, req).catch(err => {
-      logger.warn('Failed to track AppsFlyer Swap_ event', { userId: req.user.id, error: err.message });
-    });
 
     return res.json({
       success: true,

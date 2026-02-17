@@ -14,7 +14,6 @@ const { sendKycEmail, sendNINVerificationEmail } = require('../services/EmailSer
 
 // KYC Helpers
 const { classifyOutcome, parseFullName, isBvnIdType, isNinIdType } = require('../utils/kycHelpers');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 // Youverify Configuration
 const YOUVERIFY_CONFIG = {
@@ -378,9 +377,6 @@ router.post('/callback', async (req, res) => {
           error: hookError.message
         });
       }
-      trackEvent(userId, 'KYC_2', {}, null).catch(err => {
-        logger.warn('Failed to track AppsFlyer KYC_2 event', { userId, error: err.message });
-      });
     }
 
     // 8. Send Email Notifications

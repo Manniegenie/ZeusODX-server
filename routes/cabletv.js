@@ -10,7 +10,6 @@ const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -24,7 +23,7 @@ registerCache('cabletv_userCache', userCache);
 const CABLE_TV_SERVICES = ['dstv', 'gotv', 'startimes', 'showmax'];
 const VALID_SUBSCRIPTION_TYPES = ['change', 'renew'];
 
-// Supported tokens - aligned with user schema (DOGE REMOVED)
+// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' }, 
@@ -37,7 +36,7 @@ const SUPPORTED_TOKENS = {
   NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations
+// Token field mapping for balance operations (NGNB changed to NGNZ)
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth', 
@@ -837,14 +836,6 @@ router.post('/purchase', async (req, res) => {
           error: emailError.message
         });
       }
-
-      trackEvent(userId, 'Utility', {
-        amount,
-        utilityType: 'cabletv',
-        provider: service_id
-      }, req).catch(err => {
-        logger.warn('Failed to track AppsFlyer Utility event', { userId, error: err.message });
-      });
 
       return res.status(200).json({
         success: true,

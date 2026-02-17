@@ -304,12 +304,12 @@ async function createInternalTransferTransactions(transferData) {
   try {
     const transferReference = `INT_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Create sender transaction (debit) — amount stored negative for outflows (matches WITHDRAWAL convention)
+    // Create sender transaction (debit)
     const senderTransaction = await Transaction.create({
       userId: senderUserId,
       type: 'INTERNAL_TRANSFER_SENT',
       currency: currency.toUpperCase(),
-      amount: -Math.abs(amount),
+      amount,
       recipientUserId,
       recipientUsername,
       recipientFullName: recipient.fullName,
@@ -601,9 +601,7 @@ router.post('/internal', async (req, res) => {
     const recipient = recipientLookup.recipient;
 
     // KYC / Transaction Limit Check
-    // NGNZ transfers use NGNZ limits; other currencies use crypto (INTERNAL_TRANSFER) limits
-    const kycTransactionType = (currency === 'NGNZ' || currency === 'NGN') ? 'NGNZ_TRANSFER' : 'INTERNAL_TRANSFER';
-    const kycCheck = await validateTransactionLimit(senderUserId, amount, currency, kycTransactionType);
+    const kycCheck = await validateTransactionLimit(senderUserId, amount, currency, 'INTERNAL_TRANSFER');
     if (!kycCheck.allowed) {
       logger.warn(`KYC Limit Block: User ${senderUserId} attempted ${amount} ${currency}. Reason: ${kycCheck.message}`);
       return res.status(403).json({ success: false, message: 'Transaction exceeds your current KYC limit.' });
@@ -671,26 +669,12 @@ router.post('/internal', async (req, res) => {
     });
 
     if (!transferResult.success) {
-      if (transactionsCreated && senderTransaction && recipientTransaction) {
-        try {
-          await Transaction.updateMany(
-            { _id: { $in: [senderTransaction._id, recipientTransaction._id] } },
-            { $set: { status: 'FAILED', failedAt: new Date(), failureReason: transferResult.message || 'Transfer execution failed' } }
-          );
-        } catch (updateError) {
-          logger.error('Failed to mark internal transfer transactions as FAILED', { error: updateError.message });
-        }
-      }
       return res.status(500).json({
         success: false,
         error: 'TRANSFER_EXECUTION_FAILED',
         message: transferResult.message
       });
     }
-
-    // Invalidate KYC spending cache so next limit check uses fresh data
-    const spendingTransactionType = (currency === 'NGNZ' || currency === 'NGN') ? 'NGNZ_TRANSFER' : 'INTERNAL_TRANSFER';
-    invalidateSpending(senderUserId, spendingTransactionType);
 
     const processingTime = Date.now() - startTime;
     logger.info('✅ Internal transfer completed successfully', {
@@ -704,6 +688,13 @@ router.post('/internal', async (req, res) => {
       security_validations: 'All passed (2FA + PIN + KYC + Balance)',
       balance_update_method: 'direct_atomic'
     });
+
+    // Invalidate KYC spending cache so next limit check uses fresh data
+    try {
+      invalidateSpending(senderUserId.toString(), 'INTERNAL_TRANSFER');
+    } catch (invErr) {
+      logger.warn('KYC spending cache invalidation failed', { userId: senderUserId, error: invErr.message });
+    }
 
     // Send push notification to recipient (non-blocking)
     sendTransferNotification(

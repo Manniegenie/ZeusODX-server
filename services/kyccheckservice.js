@@ -86,6 +86,12 @@ class KYCLimitService {
     try {
       logger.info(`[KYC] Validation for ${userId}: ${amount} ${currency} (type: ${transactionType})`);
 
+      // Validate amount
+      if (!amount || amount <= 0 || isNaN(amount)) {
+        logger.warn(`[KYC] Invalid amount: ${amount}`, { userId, currency, transactionType });
+        return this.createErrorResponse('INVALID_AMOUNT', 'Transaction exceeds your current KYC limit.');
+      }
+
       const user = await this.getUser(userId);
       if (!user) return this.createErrorResponse('USER_NOT_FOUND', 'User not found');
 
@@ -149,8 +155,23 @@ class KYCLimitService {
       });
 
     } catch (error) {
-      logger.error('KYC validation error:', error);
-      return this.createErrorResponse('VALIDATION_ERROR', error.message);
+      // Log specific error details for debugging, but return generic message to user
+      const errorType = error.message.includes('UNSUPPORTED_CURRENCY') ? 'UNSUPPORTED_CURRENCY' : 
+                       error.message.includes('Price missing') ? 'PRICE_UNAVAILABLE' : 
+                       'VALIDATION_ERROR';
+      
+      logger.error('[KYC] Validation error:', { 
+        userId, 
+        currency, 
+        amount, 
+        transactionType,
+        errorType,
+        errorMessage: error.message,
+        stack: error.stack 
+      });
+      
+      // Return generic error response (user-facing message stays generic)
+      return this.createErrorResponse('VALIDATION_ERROR', 'Transaction exceeds your current KYC limit.');
     }
   }
 
@@ -166,23 +187,43 @@ class KYCLimitService {
         return await offrampService.convertUsdToNaira(amount);
       }
 
-      if (['BTC', 'ETH', 'SOL'].includes(currency)) {
+      // Support all withdrawable crypto tokens: BTC, ETH, SOL, BNB, MATIC, TRX
+      const cryptoCurrencies = ['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'TRX'];
+      if (cryptoCurrencies.includes(currency)) {
         const prices = await this.getCryptoPricesFromCurrencyAPI();
         const cryptoPrice = prices[currency];
-        if (!cryptoPrice) throw new Error(`Price missing for ${currency}`);
+        
+        if (!cryptoPrice || cryptoPrice === 0) {
+          const errorMsg = `Price missing or unavailable for ${currency}`;
+          logger.error(`[KYC] ${errorMsg}`, { currency, availablePrices: Object.keys(prices) });
+          throw new Error(`UNSUPPORTED_CURRENCY: ${errorMsg}`);
+        }
 
         const usdValue = amount * cryptoPrice;
         return await offrampService.convertUsdToNaira(usdValue);
       }
-      throw new Error(`Unsupported currency: ${currency}`);
+      
+      const errorMsg = `Unsupported currency for KYC conversion: ${currency}`;
+      logger.error(`[KYC] ${errorMsg}`, { currency });
+      throw new Error(`UNSUPPORTED_CURRENCY: ${errorMsg}`);
     } catch (error) {
-      logger.error(`Conversion failed: ${currency}`, error);
+      // Log specific error details for debugging
+      if (error.message.includes('UNSUPPORTED_CURRENCY') || error.message.includes('Price missing')) {
+        logger.error(`[KYC] Conversion failed: ${currency}`, { 
+          currency, 
+          error: error.message,
+          errorType: error.message.includes('UNSUPPORTED_CURRENCY') ? 'UNSUPPORTED_CURRENCY' : 'PRICE_UNAVAILABLE'
+        });
+      } else {
+        logger.error(`[KYC] Conversion failed: ${currency}`, { currency, error: error.message });
+      }
       throw error;
     }
   }
 
   async getCryptoPricesFromCurrencyAPI() {
-    return await getPricesWithCache(['BTC', 'ETH', 'SOL', 'USDT', 'USDC']);
+    // Fetch prices for all withdrawable crypto tokens
+    return await getPricesWithCache(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX']);
   }
 
   async getConversionRate(currency) {
@@ -191,7 +232,15 @@ class KYCLimitService {
     if (['USD', 'USDT', 'USDC'].includes(currency)) return rate.finalPrice;
     
     const prices = await this.getCryptoPricesFromCurrencyAPI();
-    return prices[currency] * rate.finalPrice;
+    const cryptoPrice = prices[currency];
+    
+    if (!cryptoPrice || cryptoPrice === 0) {
+      const errorMsg = `Price missing or unavailable for ${currency} in getConversionRate`;
+      logger.error(`[KYC] ${errorMsg}`, { currency, availablePrices: Object.keys(prices) });
+      throw new Error(`PRICE_UNAVAILABLE: ${errorMsg}`);
+    }
+    
+    return cryptoPrice * rate.finalPrice;
   }
 
   /**
@@ -314,10 +363,21 @@ class KYCLimitService {
         try {
           // Use absolute value since withdrawals have negative amounts but should count as positive spending
           const amountToAdd = Math.abs(tx.amount);
+          if (amountToAdd <= 0 || isNaN(amountToAdd)) {
+            logger.warn('[KYC] Invalid transaction amount, skipping', { txId: tx._id, currency: tx.currency, amount: tx.amount });
+            continue;
+          }
           sum += await this.convertToNaira(amountToAdd, tx.currency);
         } catch (e) {
-          logger.warn('[KYC] Conversion failed for transaction, skipping', { txId: tx._id, currency: tx.currency, error: e.message });
+          logger.error('[KYC] Conversion failed for transaction, skipping', { 
+            txId: tx._id, 
+            currency: tx.currency, 
+            amount: tx.amount,
+            error: e.message,
+            errorType: e.message.includes('UNSUPPORTED_CURRENCY') ? 'UNSUPPORTED_CURRENCY' : 'PRICE_UNAVAILABLE'
+          });
           // Skip rather than use wrong fallback (amount could be in different currency)
+          // This undercounts spending but prevents incorrect limit checks
         }
       }
     }

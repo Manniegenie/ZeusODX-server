@@ -487,7 +487,6 @@ const fetchnetworkRoutes = require('./routes/fetchnetwork');
 const TwooFARoutes = require('./adminRoutes/2FA');
 const HistoryRoutes = require('./routes/transactionhistory');
 const ProfileRoutes = require('./routes/Profile');
-const userRoutes = require('./routes/user');
 const bankAccountRoutes = require('./routes/bankAccount');
 const Resetpin = require('./routes/ResetPin');
 const DeleteAccountRoutes = require('./routes/deleteaccount');
@@ -500,7 +499,6 @@ const kycwebhookRoutes = require('./routes/kycwebhook');
 const VerificationProgressRoutes = require('./routes/VerificationProgress');
 const EnhancedKYCRoutes = require('./routes/EnhancedKYC');
 const NGNZWithdrawal = require('./routes/NGNZWithdrawal');
-const maxWithdrawableRoutes = require('./routes/maxWithdrawable');
 const NINRoutes = require('./routes/NIN');
 const EmailVerifyRoutes = require('./routes/EmailVerify')
 const KYCRoutes = require('./routes/KYC');
@@ -605,7 +603,6 @@ app.use("/user-query", authenticateToken, userqueryRoutes);
 app.use("/fetchnetwork", fetchnetworkRoutes);
 app.use("/history", authenticateToken, HistoryRoutes);
 app.use("/profile", authenticateToken, ProfileRoutes);
-app.use("/user", authenticateToken, userRoutes);
 app.use("/bank", authenticateToken, bankAccountRoutes);
 app.use("/reset-pin", authenticateToken, Resetpin);
 app.use("/delete-account", authenticateToken, DeleteAccountRoutes);
@@ -615,7 +612,6 @@ app.use("/giftcardcountry", authenticateToken, giftcardcountryRoutes);
 app.use("/verification", authenticateToken, VerificationProgressRoutes);
 app.use("/enhanced-kyc", authenticateToken, EnhancedKYCRoutes);
 app.use("/ngnz-withdrawal", authenticateToken, NGNZWithdrawal);
-app.use("/withdrawal", authenticateToken, maxWithdrawableRoutes);
 app.use("/nin", authenticateToken, NINRoutes);
 app.use("/email", authenticateToken, EmailVerifyRoutes)
 app.use("/kyc", authenticateToken, KYCRoutes);
@@ -658,6 +654,9 @@ const startServer = async () => {
 
     // Run one-time swap direction migration
     await migrateSwapDirections();
+
+    // TEMPORARY: Run crypto withdrawal amounts migration
+    await migrateCryptoWithdrawalAmounts();
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);

@@ -25,7 +25,6 @@ const logger = require('../utils/logger');
 // IDEMPOTENCY MIDDLEWARE
 // Ensure your middleware file is named 'idempotency.middleware.js' as per your recent update
 const { idempotencyMiddleware } = require('../utils/Idempotency');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -36,13 +35,8 @@ const CACHE_TTL = 5000;
 // NGNZ Withdrawal Fee Constants
 // - Operational: What is actually subtracted from the payout to the provider
 // - Recorded: What is displayed to the user and stored in the transaction history
-const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = 30;
-const NGNZ_WITHDRAWAL_FEE_RECORDED = 100;
-
-// Obiex provider minimum: amount sent to Obiex (after our fee) must be >= 1000 NGNX
-const OBIEX_NGNZ_MIN_AMOUNT = 1000;
-// App minimum: reject withdrawals of 1100 or less (covers provider min + fees + buffer)
-const NGNZ_WITHDRAWAL_MIN_AMOUNT = 1100;
+const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = 30; 
+const NGNZ_WITHDRAWAL_FEE_RECORDED = 100;    
 
 // --- HELPER FUNCTIONS ---
 
@@ -96,14 +90,14 @@ function validateWithdrawalRequest(data) {
   if (!data.amount || data.amount <= 0) errors.push('Amount must be a positive number');
   if (!data.destination?.accountNumber) errors.push('Account number is required');
   if (!data.destination?.bankCode) errors.push('Bank code is required');
-
-  // Reject 1100 or less (provider min 1000 + fees; we use 1100 as app minimum)
-  if (data.amount <= NGNZ_WITHDRAWAL_MIN_AMOUNT) {
-    errors.push(`Minimum withdrawal is ₦${(NGNZ_WITHDRAWAL_MIN_AMOUNT + 1).toLocaleString()}`);
+  
+  const minimumWithdrawal = NGNZ_WITHDRAWAL_FEE_OPERATIONAL + 1;
+  if (data.amount < minimumWithdrawal) {
+    errors.push(`Minimum withdrawal is ₦${minimumWithdrawal}`);
   }
   if (!data.twoFactorCode) errors.push('2FA code is required');
   if (!data.passwordpin || !/^\d{6}$/.test(data.passwordpin)) errors.push('Valid 6-digit PIN is required');
-
+  
   return errors;
 }
 
@@ -229,28 +223,19 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     });
 
     if (obiexResult.success) {
-      // Store Obiex transaction ID for webhook matching
-      // Keep status as PENDING - webhook will update to SUCCESSFUL when confirmed
-      const obiexTransactionId = obiexResult.data?.id || obiexResult.data?.transactionId;
       await Transaction.findByIdAndUpdate(transactionId, {
         $set: { 
-            status: 'PENDING',  // Keep as PENDING until webhook confirms
-            'ngnzWithdrawal.obiex.id': obiexTransactionId,
-            'ngnzWithdrawal.obiex.reference': obiexResult.data?.reference || null,
-            'ngnzWithdrawal.obiex.status': obiexResult.data?.status || 'PROCESSING',
-            'ngnzWithdrawal.sentAt': new Date(),
-            obiexTransactionId: obiexTransactionId, // Store at top level for webhook lookup
-            'metadata.obiexId': obiexTransactionId 
+            status: 'SUCCESSFUL', 
+            completedAt: new Date(), 
+            'metadata.obiexId': obiexResult.data?.id 
         }
       });
       return { success: true, data: obiexResult.data };
     } else {
-      // Only mark as FAILED if Obiex immediately rejects (not processing)
       await Transaction.findByIdAndUpdate(transactionId, {
         $set: { 
             status: 'FAILED', 
-            'ngnzWithdrawal.failureReason': obiexResult.message,
-            'ngnzWithdrawal.failedAt': new Date()
+            'ngnzWithdrawal.failureReason': obiexResult.message 
         }
       });
       return { success: false, error: obiexResult.message };
@@ -281,22 +266,6 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
     const kycCheck = await validateTransactionLimit(userId, amount, 'NGNZ', 'NGNZ');
     if (!kycCheck.allowed) return res.status(400).json({ success: false, message: kycCheck.message });
-
-    // Early NGNZ balance check (fail fast before 2FA/PIN and lock)
-    const balanceCheck = await validateBalance(userId, 'NGNZ', amount, { logValidation: false });
-    if (!balanceCheck.success) {
-      logger.warn('NGNZ withdrawal rejected: insufficient balance', {
-        userId,
-        amount,
-        availableBalance: balanceCheck.availableBalance,
-        correlationId
-      });
-      return res.status(400).json({
-        success: false,
-        message: balanceCheck.message || 'Insufficient NGNZ balance. Please check your balance and try again.',
-        ...(balanceCheck.availableBalance != null && { availableBalance: balanceCheck.availableBalance })
-      });
-    }
 
     const bvnCheck = await bvnCheckService.checkBVNVerified(userId);
     if (!bvnCheck.success) return res.status(400).json({ success: false, message: bvnCheck.message });
@@ -393,49 +362,45 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
     if (!isTokenSupported('NGNZ')) return res.status(400).json({ success: false, message: 'Currency not supported' });
 
-    // 3. Execution (Deduct + Create Tx + Obiex) UNDER ONE LOCK
-    // Hold lock for full flow so double-tap gets "Another withdrawal in progress" instead of "balance changed"
+    // 3. Execution (Deduct Balance + Create Transaction) WITH DISTRIBUTED LOCK
+    // SECURITY FIX: Use distributed lock to prevent race conditions
     const lockKey = `withdrawal:${userId}:NGNZ`;
 
-    const { withdrawalResult, obiexResult } = await withLock(
+    const withdrawalResult = await withLock(
       lockKey,
       async () => {
-        const withdrawal = await executeNGNZWithdrawal(
+        return await executeNGNZWithdrawal(
           userId,
           { amount, destination, narration },
           correlationId,
           systemContext,
           idempotencyKey
         );
-        const obiex = await processObiexWithdrawal(
-          userId,
-          { amount, destination, narration },
-          withdrawal.amountToObiex,
-          withdrawal.withdrawalReference,
-          withdrawal.transaction._id
-        );
-        return { withdrawalResult: withdrawal, obiexResult: obiex };
       },
       {
-        ttl: 30000,        // 30s: cover deduct + Obiex API call
-        maxWaitTime: 5000, // Second request waits up to 5s then gets "Another withdrawal in progress"
-        retryInterval: 50
+        ttl: 15000,        // Lock timeout: 15 seconds (longer for bank transfers)
+        maxWaitTime: 5000, // Wait up to 5 seconds for lock
+        retryInterval: 50  // Check every 50ms
       }
     ).catch(error => {
-      // Only log as lock failure when it actually is; otherwise we mislabel balance/other errors
-      if (error.message && error.message.includes('Failed to acquire lock')) {
-        logger.error(`Failed to acquire NGNZ withdrawal lock for user ${userId}:`, error.message);
-      } else {
-        logger.warn(`NGNZ withdrawal failed inside lock for user ${userId}:`, { error: error.message });
-      }
+      logger.error(`Failed to acquire NGNZ withdrawal lock for user ${userId}:`, error.message);
       throw error; // Re-throw to be caught by outer try-catch
     });
 
+    // 4. External Payout (Obiex)
+    const obiexResult = await processObiexWithdrawal(
+        userId, 
+        { amount, destination, narration }, 
+        withdrawalResult.amountToObiex, 
+        withdrawalResult.withdrawalReference, 
+        withdrawalResult.transaction._id
+    );
+
     if (obiexResult.success) {
-      // Withdrawal submitted to Obiex - status is PENDING until webhook confirms
-      // Email will be sent when webhook confirms SUCCESSFUL status
-      // Only send processing notification (not completed)
-      sendWithdrawalNotification(userId, withdrawalResult.amountToObiex, 'NGN', 'processing', {
+      // Async Notifications
+      sendWithdrawalEmail(user.email, user.username || 'User', amount, 'NGN', withdrawalResult.withdrawalReference).catch(e => logger.error(e));
+      
+      sendWithdrawalNotification(userId, withdrawalResult.amountToObiex, 'NGN', 'completed', {
         reference: withdrawalResult.withdrawalReference,
         bankName: destination.bankName,
         accountNumber: maskAccountNumber(destination.accountNumber),
@@ -443,96 +408,32 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
         totalAmount: amount
       }).catch(e => logger.error('Push Error', e));
 
-      trackEvent(userId, 'Withdrawal', {
-        amount,
-        currency: 'NGN',
-        method: 'bank_transfer'
-      }, req).catch(err => {
-        logger.warn('Failed to track AppsFlyer Withdrawal event', { userId, error: err.message });
-      });
-
       return res.json({
         success: true,
-        message: 'Withdrawal submitted successfully. Status will be updated via webhook.',
+        message: 'Withdrawal processed successfully',
         data: {
           withdrawalId: withdrawalResult.withdrawalReference,
           totalAmount: amount,
           amountSentToBank: withdrawalResult.amountToObiex,
           fee: withdrawalResult.feeAmount,
-          balanceAfter: withdrawalResult.user.ngnzBalance,
-          status: 'PENDING' // Status pending webhook confirmation
+          balanceAfter: withdrawalResult.user.ngnzBalance
         }
       });
     } else {
-      // Obiex failed but we already debited the wallet — refund the user and mark transaction failed
-      const refundAmount = amount;
-      try {
-        await User.findByIdAndUpdate(
-          userId,
-          { $inc: { ngnzBalance: refundAmount }, $set: { lastBalanceUpdate: new Date() } },
-          { new: true }
-        );
-        await Transaction.findByIdAndUpdate(withdrawalResult.transaction._id, {
-          status: 'FAILED',
-          failedAt: new Date(),
-          failureReason: obiexResult.error || 'Provider rejected withdrawal'
-        });
-        logger.info('Refunded NGNZ after Obiex failure', {
-          userId,
-          amount: refundAmount,
-          transactionId: withdrawalResult.transaction._id,
-          obiexError: obiexResult.error
-        });
-      } catch (refundErr) {
-        logger.error('Critical: failed to refund user after Obiex failure', {
-          userId,
-          amount: refundAmount,
-          transactionId: withdrawalResult.transaction._id,
-          error: refundErr.message
-        });
-      }
-
+      // Async Failure Notification
       sendWithdrawalNotification(userId, amount, 'NGN', 'failed', {
         reason: obiexResult.error || 'Provider processing error',
         reference: withdrawalResult.withdrawalReference
       }).catch(e => logger.error('Push Error', e));
 
-      const providerMessage = obiexResult.error || 'Withdrawal failed at provider.';
-      return res.status(502).json({
-        success: false,
-        message: `${providerMessage} Your balance has been refunded.`
+      return res.status(502).json({ 
+          success: false, 
+          message: 'Withdrawal failed at provider', 
+          error: obiexResult.error 
       });
     }
 
   } catch (err) {
-    const isInsufficientBalance = err.message && err.message.includes('Insufficient NGNZ balance');
-    const isLockFailure = err.message && err.message.includes('Failed to acquire lock');
-
-    if (isInsufficientBalance) {
-      logger.warn('NGNZ withdrawal failed: insufficient balance (race or stale check)', {
-        userId: req.user?.id,
-        amount: req.body?.amount,
-        correlationId,
-        error: err.message
-      });
-      return res.status(400).json({
-        success: false,
-        message: 'Insufficient NGNZ balance. Your balance may have changed. If you just submitted a withdrawal, it may already have been processed—please refresh and check your transaction history.'
-      });
-    }
-
-    if (isLockFailure) {
-      logger.warn('NGNZ withdrawal failed: could not acquire lock (another withdrawal in progress)', {
-        userId: req.user?.id,
-        correlationId,
-        error: err.message
-      });
-      return res.status(409).json({
-        success: false,
-        message: 'Another withdrawal is in progress. Please wait a moment and try again.'
-      });
-    }
-
     logger.error('NGNZ withdrawal terminal error', { error: err.stack, correlationId });
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }

@@ -9,7 +9,7 @@ const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const GlobalMarkdown = require('../models/pricemarkdown');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
-const { trackEvent } = require('../utils/appsFlyerHelper');
+const { validateTransactionLimit, invalidateSpending } = require('../services/kyccheckservice');
 
 const router = express.Router();
 
@@ -835,6 +835,13 @@ router.post('/quote/:quoteId', async (req, res) => {
       });
     }
 
+    // KYC / Transaction Limit Check
+    const kycCheck = await validateTransactionLimit(userId, quote.amount, quote.sourceCurrency, 'SWAP');
+    if (!kycCheck.allowed) {
+      logger.warn(`KYC Limit Block: User ${userId} attempted swap ${quote.amount} ${quote.sourceCurrency}. Reason: ${kycCheck.message}`);
+      return res.status(403).json({ success: false, message: 'Transaction exceeds your current KYC limit.' });
+    }
+
     // Execute Obiex swap and update balances
     const swapResult = await executeObiexSwapWithBalanceUpdate(
       userId, 
@@ -849,6 +856,13 @@ router.post('/quote/:quoteId', async (req, res) => {
       correlationId,
       swapId: swapResult.swapId
     });
+
+    // Invalidate KYC spending cache so next limit check uses fresh data
+    try {
+      invalidateSpending(userId.toString(), 'SWAP');
+    } catch (invErr) {
+      logger.warn('KYC spending cache invalidation failed', { userId, error: invErr.message });
+    }
 
     quoteCache.delete(quoteId);
 
@@ -879,14 +893,6 @@ router.post('/quote/:quoteId', async (req, res) => {
         [quote.targetCurrency.toLowerCase()]: swapResult.user[`${quote.targetCurrency.toLowerCase()}Balance`]
       }
     };
-
-    trackEvent(req.user.id, 'Swap_', {
-      fromCurrency: quote.sourceCurrency,
-      toCurrency: quote.targetCurrency,
-      amount: quote.amount
-    }, req).catch(err => {
-      logger.warn('Failed to track AppsFlyer Swap_ event', { userId: req.user.id, error: err.message });
-    });
 
     return res.json({
       success: true,

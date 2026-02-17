@@ -10,7 +10,7 @@ const Transaction = require('../models/transaction');
 const CryptoFeeMarkup = require('../models/cryptofee');
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
-const { validateTransactionLimit } = require('../services/kyccheckservice');
+const { validateTransactionLimit, invalidateSpending } = require('../services/kyccheckservice');
 const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
@@ -407,6 +407,13 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
     });
 
     if (user.email) sendWithdrawalEmail(user.email, user.username, amount, internalCurrency, transaction._id);
+
+    // Invalidate KYC spending cache so next limit check uses fresh data
+    try {
+      invalidateSpending(user._id.toString(), 'WITHDRAWAL');
+    } catch (invErr) {
+      logger.warn('KYC spending cache invalidation failed', { userId: user._id, error: invErr.message });
+    }
 
     // Enhanced security logging
     logger.info(`Crypto withdrawal initiated`, {

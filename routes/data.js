@@ -11,7 +11,6 @@ const { validateTransactionLimit } = require('../services/kyccheckservice');
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -24,7 +23,7 @@ registerCache('data_userCache', userCache);
 // Valid data service providers
 const DATA_SERVICES = ['mtn', 'glo', 'airtel', '9mobile'];
 
-// Supported tokens - aligned with user schema (DOGE REMOVED)
+// Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
 const SUPPORTED_TOKENS = {
   BTC: { name: 'Bitcoin' },
   ETH: { name: 'Ethereum' }, 
@@ -37,7 +36,7 @@ const SUPPORTED_TOKENS = {
   NGNZ: { name: 'NGNZ Token' }
 };
 
-// Token field mapping for balance operations
+// Token field mapping for balance operations (NGNB changed to NGNZ)
 const TOKEN_FIELD_MAPPING = {
   BTC: 'btc',
   ETH: 'eth', 
@@ -812,14 +811,6 @@ router.post('/purchase', async (req, res) => {
           error: emailError.message
         });
       }
-
-      trackEvent(userId, 'Utility', {
-        amount,
-        utilityType: 'data',
-        provider: payBetaResponse.data.biller || requestBody.service_id
-      }, req).catch(err => {
-        logger.warn('Failed to track AppsFlyer Utility event', { userId, error: err.message });
-      });
       
       return res.status(200).json({
         success: true,

@@ -21,9 +21,6 @@ const userSchema = new mongoose.Schema({
   // Firebase Cloud Messaging token (preferred over Expo push token)
   fcmToken: { type: String, default: null },
   deviceId: { type: String, default: null },
-  // AppsFlyer tracking
-  appsflyer_id: { type: String, default: null },
-  appsflyer_idUpdatedAt: { type: Date, default: null },
 
   // OTP fields (used for both pin changes and email verification)
   pinChangeOtp: { type: String, default: null },
@@ -104,9 +101,6 @@ const userSchema = new mongoose.Schema({
   blockReason: { type: String, default: null },
   blockedAt: { type: Date, default: null },
   unblockedAt: { type: Date, default: null },
-
-  // User preferences
-  displayCurrency: { type: String, enum: ['USD', 'NGN'], default: 'USD' },
 
   // Wallets (expanded to include canonical network variants)
   wallets: {
@@ -387,23 +381,23 @@ userSchema.methods.canAddBankAccount = function () {
   return this.getBankAccountsCount() < 10;
 };
 
-// KYC Limits (Updated structure - removed level 3). Canonical currency: NGNZ.
+// KYC Limits (Updated structure - removed level 3)
 userSchema.methods.getKycLimits = function () {
   const limits = {
     0: {
-      ngnz: { daily: 0, monthly: 0 },
+      ngnb: { daily: 0, monthly: 0 },
       crypto: { daily: 0, monthly: 0 },
       utilities: { daily: 0, monthly: 0 },
       description: 'No verification - No transactions allowed'
     },
     1: {
-      ngnz: { daily: 0, monthly: 0 }, // No NGNZ transactions allowed
+      ngnb: { daily: 0, monthly: 0 }, // No NGN transactions allowed
       crypto: { daily: 0, monthly: 0 }, // No crypto transactions allowed
       utilities: { daily: 50000, monthly: 200000 }, // Only utilities allowed
       description: 'Phone verification (automatic on signup)'
     },
     2: {
-      ngnz: { daily: 25000000, monthly: 200000000 },
+      ngnb: { daily: 25000000, monthly: 200000000 },
       crypto: { daily: 2000000, monthly: 2000000 },
       utilities: { daily: 500000, monthly: 2000000 },
       description: 'Email verification + Document verification'
@@ -412,9 +406,9 @@ userSchema.methods.getKycLimits = function () {
   return limits[this.kycLevel] || limits[0];
 };
 
-userSchema.methods.getNgnzLimits = function () {
+userSchema.methods.getNgnbLimits = function () {
   const limits = this.getKycLimits();
-  return limits.ngnz;
+  return limits.ngnb;
 };
 
 userSchema.methods.getCryptoLimits = function () {
@@ -427,9 +421,9 @@ userSchema.methods.getUtilityLimits = function () {
   return limits.utilities;
 };
 
-// Backward-compat alias (deprecated: use getNgnzLimits)
-userSchema.methods.getNgnbLimits = function () {
-  return this.getNgnzLimits();
+// Compatibility alias if other parts of ZeusODX still call NGNZ limits
+userSchema.methods.getNgnzLimits = function () {
+  return this.getNgnbLimits();
 };
 
 // Get or create KYC record
