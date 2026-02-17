@@ -566,22 +566,37 @@ router.get('/recent-transactions', async (req, res) => {
       Transaction.countDocuments(filter)
     ]);
 
-    const formattedTransactions = transactions.map(tx => ({
-      id: tx._id.toString(),
-      userId: tx.userId?._id?.toString(),
-      username: tx.userId?.username || tx.userId?.firstname || 'Unknown',
-      userEmail: tx.userId?.email,
-      type: tx.type,
-      status: tx.status,
-      currency: tx.currency,
-      amount: tx.amount,
-      fee: tx.fee || 0,
-      narration: tx.narration,
-      reference: tx.reference,
-      source: tx.source,
-      createdAt: tx.createdAt,
-      updatedAt: tx.updatedAt,
-      completedAt: tx.completedAt,
+    const formattedTransactions = transactions.map(tx => {
+      // Ensure correct sign convention for display:
+      // - DEPOSIT, INTERNAL_TRANSFER_RECEIVED: positive
+      // - WITHDRAWAL, INTERNAL_TRANSFER_SENT: negative
+      let displayAmount = tx.amount;
+      
+      // Validate and correct sign based on transaction type
+      if (tx.type === 'DEPOSIT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED') {
+        // Should be positive
+        displayAmount = Math.abs(tx.amount);
+      } else if (tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT') {
+        // Should be negative
+        displayAmount = -Math.abs(tx.amount);
+      }
+      
+      return {
+        id: tx._id.toString(),
+        userId: tx.userId?._id?.toString(),
+        username: tx.userId?.username || tx.userId?.firstname || 'Unknown',
+        userEmail: tx.userId?.email,
+        type: tx.type,
+        status: tx.status,
+        currency: tx.currency,
+        amount: displayAmount,
+        fee: tx.fee || 0,
+        narration: tx.narration,
+        reference: tx.reference,
+        source: tx.source,
+        createdAt: tx.createdAt,
+        updatedAt: tx.updatedAt,
+        completedAt: tx.completedAt,
       ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
         fromCurrency: tx.fromCurrency,
         toCurrency: tx.toCurrency,
@@ -605,7 +620,8 @@ router.get('/recent-transactions', async (req, res) => {
         country: tx.country,
         expectedRate: tx.expectedRate
       } : {})
-    }));
+      };
+    });
 
     const totalPages = Math.ceil(totalCount / limit);
 
@@ -779,16 +795,31 @@ router.get('/filter', async (req, res) => {
     console.log(`Found ${transactions.length} transactions, ${users.length} users`);
 
     // Format transactions
-    const formattedTransactions = transactions.map(tx => ({
-      id: tx._id.toString(),
-      userId: tx.userId?._id?.toString(),
-      username: tx.userId?.username || tx.userId?.firstname || 'Unknown',
-      userEmail: tx.userId?.email,
-      type: tx.type,
-      status: tx.status,
-      currency: tx.currency,
-      amount: tx.amount,
-      fee: tx.fee || 0,
+    const formattedTransactions = transactions.map(tx => {
+      // Ensure correct sign convention for display:
+      // - DEPOSIT, INTERNAL_TRANSFER_RECEIVED: positive
+      // - WITHDRAWAL, INTERNAL_TRANSFER_SENT: negative
+      let displayAmount = tx.amount;
+      
+      // Validate and correct sign based on transaction type
+      if (tx.type === 'DEPOSIT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED') {
+        // Should be positive
+        displayAmount = Math.abs(tx.amount);
+      } else if (tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT') {
+        // Should be negative
+        displayAmount = -Math.abs(tx.amount);
+      }
+      
+      return {
+        id: tx._id.toString(),
+        userId: tx.userId?._id?.toString(),
+        username: tx.userId?.username || tx.userId?.firstname || 'Unknown',
+        userEmail: tx.userId?.email,
+        type: tx.type,
+        status: tx.status,
+        currency: tx.currency,
+        amount: displayAmount,
+        fee: tx.fee || 0,
       narration: tx.narration,
       reference: tx.reference,
       createdAt: tx.createdAt,
@@ -806,7 +837,8 @@ router.get('/filter', async (req, res) => {
         accountNumber: tx.ngnzWithdrawal?.destination?.accountNumber, // Show full account number for admin
         withdrawalFee: tx.withdrawalFee
       } : {})
-    }));
+      };
+    });
 
     // Format users
     const formattedUsers = users.map(user => ({

@@ -17,7 +17,26 @@ router.post('/transactions-by-email', async (req, res) => {
     }
 
     const transactions = await Transaction.find({ userId: user._id });
-    return res.status(200).json({ success: true, transactions });
+    
+    // Format transactions with correct sign convention:
+    // - DEPOSIT, INTERNAL_TRANSFER_RECEIVED: positive
+    // - WITHDRAWAL, INTERNAL_TRANSFER_SENT: negative
+    const formattedTransactions = transactions.map(tx => {
+      let displayAmount = tx.amount;
+      
+      if (tx.type === 'DEPOSIT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED') {
+        displayAmount = Math.abs(tx.amount);
+      } else if (tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT') {
+        displayAmount = -Math.abs(tx.amount);
+      }
+      
+      return {
+        ...tx.toObject(),
+        amount: displayAmount
+      };
+    });
+    
+    return res.status(200).json({ success: true, transactions: formattedTransactions });
   } catch (error) {
     console.error('Error fetching transactions:', error);
     return res.status(500).json({ error: 'Internal server error' });

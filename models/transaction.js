@@ -103,7 +103,12 @@ const transactionSchema = new mongoose.Schema({
   currency: { type: String, required: true },
   address: { type: String },
 
-  // Core amounts: for withdrawals, this is NEGATIVE (your existing convention)
+  // Core amounts - SIGN CONVENTION (CRITICAL):
+  // - DEPOSIT: POSITIVE (credit to user)
+  // - WITHDRAWAL: NEGATIVE (debit from user)
+  // - INTERNAL_TRANSFER_SENT: NEGATIVE (debit from sender)
+  // - INTERNAL_TRANSFER_RECEIVED: POSITIVE (credit to recipient)
+  // - SWAP: Can be positive (IN) or negative (OUT) depending on swapDirection
   amount: { type: Number, required: true },
 
   fee: { type: Number, default: 0 },

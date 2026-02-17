@@ -297,12 +297,26 @@ router.post('/transaction', webhookAuth, async (req, res) => {
     }
 
     // Prepare transaction data
+    // IMPORTANT: Ensure correct sign convention:
+    // - DEPOSIT: always positive (credit to user)
+    // - WITHDRAWAL: always negative (debit from user)
+    const parsedAmount = parseFloat(amount);
+    let finalAmount = parsedAmount;
+    
+    if (type === 'DEPOSIT') {
+      // Ensure deposits are always positive
+      finalAmount = Math.abs(parsedAmount);
+    } else if (type === 'WITHDRAWAL') {
+      // Ensure withdrawals are always negative
+      finalAmount = -Math.abs(parsedAmount);
+    }
+    
     const updatePayload = {
       userId: user._id,
       type,
       currency: normalizedCurrency,
       address,
-      amount: parseFloat(amount),
+      amount: finalAmount,
       status,
       reference,
       obiexTransactionId: transactionId,

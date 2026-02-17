@@ -309,7 +309,7 @@ async function createInternalTransferTransactions(transferData) {
       userId: senderUserId,
       type: 'INTERNAL_TRANSFER_SENT',
       currency: currency.toUpperCase(),
-      amount,
+      amount: -amount, // Negative for sent transfers (debit from sender)
       recipientUserId,
       recipientUsername,
       recipientFullName: recipient.fullName,
@@ -344,7 +344,7 @@ async function createInternalTransferTransactions(transferData) {
       userId: recipientUserId,
       type: 'INTERNAL_TRANSFER_RECEIVED',
       currency: currency.toUpperCase(),
-      amount,
+      amount: amount, // Positive for received transfers (credit to recipient)
       senderUserId,
       senderUsername,
       senderFullName: senderUser.fullName,
