@@ -7,7 +7,7 @@ const logger = require('../utils/logger');
  * GET /admin/permissions
  * Returns feature access based on admin permissions
  */
-router.get('/permissions', async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const adminId = req.admin.id || req.admin._id;
     

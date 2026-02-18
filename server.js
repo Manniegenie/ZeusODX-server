@@ -515,6 +515,7 @@ const FunduserRoutes = require("./adminRoutes/funduser");
 const clearpendingRoutes = require("./adminRoutes/pendingbalance");
 const fetchwalletRoutes = require("./adminRoutes/fetchwallet");
 const fetchtransactionRoutes = require("./adminRoutes/fetchtransactions");
+const transactionDetailsRoutes = require("./adminRoutes/transactionDetails");
 const deletepinRoutes = require("./adminRoutes/deletepin");
 const nairaPriceRouter = require('./routes/nairaprice');
 const onrampRoutes = require('./adminRoutes/onramp');
@@ -618,10 +619,12 @@ app.use('/admin/scheduled-giftcard-notifications', authenticateAdminToken, requi
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
 app.use("/fetch", authenticateAdminToken, requireModerator, fetchtransactionRoutes);
+app.use("/admin/transaction", authenticateAdminToken, requireModerator, transactionDetailsRoutes);
 app.use("/pending", authenticateAdminToken, requireModerator, clearpendingRoutes);
 app.use("/fetching", authenticateAdminToken, requireModerator, fetchrefreshtoken);
 app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
-app.use('/admin-kyc', authenticateAdminToken, requireModerator, requireKYCReview, AdminKYCRoutes);
+// KYC routes - allow moderators without permission check (they can view, but actions require permission)
+app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
 app.use("/usermanagement", authenticateAdminToken, requireModerator, requireUserManagement, usermanagementRoutes);
 app.use("/analytics", authenticateAdminToken, requireModerator, analyticsRoutes);
 
