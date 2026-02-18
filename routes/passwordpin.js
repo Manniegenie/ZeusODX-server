@@ -5,6 +5,7 @@ const User = require('../models/user');
 const PendingUser = require("../models/pendinguser");
 const config = require("./config");
 const logger = require('../utils/logger');
+const { sendSignupEmail } = require('../services/EmailService');
 
 // Function to generate unique username from first name
 const generateUniqueUsername = async (firstName) => {
@@ -307,6 +308,25 @@ router.post('/password-pin', async (req, res) => {
 
     // Remove pending user after successful account creation
     await PendingUser.deleteOne({ _id: pendingUser._id });
+
+    // Send signup/welcome email after password-pin is set (non-blocking)
+    try {
+      const fullName = newUser.middlename
+        ? `${newUser.firstname} ${newUser.middlename} ${newUser.lastname}`
+        : `${newUser.firstname} ${newUser.lastname}`;
+      const emailResult = await sendSignupEmail(newUser.email, fullName);
+      logger.info('Welcome email sent after PIN set', {
+        email: newUser.email.slice(0, 3) + '****',
+        userId: newUser._id,
+        messageId: emailResult?.messageId
+      });
+    } catch (emailError) {
+      logger.error('Failed to send welcome email after PIN set', {
+        email: newUser.email?.slice(0, 3) + '****',
+        userId: newUser._id,
+        error: emailError.message
+      });
+    }
 
     // NO BACKGROUND WALLET GENERATION - Wallets will be generated on-demand when requested
 

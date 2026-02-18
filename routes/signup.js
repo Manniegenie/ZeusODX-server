@@ -3,7 +3,6 @@ const router = express.Router();
 const PendingUser = require('../models/pendinguser');
 const User = require('../models/user'); 
 const { sendVerificationCode } = require('../utils/verifyAT');
-const { sendSignupEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
 const validator = require('validator');
 
@@ -150,25 +149,6 @@ router.post('/add-user', async (req, res) => {
 
     await pendingUser.save();
     logger.info('Pending user created and OTP sent', { email, phonenumber });
-
-    // Send welcome email (non-blocking)
-    try {
-      const fullName = middlename
-        ? `${firstname} ${middlename} ${lastname}`
-        : `${firstname} ${lastname}`;
-
-      const emailResult = await sendSignupEmail(email, fullName);
-      logger.info('Welcome email sent successfully', { 
-        email: email.slice(0, 3) + '****',
-        name: fullName,
-        messageId: emailResult.messageId
-      });
-    } catch (emailError) {
-      logger.error('Failed to send welcome email', {
-        email: email.slice(0, 3) + '****',
-        error: emailError.message
-      });
-    }
 
     res.status(201).json({
       message: 'User created successfully. Verification code sent.',
