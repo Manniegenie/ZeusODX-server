@@ -369,17 +369,11 @@ const requirePermission = (permission) => {
       // Define role-based permissions (what each role SHOULD have)
       const roleBasedPermissions = {
         admin: {
-          canViewTransactions: true,
-          canAccessReports: true,
-          canManageWallets: true,
-          canManageFees: true,
+          // Admin role: Only push notifications, user management, banners, giftcards
           canManagePushNotifications: true,
           canManageUsers: true,
-          canManageKYC: true,
-          canManageGiftcards: true,
           canManageBanners: true,
-          canRemoveFunding: true,
-          canManageBalances: true,
+          canManageGiftcards: true,
         },
         moderator: {
           canViewTransactions: true,

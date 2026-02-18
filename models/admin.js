@@ -227,17 +227,12 @@ adminUserSchema.methods.setRolePermissions = function() {
       break;
       
     case 'admin':
-      this.permissions.canViewTransactions = true;
-      this.permissions.canAccessReports = true;
-      this.permissions.canManageWallets = true;
-      this.permissions.canManageFees = true;
+      // Admin role: Only push notifications, user management, banners, giftcards
       this.permissions.canManagePushNotifications = true;
       this.permissions.canManageUsers = true;
-      this.permissions.canManageKYC = true;
-      this.permissions.canManageGiftcards = true;
       this.permissions.canManageBanners = true;
-      this.permissions.canRemoveFunding = true;
-      this.permissions.canManageBalances = true;
+      this.permissions.canManageGiftcards = true;
+      // All other permissions remain false
       break;
       
     case 'moderator':

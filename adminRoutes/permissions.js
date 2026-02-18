@@ -41,17 +41,11 @@ router.get('/', async (req, res) => {
     // Define role-based permissions (what each role SHOULD have)
     const roleBasedPermissions = {
       admin: {
-        canViewTransactions: true,
-        canAccessReports: true,
-        canManageWallets: true,
-        canManageFees: true,
+        // Admin role: Only push notifications, user management, banners, giftcards
         canManagePushNotifications: true,
-        canManageUsers: true, // CRITICAL: Admin MUST have this
-        canManageKYC: true,
-        canManageGiftcards: true,
+        canManageUsers: true,
         canManageBanners: true,
-        canRemoveFunding: true,
-        canManageBalances: true,
+        canManageGiftcards: true,
       },
       moderator: {
         canViewTransactions: true,
@@ -90,33 +84,33 @@ router.get('/', async (req, res) => {
     // Role-based feature access
     const featureAccess = {
       dashboard: true, // Everyone can see dashboard
-      platformStats: isSuperAdmin || effectivePermissions.canAccessReports || false,
-      userManagement: isSuperAdmin || effectivePermissions.canManageUsers || false, // CRITICAL FIX
-      kycReview: isSuperAdmin || effectivePermissions.canManageKYC || false,
-      feesAndRates: isSuperAdmin || effectivePermissions.canManageFees || false,
+      platformStats: isSuperAdmin || false, // Admin does NOT have access
+      userManagement: isSuperAdmin || effectivePermissions.canManageUsers || false,
+      kycReview: isSuperAdmin || false, // Admin does NOT have access
+      feesAndRates: isSuperAdmin || false, // Admin does NOT have access
       giftCards: isSuperAdmin || effectivePermissions.canManageGiftcards || false,
       banners: isSuperAdmin || effectivePermissions.canManageBanners || false,
-      fundingAndBalances: isSuperAdmin || effectivePermissions.canRemoveFunding || effectivePermissions.canManageBalances || false,
+      fundingAndBalances: isSuperAdmin || false, // Admin does NOT have access
       pushNotifications: isSuperAdmin || effectivePermissions.canManagePushNotifications || false,
-      security: isSuperAdmin || false, // Only super admin for now
-      auditAndMonitoring: isSuperAdmin || effectivePermissions.canAccessReports || false,
-      adminSettings: isSuperAdmin || effectivePermissions.canManageAdmins || false,
+      security: isSuperAdmin || false, // Only super admin
+      auditAndMonitoring: isSuperAdmin || false, // Admin does NOT have access
+      adminSettings: isSuperAdmin || false, // Admin does NOT have access
       settings: true, // Everyone can access settings
       // Include all permission flags
-      canDeleteUsers: isSuperAdmin || effectivePermissions.canDeleteUsers || false,
-      canManageWallets: isSuperAdmin || effectivePermissions.canManageWallets || false,
-      canManageFees: isSuperAdmin || effectivePermissions.canManageFees || false,
-      canViewTransactions: isSuperAdmin || effectivePermissions.canViewTransactions || false,
-      canFundUsers: isSuperAdmin || effectivePermissions.canFundUsers || false,
-      canManageKYC: isSuperAdmin || effectivePermissions.canManageKYC || false,
-      canAccessReports: isSuperAdmin || effectivePermissions.canAccessReports || false,
-      canManageAdmins: isSuperAdmin || effectivePermissions.canManageAdmins || false,
+      canDeleteUsers: isSuperAdmin || false,
+      canManageWallets: isSuperAdmin || false,
+      canManageFees: isSuperAdmin || false,
+      canViewTransactions: isSuperAdmin || false,
+      canFundUsers: isSuperAdmin || false,
+      canManageKYC: isSuperAdmin || false,
+      canAccessReports: isSuperAdmin || false,
+      canManageAdmins: isSuperAdmin || false,
       canManagePushNotifications: isSuperAdmin || effectivePermissions.canManagePushNotifications || false,
-      canManageUsers: isSuperAdmin || effectivePermissions.canManageUsers || false, // CRITICAL FIX
+      canManageUsers: isSuperAdmin || effectivePermissions.canManageUsers || false,
       canManageGiftcards: isSuperAdmin || effectivePermissions.canManageGiftcards || false,
       canManageBanners: isSuperAdmin || effectivePermissions.canManageBanners || false,
-      canRemoveFunding: isSuperAdmin || effectivePermissions.canRemoveFunding || false,
-      canManageBalances: isSuperAdmin || effectivePermissions.canManageBalances || false,
+      canRemoveFunding: isSuperAdmin || false,
+      canManageBalances: isSuperAdmin || false,
     };
     
     // Log for debugging

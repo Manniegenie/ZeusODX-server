@@ -7,6 +7,9 @@ const logger = require('../utils/logger');
 /**
  * GET /admin/transaction/:transactionId
  * Get full transaction details by transaction ID
+ * 
+ * Access: All admin roles (admin, moderator, super_admin) can access this endpoint
+ * This allows admins to view transaction details as part of user management
  */
 router.get('/:transactionId', async (req, res) => {
   try {
