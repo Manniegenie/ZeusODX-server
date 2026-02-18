@@ -30,40 +30,105 @@ router.get('/', async (req, res) => {
 
     // Super admins have all permissions
     const isSuperAdmin = adminUser.role === 'super_admin';
+    const isAdmin = adminUser.role === 'admin';
+    const isModerator = adminUser.role === 'moderator';
     
     // Map permissions to feature access
+    // CRITICAL: Use role-based logic FIRST, then check database permissions
+    // This ensures admins always get the correct permissions even if database is outdated
     const permissions = adminUser.permissions || {};
     
+    // Define role-based permissions (what each role SHOULD have)
+    const roleBasedPermissions = {
+      admin: {
+        canViewTransactions: true,
+        canAccessReports: true,
+        canManageWallets: true,
+        canManageFees: true,
+        canManagePushNotifications: true,
+        canManageUsers: true, // CRITICAL: Admin MUST have this
+        canManageKYC: true,
+        canManageGiftcards: true,
+        canManageBanners: true,
+        canRemoveFunding: true,
+        canManageBalances: true,
+      },
+      moderator: {
+        canViewTransactions: true,
+        canAccessReports: true,
+      }
+    };
+    
+    // Get effective permissions: role-based first, then database permissions
+    let effectivePermissions = {};
+    if (isSuperAdmin) {
+      // Super admin has everything
+      effectivePermissions = {
+        canViewTransactions: true,
+        canAccessReports: true,
+        canManageWallets: true,
+        canManageFees: true,
+        canManagePushNotifications: true,
+        canManageUsers: true,
+        canManageKYC: true,
+        canManageGiftcards: true,
+        canManageBanners: true,
+        canRemoveFunding: true,
+        canManageBalances: true,
+        canDeleteUsers: true,
+        canFundUsers: true,
+        canManageAdmins: true,
+      };
+    } else if (isAdmin) {
+      // Admin: use role-based permissions (what admin SHOULD have)
+      effectivePermissions = { ...roleBasedPermissions.admin };
+    } else if (isModerator) {
+      // Moderator: use role-based permissions
+      effectivePermissions = { ...roleBasedPermissions.moderator };
+    }
+    
+    // Role-based feature access
     const featureAccess = {
       dashboard: true, // Everyone can see dashboard
-      platformStats: isSuperAdmin || permissions.canAccessReports || false,
-      userManagement: isSuperAdmin || permissions.canManageUsers || false,
-      kycReview: isSuperAdmin || permissions.canManageKYC || false,
-      feesAndRates: isSuperAdmin || permissions.canManageFees || false,
-      giftCards: isSuperAdmin || permissions.canManageGiftcards || false,
-      banners: isSuperAdmin || permissions.canManageBanners || false,
-      fundingAndBalances: isSuperAdmin || permissions.canRemoveFunding || permissions.canManageBalances || false,
-      pushNotifications: isSuperAdmin || permissions.canManagePushNotifications || false,
+      platformStats: isSuperAdmin || effectivePermissions.canAccessReports || false,
+      userManagement: isSuperAdmin || effectivePermissions.canManageUsers || false, // CRITICAL FIX
+      kycReview: isSuperAdmin || effectivePermissions.canManageKYC || false,
+      feesAndRates: isSuperAdmin || effectivePermissions.canManageFees || false,
+      giftCards: isSuperAdmin || effectivePermissions.canManageGiftcards || false,
+      banners: isSuperAdmin || effectivePermissions.canManageBanners || false,
+      fundingAndBalances: isSuperAdmin || effectivePermissions.canRemoveFunding || effectivePermissions.canManageBalances || false,
+      pushNotifications: isSuperAdmin || effectivePermissions.canManagePushNotifications || false,
       security: isSuperAdmin || false, // Only super admin for now
-      auditAndMonitoring: isSuperAdmin || permissions.canAccessReports || false,
-      adminSettings: isSuperAdmin || permissions.canManageAdmins || false,
+      auditAndMonitoring: isSuperAdmin || effectivePermissions.canAccessReports || false,
+      adminSettings: isSuperAdmin || effectivePermissions.canManageAdmins || false,
       settings: true, // Everyone can access settings
       // Include all permission flags
-      canDeleteUsers: isSuperAdmin || permissions.canDeleteUsers || false,
-      canManageWallets: isSuperAdmin || permissions.canManageWallets || false,
-      canManageFees: isSuperAdmin || permissions.canManageFees || false,
-      canViewTransactions: isSuperAdmin || permissions.canViewTransactions || false,
-      canFundUsers: isSuperAdmin || permissions.canFundUsers || false,
-      canManageKYC: isSuperAdmin || permissions.canManageKYC || false,
-      canAccessReports: isSuperAdmin || permissions.canAccessReports || false,
-      canManageAdmins: isSuperAdmin || permissions.canManageAdmins || false,
-      canManagePushNotifications: isSuperAdmin || permissions.canManagePushNotifications || false,
-      canManageUsers: isSuperAdmin || permissions.canManageUsers || false,
-      canManageGiftcards: isSuperAdmin || permissions.canManageGiftcards || false,
-      canManageBanners: isSuperAdmin || permissions.canManageBanners || false,
-      canRemoveFunding: isSuperAdmin || permissions.canRemoveFunding || false,
-      canManageBalances: isSuperAdmin || permissions.canManageBalances || false,
+      canDeleteUsers: isSuperAdmin || effectivePermissions.canDeleteUsers || false,
+      canManageWallets: isSuperAdmin || effectivePermissions.canManageWallets || false,
+      canManageFees: isSuperAdmin || effectivePermissions.canManageFees || false,
+      canViewTransactions: isSuperAdmin || effectivePermissions.canViewTransactions || false,
+      canFundUsers: isSuperAdmin || effectivePermissions.canFundUsers || false,
+      canManageKYC: isSuperAdmin || effectivePermissions.canManageKYC || false,
+      canAccessReports: isSuperAdmin || effectivePermissions.canAccessReports || false,
+      canManageAdmins: isSuperAdmin || effectivePermissions.canManageAdmins || false,
+      canManagePushNotifications: isSuperAdmin || effectivePermissions.canManagePushNotifications || false,
+      canManageUsers: isSuperAdmin || effectivePermissions.canManageUsers || false, // CRITICAL FIX
+      canManageGiftcards: isSuperAdmin || effectivePermissions.canManageGiftcards || false,
+      canManageBanners: isSuperAdmin || effectivePermissions.canManageBanners || false,
+      canRemoveFunding: isSuperAdmin || effectivePermissions.canRemoveFunding || false,
+      canManageBalances: isSuperAdmin || effectivePermissions.canManageBalances || false,
     };
+    
+    // Log for debugging
+    logger.info('Admin permissions calculated', {
+      adminId: adminUser._id.toString(),
+      role: adminUser.role,
+      isSuperAdmin,
+      isAdmin,
+      effectiveCanManageUsers: effectivePermissions.canManageUsers,
+      featureAccessUserManagement: featureAccess.userManagement,
+      dbCanManageUsers: permissions.canManageUsers
+    });
 
     logger.info('Admin permissions fetched', {
       adminId: adminUser._id,
