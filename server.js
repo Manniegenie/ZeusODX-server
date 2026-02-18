@@ -348,19 +348,11 @@ const requireModerator = (req, res, next) => {
 const requirePermission = (permission) => {
   return async (req, res, next) => {
     try {
-      // Super admins have all permissions
-      if (req.admin.adminRole === 'super_admin') {
-        return next();
-      }
-
-      // Check permissions from JWT token first (faster)
-      if (req.admin.permissions && req.admin.permissions[permission] === true) {
-        return next();
-      }
-
-      // Fallback: Load admin user from database to check permissions (for backward compatibility)
       const AdminUser = require('./models/admin');
-      const adminUser = await AdminUser.findById(req.admin.id || req.admin._id);
+      const adminId = req.admin.id || req.admin._id;
+      
+      // Load admin user to check role
+      const adminUser = await AdminUser.findById(adminId);
       
       if (!adminUser) {
         return res.status(403).json({ 
@@ -369,15 +361,56 @@ const requirePermission = (permission) => {
         });
       }
 
-      // Check if admin has the required permission
-      if (!adminUser.hasPermission(permission)) {
-        return res.status(403).json({ 
-          success: false, 
-          error: `Permission denied: ${permission} required.` 
-        });
+      // Super admins have all permissions
+      if (adminUser.role === 'super_admin') {
+        return next();
       }
 
-      next();
+      // Define role-based permissions (what each role SHOULD have)
+      const roleBasedPermissions = {
+        admin: {
+          canViewTransactions: true,
+          canAccessReports: true,
+          canManageWallets: true,
+          canManageFees: true,
+          canManagePushNotifications: true,
+          canManageUsers: true,
+          canManageKYC: true,
+          canManageGiftcards: true,
+          canManageBanners: true,
+          canRemoveFunding: true,
+          canManageBalances: true,
+        },
+        moderator: {
+          canViewTransactions: true,
+          canAccessReports: true,
+        }
+      };
+
+      // Check role-based permissions FIRST (before database)
+      if (adminUser.role === 'admin' && roleBasedPermissions.admin[permission]) {
+        return next();
+      }
+      if (adminUser.role === 'moderator' && roleBasedPermissions.moderator[permission]) {
+        return next();
+      }
+
+      // Check permissions from JWT token (if available)
+      if (req.admin.permissions && req.admin.permissions[permission] === true) {
+        return next();
+      }
+
+      // Fallback: Check database permissions
+      if (adminUser.hasPermission(permission)) {
+        return next();
+      }
+
+      // Permission denied
+      return res.status(403).json({ 
+        success: false, 
+        error: `Permission denied: ${permission} required.` 
+      });
+
     } catch (error) {
       console.error('Error checking permission:', error);
       return res.status(500).json({ 
