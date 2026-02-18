@@ -344,6 +344,59 @@ const requireModerator = (req, res, next) => {
   next();
 };
 
+// Permission-based middleware functions
+const requirePermission = (permission) => {
+  return async (req, res, next) => {
+    try {
+      // Super admins have all permissions
+      if (req.admin.adminRole === 'super_admin') {
+        return next();
+      }
+
+      // Check permissions from JWT token first (faster)
+      if (req.admin.permissions && req.admin.permissions[permission] === true) {
+        return next();
+      }
+
+      // Fallback: Load admin user from database to check permissions (for backward compatibility)
+      const AdminUser = require('./models/admin');
+      const adminUser = await AdminUser.findById(req.admin.id || req.admin._id);
+      
+      if (!adminUser) {
+        return res.status(403).json({ 
+          success: false, 
+          error: "Admin user not found." 
+        });
+      }
+
+      // Check if admin has the required permission
+      if (!adminUser.hasPermission(permission)) {
+        return res.status(403).json({ 
+          success: false, 
+          error: `Permission denied: ${permission} required.` 
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Error checking permission:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: "Internal server error checking permissions." 
+      });
+    }
+  };
+};
+
+// Specific permission middleware functions
+const requirePushNotifications = requirePermission('canManagePushNotifications');
+const requireUserManagement = requirePermission('canManageUsers');
+const requireKYCReview = requirePermission('canManageKYC');
+const requireGiftcards = requirePermission('canManageGiftcards');
+const requireBanners = requirePermission('canManageBanners');
+const requireRemoveFunding = requirePermission('canRemoveFunding');
+const requireManageBalances = requirePermission('canManageBalances');
+
 // One-time migration: Add swapDirection to existing swap transactions
 const migrateSwapDirections = async () => {
   try {
@@ -515,6 +568,7 @@ const usermanagementRoutes = require("./adminRoutes/usermanagement");
 const analyticsRoutes = require("./adminRoutes/analytics");
 const resendOtpRoutes = require("./routes/resendOtp");
 const Admin2FARoutes = require("./adminRoutes/Admin2FA");
+const permissionsRoutes = require("./adminRoutes/permissions");
 const scheduledNotificationRoutes = require("./adminRoutes/scheduledNotifications");
 const scheduledGiftCardNotificationRoutes = require("./adminRoutes/scheduledGiftCardNotifications");
 const notificationRoutes = require("./routes/notifications");
@@ -544,7 +598,7 @@ app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 
 // SUPER ADMIN ONLY ROUTES (highest permissions)
 app.use("/deleteuser", authenticateAdminToken, requireSuperAdmin, deleteuserRoutes);
-app.use("/fund", authenticateAdminToken, requireSuperAdmin, FunduserRoutes);
+app.use("/fund", authenticateAdminToken, requireAdmin, requireRemoveFunding, requireManageBalances, FunduserRoutes);
 app.use("/delete-pin", authenticateAdminToken, requireSuperAdmin, deletepinRoutes);
 app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
 
@@ -552,14 +606,14 @@ app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes
 app.use("/set-fee", authenticateAdminToken, requireAdmin, SetfeeRoutes);
 app.use("/updateuseraddress", authenticateAdminToken, requireAdmin, updateuseraddressRoutes);
 app.use("/marker", authenticateAdminToken, requireAdmin, pricemarkdownRoutes);
-app.use('/admingiftcard', authenticateAdminToken, requireAdmin, admingiftcardRoutes);
-app.use('/admin/banners', authenticateAdminToken, requireAdmin, adminBannerRoutes);
+app.use('/admingiftcard', authenticateAdminToken, requireAdmin, requireGiftcards, admingiftcardRoutes);
+app.use('/admin/banners', authenticateAdminToken, requireAdmin, requireBanners, adminBannerRoutes);
 // Public notification registration for users
 app.use('/notification', Pushnotification);
-// Admin notification management (requires auth)
-app.use('/admin/notification', authenticateAdminToken, requireAdmin, Pushnotification);
-app.use('/admin/scheduled-notifications', authenticateAdminToken, requireAdmin, scheduledNotificationRoutes);
-app.use('/admin/scheduled-giftcard-notifications', authenticateAdminToken, requireAdmin, scheduledGiftCardNotificationRoutes);
+// Admin notification management (requires auth + permission)
+app.use('/admin/notification', authenticateAdminToken, requireAdmin, requirePushNotifications, Pushnotification);
+app.use('/admin/scheduled-notifications', authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledNotificationRoutes);
+app.use('/admin/scheduled-giftcard-notifications', authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledGiftCardNotificationRoutes);
 
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
@@ -567,9 +621,12 @@ app.use("/fetch", authenticateAdminToken, requireModerator, fetchtransactionRout
 app.use("/pending", authenticateAdminToken, requireModerator, clearpendingRoutes);
 app.use("/fetching", authenticateAdminToken, requireModerator, fetchrefreshtoken);
 app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
-app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
-app.use("/usermanagement", authenticateAdminToken, requireModerator, usermanagementRoutes);
+app.use('/admin-kyc', authenticateAdminToken, requireModerator, requireKYCReview, AdminKYCRoutes);
+app.use("/usermanagement", authenticateAdminToken, requireModerator, requireUserManagement, usermanagementRoutes);
 app.use("/analytics", authenticateAdminToken, requireModerator, analyticsRoutes);
+
+// Admin permissions endpoint (all authenticated admins can access)
+app.use("/admin/permissions", authenticateAdminToken, permissionsRoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);

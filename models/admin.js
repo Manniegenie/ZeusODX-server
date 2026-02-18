@@ -103,7 +103,13 @@ const adminUserSchema = new mongoose.Schema({
     canFundUsers: { type: Boolean, default: false },
     canManageKYC: { type: Boolean, default: false },
     canAccessReports: { type: Boolean, default: true },
-    canManageAdmins: { type: Boolean, default: false }
+    canManageAdmins: { type: Boolean, default: false },
+    canManagePushNotifications: { type: Boolean, default: false },
+    canManageUsers: { type: Boolean, default: false },
+    canManageGiftcards: { type: Boolean, default: false },
+    canManageBanners: { type: Boolean, default: false },
+    canRemoveFunding: { type: Boolean, default: false },
+    canManageBalances: { type: Boolean, default: false }
   }
 }, { 
   timestamps: true 
@@ -225,6 +231,13 @@ adminUserSchema.methods.setRolePermissions = function() {
       this.permissions.canAccessReports = true;
       this.permissions.canManageWallets = true;
       this.permissions.canManageFees = true;
+      this.permissions.canManagePushNotifications = true;
+      this.permissions.canManageUsers = true;
+      this.permissions.canManageKYC = true;
+      this.permissions.canManageGiftcards = true;
+      this.permissions.canManageBanners = true;
+      this.permissions.canRemoveFunding = true;
+      this.permissions.canManageBalances = true;
       break;
       
     case 'moderator':
