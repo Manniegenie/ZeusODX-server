@@ -624,29 +624,30 @@ app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
 app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 
-// SUPER ADMIN ONLY ROUTES (highest permissions)
-app.use("/deleteuser", authenticateAdminToken, requireSuperAdmin, deleteuserRoutes);
-app.use("/fund", authenticateAdminToken, requireAdmin, requireRemoveFunding, requireManageBalances, FunduserRoutes);
-app.use("/delete-pin", authenticateAdminToken, requireSuperAdmin, deletepinRoutes);
-app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
+// MODERATOR LEVEL ROUTES (all admin roles can access)
+// IMPORTANT: More specific routes must come BEFORE less specific routes
+// /admin/transaction must come before /admin to avoid route conflicts
+app.use("/admin/transaction", authenticateAdminToken, requireModerator, transactionDetailsRoutes);
+app.use("/admin/notification", authenticateAdminToken, requireAdmin, requirePushNotifications, Pushnotification);
+app.use("/admin/scheduled-notifications", authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledNotificationRoutes);
+app.use("/admin/scheduled-giftcard-notifications", authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledGiftCardNotificationRoutes);
+app.use("/admin/banners", authenticateAdminToken, requireAdmin, requireBanners, adminBannerRoutes);
+app.use("/admin/permissions", authenticateAdminToken, permissionsRoutes);
+app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
+app.use("/fetch", authenticateAdminToken, requireModerator, fetchtransactionRoutes);
 
 // ADMIN LEVEL ROUTES (admin + super_admin)
 app.use("/set-fee", authenticateAdminToken, requireAdmin, SetfeeRoutes);
 app.use("/updateuseraddress", authenticateAdminToken, requireAdmin, updateuseraddressRoutes);
 app.use("/marker", authenticateAdminToken, requireAdmin, pricemarkdownRoutes);
 app.use('/admingiftcard', authenticateAdminToken, requireAdmin, requireGiftcards, admingiftcardRoutes);
-app.use('/admin/banners', authenticateAdminToken, requireAdmin, requireBanners, adminBannerRoutes);
 // Public notification registration for users
 app.use('/notification', Pushnotification);
-// Admin notification management (requires auth + permission)
-app.use('/admin/notification', authenticateAdminToken, requireAdmin, requirePushNotifications, Pushnotification);
-app.use('/admin/scheduled-notifications', authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledNotificationRoutes);
-app.use('/admin/scheduled-giftcard-notifications', authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledGiftCardNotificationRoutes);
 
-// MODERATOR LEVEL ROUTES (all admin roles can access)
-app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
-app.use("/fetch", authenticateAdminToken, requireModerator, fetchtransactionRoutes);
-app.use("/admin/transaction", authenticateAdminToken, requireModerator, transactionDetailsRoutes);
+// SUPER ADMIN ONLY ROUTES (highest permissions)
+app.use("/deleteuser", authenticateAdminToken, requireSuperAdmin, deleteuserRoutes);
+app.use("/fund", authenticateAdminToken, requireAdmin, requireRemoveFunding, requireManageBalances, FunduserRoutes);
+app.use("/delete-pin", authenticateAdminToken, requireSuperAdmin, deletepinRoutes);
 app.use("/pending", authenticateAdminToken, requireModerator, clearpendingRoutes);
 app.use("/fetching", authenticateAdminToken, requireModerator, fetchrefreshtoken);
 app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
@@ -654,9 +655,8 @@ app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
 app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
 app.use("/usermanagement", authenticateAdminToken, requireModerator, requireUserManagement, usermanagementRoutes);
 app.use("/analytics", authenticateAdminToken, requireModerator, analyticsRoutes);
-
-// Admin permissions endpoint (all authenticated admins can access)
-app.use("/admin/permissions", authenticateAdminToken, permissionsRoutes);
+// IMPORTANT: /admin must be LAST to avoid catching /admin/* routes (like /admin/transaction, /admin/permissions, etc.)
+app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
 
 // Public Data Routes
 app.use("/naira-price", nairaPriceRouter);
