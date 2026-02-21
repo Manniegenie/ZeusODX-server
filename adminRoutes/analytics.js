@@ -6,6 +6,7 @@ const Decimal = require('decimal.js');
 
 const User = require('../models/user');
 const Transaction = require('../models/transaction');
+const BillTransaction = require('../models/billstransaction');
 const NairaMarkdown = require('../models/offramp');
 const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
 const GiftCard = require('../models/giftcard'); // Add this if not already present
@@ -551,36 +552,118 @@ router.get('/recent-transactions', async (req, res) => {
       if (Object.keys(range).length) filter.createdAt = range;
     }
 
-    if (type) filter.type = type;
-    if (status) filter.status = status;
+    const BILL_TYPES = ['airtime', 'data', 'electricity', 'cable_tv', 'internet', 'betting', 'education'];
+    const isBillType = type && BILL_TYPES.includes(type.toLowerCase());
+    const isRegularType = type && !isBillType;
 
-    const [transactions, totalCount] = await Promise.all([
-      Transaction.find(filter)
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .skip(skip)
-        .populate('userId', 'username email firstname lastname')
-        .populate('recipientUserId', 'username')
-        .populate('senderUserId', 'username')
-        .lean(),
-      Transaction.countDocuments(filter)
-    ]);
+    // Build bill filter from same params
+    const billFilter = {};
+    if (filter.userId) billFilter.userId = filter.userId;
+    if (filter.createdAt) billFilter.createdAt = filter.createdAt;
+    if (isBillType) billFilter.billType = type.toLowerCase();
+    // Map status: frontend uses SUCCESSFUL/PENDING/FAILED
+    if (status) {
+      const statusMap = { SUCCESSFUL: 'completed', COMPLETED: 'completed', CONFIRMED: 'completed', PENDING: ['initiated-api', 'processing-api'], FAILED: 'failed' };
+      const mapped = statusMap[status.toUpperCase()];
+      if (Array.isArray(mapped)) billFilter.status = { $in: mapped };
+      else if (mapped) billFilter.status = mapped;
+    }
 
-    const formattedTransactions = transactions.map(tx => {
-      // Ensure correct sign convention for display:
-      // - DEPOSIT, INTERNAL_TRANSFER_RECEIVED: positive
-      // - WITHDRAWAL, INTERNAL_TRANSFER_SENT: negative
+    if (isRegularType) filter.type = type;
+    if (!isBillType && status) filter.status = status;
+
+    let formattedTransactions = [];
+    let totalCount = 0;
+
+    if (isBillType) {
+      // Only query BillTransaction
+      const [bills, count] = await Promise.all([
+        BillTransaction.find(billFilter)
+          .sort({ createdAt: -1 })
+          .limit(limit)
+          .skip(skip)
+          .populate('userId', 'username email firstname lastname')
+          .lean(),
+        BillTransaction.countDocuments(billFilter)
+      ]);
+      totalCount = count;
+      formattedTransactions = bills.map(bill => normalizeBillTx(bill));
+    } else if (isRegularType) {
+      // Only query Transaction
+      const [transactions, count] = await Promise.all([
+        Transaction.find(filter)
+          .sort({ createdAt: -1 })
+          .limit(limit)
+          .skip(skip)
+          .populate('userId', 'username email firstname lastname')
+          .populate('recipientUserId', 'username')
+          .populate('senderUserId', 'username')
+          .lean(),
+        Transaction.countDocuments(filter)
+      ]);
+      totalCount = count;
+      formattedTransactions = transactions.map(tx => formatRegularTx(tx));
+    } else {
+      // No type filter — merge both collections
+      const fetchLimit = skip + limit;
+      const [transactions, txCount, bills, billCount] = await Promise.all([
+        Transaction.find(filter)
+          .sort({ createdAt: -1 })
+          .limit(fetchLimit)
+          .populate('userId', 'username email firstname lastname')
+          .populate('recipientUserId', 'username')
+          .populate('senderUserId', 'username')
+          .lean(),
+        Transaction.countDocuments(filter),
+        BillTransaction.find(billFilter)
+          .sort({ createdAt: -1 })
+          .limit(fetchLimit)
+          .populate('userId', 'username email firstname lastname')
+          .lean(),
+        BillTransaction.countDocuments(billFilter)
+      ]);
+      totalCount = txCount + billCount;
+      const merged = [
+        ...transactions.map(tx => formatRegularTx(tx)),
+        ...bills.map(bill => normalizeBillTx(bill))
+      ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      formattedTransactions = merged.slice(skip, skip + limit);
+    }
+
+    function normalizeBillTx(bill) {
+      const statusMap = { 'completed': 'SUCCESSFUL', 'failed': 'FAILED', 'refunded': 'FAILED', 'initiated-api': 'PENDING', 'processing-api': 'PENDING' };
+      return {
+        id: bill._id.toString(),
+        userId: bill.userId?._id?.toString(),
+        username: bill.userId?.username || bill.userId?.firstname || 'Unknown',
+        userEmail: bill.userId?.email,
+        type: bill.billType.toUpperCase(),
+        status: statusMap[bill.status] || bill.status,
+        currency: bill.paymentCurrency || 'NGNZ',
+        amount: -(Math.abs(bill.amountNGNZ || bill.amountNaira || bill.amount || 0)),
+        fee: 0,
+        narration: bill.productName,
+        reference: bill.orderId,
+        source: 'bills',
+        createdAt: bill.createdAt,
+        updatedAt: bill.updatedAt,
+        billDetails: {
+          billType: bill.billType,
+          network: bill.network,
+          productName: bill.productName,
+          customerPhone: bill.customerPhone,
+          customerInfo: bill.customerInfo
+        }
+      };
+    }
+
+    function formatRegularTx(tx) {
       let displayAmount = tx.amount;
-      
-      // Validate and correct sign based on transaction type
       if (tx.type === 'DEPOSIT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED') {
-        // Should be positive
         displayAmount = Math.abs(tx.amount);
       } else if (tx.type === 'WITHDRAWAL' || tx.type === 'INTERNAL_TRANSFER_SENT') {
-        // Should be negative
         displayAmount = -Math.abs(tx.amount);
       }
-      
       return {
         id: tx._id.toString(),
         userId: tx.userId?._id?.toString(),
@@ -597,31 +680,31 @@ router.get('/recent-transactions', async (req, res) => {
         createdAt: tx.createdAt,
         updatedAt: tx.updatedAt,
         completedAt: tx.completedAt,
-      ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
-        fromCurrency: tx.fromCurrency,
-        toCurrency: tx.toCurrency,
-        fromAmount: tx.fromAmount,
-        toAmount: tx.toAmount,
-        swapType: tx.swapType,
-        exchangeRate: tx.exchangeRate
-      } : {}),
-      ...(tx.isNGNZWithdrawal ? {
-        bankName: tx.ngnzWithdrawal?.destination?.bankName,
-        accountName: tx.ngnzWithdrawal?.destination?.accountName,
-        accountNumber: tx.ngnzWithdrawal?.destination?.accountNumber, // Show full account number for admin
-        withdrawalFee: tx.withdrawalFee
-      } : {}),
-      ...(tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED' ? {
-        recipientUsername: tx.recipientUsername,
-        senderUsername: tx.senderUsername
-      } : {}),
-      ...(tx.type === 'GIFTCARD' ? {
-        cardType: tx.cardType,
-        country: tx.country,
-        expectedRate: tx.expectedRate
-      } : {})
+        ...(tx.type === 'SWAP' || tx.type === 'OBIEX_SWAP' ? {
+          fromCurrency: tx.fromCurrency,
+          toCurrency: tx.toCurrency,
+          fromAmount: tx.fromAmount,
+          toAmount: tx.toAmount,
+          swapType: tx.swapType,
+          exchangeRate: tx.exchangeRate
+        } : {}),
+        ...(tx.isNGNZWithdrawal ? {
+          bankName: tx.ngnzWithdrawal?.destination?.bankName,
+          accountName: tx.ngnzWithdrawal?.destination?.accountName,
+          accountNumber: tx.ngnzWithdrawal?.destination?.accountNumber,
+          withdrawalFee: tx.withdrawalFee
+        } : {}),
+        ...(tx.type === 'INTERNAL_TRANSFER_SENT' || tx.type === 'INTERNAL_TRANSFER_RECEIVED' ? {
+          recipientUsername: tx.recipientUsername,
+          senderUsername: tx.senderUsername
+        } : {}),
+        ...(tx.type === 'GIFTCARD' ? {
+          cardType: tx.cardType,
+          country: tx.country,
+          expectedRate: tx.expectedRate
+        } : {})
       };
-    });
+    }
 
     const totalPages = Math.ceil(totalCount / limit);
 
