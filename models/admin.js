@@ -227,11 +227,12 @@ adminUserSchema.methods.setRolePermissions = function() {
       break;
       
     case 'admin':
-      // Admin role: Only push notifications, user management, banners, giftcards
+      // Admin role: Only push notifications, user management, banners, giftcards, kyc
       this.permissions.canManagePushNotifications = true;
       this.permissions.canManageUsers = true;
       this.permissions.canManageBanners = true;
       this.permissions.canManageGiftcards = true;
+      this.permissions.canManageKYC = true;
       // All other permissions remain false
       break;
       

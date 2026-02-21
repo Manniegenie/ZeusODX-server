@@ -41,11 +41,12 @@ router.get('/', async (req, res) => {
     // Define role-based permissions (what each role SHOULD have)
     const roleBasedPermissions = {
       admin: {
-        // Admin role: Only push notifications, user management, banners, giftcards
+        // Admin role: Only push notifications, user management, banners, giftcards, kyc
         canManagePushNotifications: true,
         canManageUsers: true,
         canManageBanners: true,
         canManageGiftcards: true,
+        canManageKYC: true,
       },
       moderator: {
         canViewTransactions: true,
@@ -86,7 +87,7 @@ router.get('/', async (req, res) => {
       dashboard: true, // Everyone can see dashboard
       platformStats: isSuperAdmin || false, // Admin does NOT have access
       userManagement: isSuperAdmin || effectivePermissions.canManageUsers || false,
-      kycReview: isSuperAdmin || false, // Admin does NOT have access
+      kycReview: isSuperAdmin || effectivePermissions.canManageKYC || false,
       feesAndRates: isSuperAdmin || false, // Admin does NOT have access
       giftCards: isSuperAdmin || effectivePermissions.canManageGiftcards || false,
       banners: isSuperAdmin || effectivePermissions.canManageBanners || false,
@@ -102,7 +103,7 @@ router.get('/', async (req, res) => {
       canManageFees: isSuperAdmin || false,
       canViewTransactions: isSuperAdmin || false,
       canFundUsers: isSuperAdmin || false,
-      canManageKYC: isSuperAdmin || false,
+      canManageKYC: isSuperAdmin || effectivePermissions.canManageKYC || false,
       canAccessReports: isSuperAdmin || false,
       canManageAdmins: isSuperAdmin || false,
       canManagePushNotifications: isSuperAdmin || effectivePermissions.canManagePushNotifications || false,
