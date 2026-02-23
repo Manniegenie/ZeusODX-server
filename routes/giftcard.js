@@ -8,9 +8,8 @@ const GiftCard = require('../models/giftcard');
 const Transaction = require('../models/transaction');
 const GiftCardPrice = require('../models/giftcardPrice');
 const logger = require('../utils/logger');
-const { sendGiftcardSubmissionEmail } = require('../services/EmailService');
+const { sendGiftcardSubmissionEmail, sendGiftcardAdminNotify } = require('../services/EmailService');
 const { sendGiftcardSubmissionNotification } = require('../services/notificationService');
-const { sendGiftcardAlert } = require('../utils/verifyAT');
 
 // Cloudinary configuration
 cloudinary.config({
@@ -471,9 +470,9 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
         });
       }
 
-      // Send SMS alert to admins
+      // Send email alert to admins
       try {
-        const smsResult = await sendGiftcardAlert({
+        await sendGiftcardAdminNotify({
           username: user.firstName || user.username || 'Customer',
           cardType: normalizedCardType,
           cardFormat: normalizedCardFormat,
@@ -482,21 +481,13 @@ router.post('/submit', upload.array('cardImages', GIFTCARD_CONFIG.MAX_IMAGES), a
           country: normalizedCountry,
           submissionId: giftCard._id.toString().slice(-8).toUpperCase()
         });
-
-        if (smsResult.success) {
-          logger.info('Giftcard SMS alert sent to admins', {
-            submissionId: giftCard._id
-          });
-        } else {
-          logger.warn('Giftcard SMS alert failed (non-critical)', {
-            submissionId: giftCard._id,
-            error: smsResult.error
-          });
-        }
-      } catch (smsError) {
-        logger.error('Failed to send giftcard SMS alert', {
+        logger.info('Giftcard admin email alert sent', {
+          submissionId: giftCard._id
+        });
+      } catch (emailError) {
+        logger.error('Failed to send giftcard admin email alert', {
           submissionId: giftCard._id,
-          error: smsError.message
+          error: emailError.message
         });
       }
     });

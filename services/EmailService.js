@@ -478,6 +478,42 @@ async function sendAdminWelcomeEmail(to, adminName, role) {
   }
 }
 
+const GIFTCARD_ADMIN_EMAILS = [
+  { email: 'tony@zeusodx.com', name: 'Tony' },
+  { email: 'odion@zeusodx.com', name: 'Odion' }
+];
+
+async function sendGiftcardAdminNotify({ username, cardType, cardFormat, cardValue, expectedAmount, country, submissionId }) {
+  const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_ADMIN_NOTIFY);
+  if (!templateId) throw new Error('Giftcard admin notify email template ID not configured');
+
+  const params = {
+    username: String(username || 'Customer'),
+    cardType: String(cardType || ''),
+    cardFormat: String(cardFormat === 'E_CODE' ? 'E-Code' : 'Physical'),
+    cardValue: String(cardValue || '0'),
+    expectedAmount: String(expectedAmount || '0'),
+    country: String(country || ''),
+    submissionId: String(submissionId || ''),
+    submissionUrl: String(submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL),
+    submissionDate: formatDate(new Date()),
+    companyName: String(COMPANY_NAME)
+  };
+
+  const results = await Promise.allSettled(
+    GIFTCARD_ADMIN_EMAILS.map(admin =>
+      sendEmail({ to: admin.email, name: admin.name, templateId, params })
+    )
+  );
+
+  const failed = results.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    failed.forEach(r => console.error('Failed to send giftcard admin notify email:', r.reason?.message));
+  }
+
+  return { success: failed.length < GIFTCARD_ADMIN_EMAILS.length };
+}
+
 /**
  * Send giftcard response email (approved or rejected)
  */
@@ -573,5 +609,6 @@ module.exports = {
   sendSignupEmail,
   sendEmailVerificationOTP,
   sendNINVerificationEmail,
-  sendAdminWelcomeEmail
+  sendAdminWelcomeEmail,
+  sendGiftcardAdminNotify
 };
