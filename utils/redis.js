@@ -12,21 +12,33 @@ function createRedisClient() {
     return redisClient;
   }
 
-  const redisConfig = {
-    host: '127.0.0.1',
-    port: 6379,
-    password: process.env.REDIS_PASSWORD,
-    retryStrategy(times) {
-      const delay = Math.min(times * 50, 2000);
-      logger.warn(`Redis connection attempt ${times}, retrying in ${delay}ms`);
-      return delay;
-    },
-    maxRetriesPerRequest: 3,
-    enableReadyCheck: true,
-    showFriendlyErrorStack: process.env.NODE_ENV !== 'production'
+  const retryStrategy = (times) => {
+    const delay = Math.min(times * 50, 2000);
+    logger.warn(`Redis connection attempt ${times}, retrying in ${delay}ms`);
+    return delay;
   };
 
-  redisClient = new Redis(redisConfig);
+  const redisConfig = process.env.REDIS_URL
+    ? {
+        lazyConnect: false,
+        retryStrategy,
+        maxRetriesPerRequest: 3,
+        enableReadyCheck: true,
+        showFriendlyErrorStack: process.env.NODE_ENV !== 'production'
+      }
+    : {
+        host: '127.0.0.1',
+        port: 6379,
+        password: process.env.REDIS_PASSWORD,
+        retryStrategy,
+        maxRetriesPerRequest: 3,
+        enableReadyCheck: true,
+        showFriendlyErrorStack: process.env.NODE_ENV !== 'production'
+      };
+
+  redisClient = process.env.REDIS_URL
+    ? new Redis(process.env.REDIS_URL, redisConfig)
+    : new Redis(redisConfig);
 
   redisClient.on('connect', () => {
     logger.info('✅ Redis client connected');
