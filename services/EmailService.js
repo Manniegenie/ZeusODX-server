@@ -423,6 +423,53 @@ async function sendKycProvisionalEmail(to, name, idType, provisionalReason) {
   }
 }
 
+function getKycAdminEmails() {
+  const raw = process.env.KYC_ADMIN_EMAILS || '';
+  return raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const [email, name] = entry.split(':').map(s => s.trim());
+      return { email, name: name || email };
+    });
+}
+
+async function sendKycProvisionalAdminNotify({ username, userId, idType, provisionalReason, kycId }) {
+  const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_KYC_PROVISIONAL_ADMIN);
+  if (!templateId) throw new Error('KYC provisional admin notify template ID not configured');
+
+  const adminEmails = getKycAdminEmails();
+  if (!adminEmails.length) {
+    console.warn('No KYC admin emails configured (KYC_ADMIN_EMAILS)');
+    return { success: false };
+  }
+
+  const params = {
+    username: String(username || 'Unknown User'),
+    userId: String(userId || ''),
+    idType: String(idType || 'document'),
+    provisionalReason: String(provisionalReason || 'No reason provided'),
+    kycId: String(kycId || ''),
+    reviewUrl: String(kycId ? `${APP_WEB_BASE_URL}/admin/kyc/${kycId}` : `${APP_WEB_BASE_URL}/admin/kyc`),
+    date: formatDate(new Date()),
+    companyName: String(COMPANY_NAME)
+  };
+
+  const results = await Promise.allSettled(
+    adminEmails.map(admin =>
+      sendEmail({ to: admin.email, name: admin.name, templateId, params })
+    )
+  );
+
+  const failed = results.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    failed.forEach(r => console.error('Failed to send KYC provisional admin notify:', r.reason?.message));
+  }
+
+  return { success: failed.length < adminEmails.length };
+}
+
 async function sendNINVerificationEmail(to, name, status, kycLevel, rejectionReason = null) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_NIN_VERIFICATION);
@@ -643,6 +690,7 @@ module.exports = {
   SendGiftcardMail,
   sendKycEmail,
   sendKycProvisionalEmail,
+  sendKycProvisionalAdminNotify,
   sendLoginEmail,
   sendSignupEmail,
   sendEmailVerificationOTP,

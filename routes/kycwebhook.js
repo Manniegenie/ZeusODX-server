@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 
 // Services
 const { sendKycCompletionNotification } = require('../services/notificationService');
-const { sendKycEmail, sendNINVerificationEmail, sendKycProvisionalEmail } = require('../services/EmailService');
+const { sendKycEmail, sendNINVerificationEmail, sendKycProvisionalEmail, sendKycProvisionalAdminNotify } = require('../services/EmailService');
 
 // KYC Helpers
 const { classifyOutcome, parseFullName, isBvnIdType, isNinIdType } = require('../utils/kycHelpers');
@@ -389,6 +389,14 @@ router.post('/callback', async (req, res) => {
           norm.reason || 'Your verification requires additional review and may take longer than usual.'
         );
         logger.info(`KYC provisional email sent to ${updatedUser.email}`);
+
+        await sendKycProvisionalAdminNotify({
+          username: updatedUser.firstname || updatedUser.email,
+          userId: String(userId),
+          idType: frontendIdType || kycDoc.frontendIdType,
+          provisionalReason: norm.reason || 'No reason provided',
+          kycId: String(kycDoc._id)
+        }).catch(err => logger.error('KYC provisional admin notify failed', { error: err.message }));
       } catch (emailErr) {
         logger.error('Provisional email notification failed', { userId, error: emailErr.message });
       }
