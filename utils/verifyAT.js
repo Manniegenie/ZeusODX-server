@@ -1,13 +1,19 @@
 require('dotenv').config();
 const AfricasTalking = require('africastalking');
 
-// Initialize Africa's Talking SDK
-const africastalking = AfricasTalking({
-  apiKey: process.env.AT_API_KEY,
-  username: process.env.AT_USERNAME, // e.g., 'Bramp' or 'sandbox'
-});
-
-const sms = africastalking.SMS;
+// Lazy-initialize to avoid crash when env vars are missing
+let sms = null;
+function getSMS() {
+  if (!sms) {
+    if (!process.env.AT_API_KEY || !process.env.AT_USERNAME) return null;
+    const africastalking = AfricasTalking({
+      apiKey: process.env.AT_API_KEY,
+      username: process.env.AT_USERNAME,
+    });
+    sms = africastalking.SMS;
+  }
+  return sms;
+}
 
 // Admin phone numbers for transaction alerts
 const ADMIN_PHONES = [
@@ -36,8 +42,11 @@ async function sendVerificationCode(phoneNumber, code) {
   console.log('From:', senderId);
   console.log('Message:', message);
 
+  const smsClient = getSMS();
+  if (!smsClient) return { success: false, error: 'Missing API credentials' };
+
   try {
-    const response = await sms.send({
+    const response = await smsClient.send({
       to: [recipient],
       message,
       from: senderId,
@@ -93,8 +102,11 @@ async function sendGiftcardAlert(details) {
 
   console.log('📨 Sending giftcard alert to admins');
 
+  const smsClient = getSMS();
+  if (!smsClient) return { success: false, error: 'Missing API credentials' };
+
   try {
-    const response = await sms.send({
+    const response = await smsClient.send({
       to: ADMIN_PHONES,
       message,
       from: senderId,

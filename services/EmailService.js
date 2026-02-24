@@ -399,6 +399,77 @@ async function sendKycEmail(to, name, status, comments) {
   }
 }
 
+async function sendKycProvisionalEmail(to, name, idType, provisionalReason) {
+  try {
+    const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_KYC_PROVISIONAL);
+    if (!templateId) throw new Error('KYC provisional email template ID not configured');
+
+    return await sendEmail({
+      to, name, templateId,
+      params: {
+        username: String(name || 'User'),
+        idType: String(idType || 'document'),
+        provisionalReason: String(provisionalReason || 'Your verification is currently under review.'),
+        date: formatDate(new Date()),
+        kycUrl: String(`${APP_WEB_BASE_URL}/kyc`),
+        appDeepLink: String(`${APP_DEEP_LINK}/kyc`),
+        companyName: String(COMPANY_NAME),
+        supportEmail: String(SUPPORT_EMAIL)
+      }
+    });
+  } catch (error) {
+    console.error('Failed to send KYC provisional email:', error.message);
+    throw error;
+  }
+}
+
+function getKycAdminEmails() {
+  const raw = process.env.KYC_ADMIN_EMAILS || '';
+  return raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const [email, name] = entry.split(':').map(s => s.trim());
+      return { email, name: name || email };
+    });
+}
+
+async function sendKycProvisionalAdminNotify({ username, userId, idType, provisionalReason, kycId }) {
+  const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_KYC_PROVISIONAL_ADMIN);
+  if (!templateId) throw new Error('KYC provisional admin notify template ID not configured');
+
+  const adminEmails = getKycAdminEmails();
+  if (!adminEmails.length) {
+    console.warn('No KYC admin emails configured (KYC_ADMIN_EMAILS)');
+    return { success: false };
+  }
+
+  const params = {
+    username: String(username || 'Unknown User'),
+    userId: String(userId || ''),
+    idType: String(idType || 'document'),
+    provisionalReason: String(provisionalReason || 'No reason provided'),
+    kycId: String(kycId || ''),
+    reviewUrl: String(kycId ? `${APP_WEB_BASE_URL}/admin/kyc/${kycId}` : `${APP_WEB_BASE_URL}/admin/kyc`),
+    date: formatDate(new Date()),
+    companyName: String(COMPANY_NAME)
+  };
+
+  const results = await Promise.allSettled(
+    adminEmails.map(admin =>
+      sendEmail({ to: admin.email, name: admin.name, templateId, params })
+    )
+  );
+
+  const failed = results.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    failed.forEach(r => console.error('Failed to send KYC provisional admin notify:', r.reason?.message));
+  }
+
+  return { success: failed.length < adminEmails.length };
+}
+
 async function sendNINVerificationEmail(to, name, status, kycLevel, rejectionReason = null) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_NIN_VERIFICATION);
@@ -476,6 +547,55 @@ async function sendAdminWelcomeEmail(to, adminName, role) {
     console.error('Failed to send admin welcome email:', error.message);
     throw error;
   }
+}
+
+function getGiftcardAdminEmails() {
+  const raw = process.env.GIFTCARD_ADMIN_EMAILS || '';
+  return raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const [email, name] = entry.split(':').map(s => s.trim());
+      return { email, name: name || email };
+    });
+}
+
+async function sendGiftcardAdminNotify({ username, cardType, cardFormat, cardValue, expectedAmount, country, submissionId }) {
+  const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_ADMIN_NOTIFY);
+  if (!templateId) throw new Error('Giftcard admin notify email template ID not configured');
+
+  const params = {
+    username: String(username || 'Customer'),
+    cardType: String(cardType || ''),
+    cardFormat: String(cardFormat === 'E_CODE' ? 'E-Code' : 'Physical'),
+    cardValue: String(cardValue || '0'),
+    expectedAmount: String(expectedAmount || '0'),
+    country: String(country || ''),
+    submissionId: String(submissionId || ''),
+    submissionUrl: String(submissionId ? `${APP_WEB_BASE_URL}/giftcards/${submissionId}` : APP_WEB_BASE_URL),
+    submissionDate: formatDate(new Date()),
+    companyName: String(COMPANY_NAME)
+  };
+
+  const adminEmails = getGiftcardAdminEmails();
+  if (!adminEmails.length) {
+    console.warn('No giftcard admin emails configured (GIFTCARD_ADMIN_EMAILS)');
+    return { success: false };
+  }
+
+  const results = await Promise.allSettled(
+    adminEmails.map(admin =>
+      sendEmail({ to: admin.email, name: admin.name, templateId, params })
+    )
+  );
+
+  const failed = results.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    failed.forEach(r => console.error('Failed to send giftcard admin notify email:', r.reason?.message));
+  }
+
+  return { success: failed.length < adminEmails.length };
 }
 
 /**
@@ -569,9 +689,12 @@ module.exports = {
   sendGiftcardSubmissionEmail,
   SendGiftcardMail,
   sendKycEmail,
+  sendKycProvisionalEmail,
+  sendKycProvisionalAdminNotify,
   sendLoginEmail,
   sendSignupEmail,
   sendEmailVerificationOTP,
   sendNINVerificationEmail,
-  sendAdminWelcomeEmail
+  sendAdminWelcomeEmail,
+  sendGiftcardAdminNotify
 };
