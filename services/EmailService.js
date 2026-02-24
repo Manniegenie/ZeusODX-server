@@ -399,6 +399,30 @@ async function sendKycEmail(to, name, status, comments) {
   }
 }
 
+async function sendKycProvisionalEmail(to, name, idType, provisionalReason) {
+  try {
+    const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_KYC_PROVISIONAL);
+    if (!templateId) throw new Error('KYC provisional email template ID not configured');
+
+    return await sendEmail({
+      to, name, templateId,
+      params: {
+        username: String(name || 'User'),
+        idType: String(idType || 'document'),
+        provisionalReason: String(provisionalReason || 'Your verification is currently under review.'),
+        date: formatDate(new Date()),
+        kycUrl: String(`${APP_WEB_BASE_URL}/kyc`),
+        appDeepLink: String(`${APP_DEEP_LINK}/kyc`),
+        companyName: String(COMPANY_NAME),
+        supportEmail: String(SUPPORT_EMAIL)
+      }
+    });
+  } catch (error) {
+    console.error('Failed to send KYC provisional email:', error.message);
+    throw error;
+  }
+}
+
 async function sendNINVerificationEmail(to, name, status, kycLevel, rejectionReason = null) {
   try {
     const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_NIN_VERIFICATION);
@@ -478,10 +502,17 @@ async function sendAdminWelcomeEmail(to, adminName, role) {
   }
 }
 
-const GIFTCARD_ADMIN_EMAILS = [
-  { email: 'tony@zeusodx.com', name: 'Tony' },
-  { email: 'odion@zeusodx.com', name: 'Odion' }
-];
+function getGiftcardAdminEmails() {
+  const raw = process.env.GIFTCARD_ADMIN_EMAILS || '';
+  return raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const [email, name] = entry.split(':').map(s => s.trim());
+      return { email, name: name || email };
+    });
+}
 
 async function sendGiftcardAdminNotify({ username, cardType, cardFormat, cardValue, expectedAmount, country, submissionId }) {
   const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_GIFTCARD_ADMIN_NOTIFY);
@@ -500,8 +531,14 @@ async function sendGiftcardAdminNotify({ username, cardType, cardFormat, cardVal
     companyName: String(COMPANY_NAME)
   };
 
+  const adminEmails = getGiftcardAdminEmails();
+  if (!adminEmails.length) {
+    console.warn('No giftcard admin emails configured (GIFTCARD_ADMIN_EMAILS)');
+    return { success: false };
+  }
+
   const results = await Promise.allSettled(
-    GIFTCARD_ADMIN_EMAILS.map(admin =>
+    adminEmails.map(admin =>
       sendEmail({ to: admin.email, name: admin.name, templateId, params })
     )
   );
@@ -511,7 +548,7 @@ async function sendGiftcardAdminNotify({ username, cardType, cardFormat, cardVal
     failed.forEach(r => console.error('Failed to send giftcard admin notify email:', r.reason?.message));
   }
 
-  return { success: failed.length < GIFTCARD_ADMIN_EMAILS.length };
+  return { success: failed.length < adminEmails.length };
 }
 
 /**
@@ -605,6 +642,7 @@ module.exports = {
   sendGiftcardSubmissionEmail,
   SendGiftcardMail,
   sendKycEmail,
+  sendKycProvisionalEmail,
   sendLoginEmail,
   sendSignupEmail,
   sendEmailVerificationOTP,

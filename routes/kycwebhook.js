@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 
 // Services
 const { sendKycCompletionNotification } = require('../services/notificationService');
-const { sendKycEmail, sendNINVerificationEmail } = require('../services/EmailService');
+const { sendKycEmail, sendNINVerificationEmail, sendKycProvisionalEmail } = require('../services/EmailService');
 
 // KYC Helpers
 const { classifyOutcome, parseFullName, isBvnIdType, isNinIdType } = require('../utils/kycHelpers');
@@ -380,7 +380,19 @@ router.post('/callback', async (req, res) => {
     }
 
     // 8. Send Email Notifications
-    if (status !== 'PROVISIONAL' && status !== 'PENDING') {
+    if (status === 'PROVISIONAL') {
+      try {
+        await sendKycProvisionalEmail(
+          updatedUser.email,
+          updatedUser.firstname || 'User',
+          frontendIdType || kycDoc.frontendIdType,
+          norm.reason || 'Your verification requires additional review and may take longer than usual.'
+        );
+        logger.info(`KYC provisional email sent to ${updatedUser.email}`);
+      } catch (emailErr) {
+        logger.error('Provisional email notification failed', { userId, error: emailErr.message });
+      }
+    } else if (status !== 'PENDING') {
       try {
         if (isNIN) {
           await sendNINVerificationEmail(

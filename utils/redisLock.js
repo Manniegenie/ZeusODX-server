@@ -164,6 +164,11 @@ async function withLock(lockKey, callback, options = {}) {
     retryInterval = 50
   } = options;
 
+  if (!getRedisClient()) {
+    logger.warn(`Redis unavailable - running ${lockKey} without distributed lock`);
+    return await callback();
+  }
+
   const lock = new RedisLock(lockKey, ttl);
 
   try {

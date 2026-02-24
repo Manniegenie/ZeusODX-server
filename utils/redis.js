@@ -67,6 +67,9 @@ function createRedisClient() {
  * Get Redis client instance
  */
 function getRedisClient() {
+  if (process.env.REDIS_DISABLED === 'true') {
+    return null;
+  }
   if (!redisClient) {
     return createRedisClient();
   }
