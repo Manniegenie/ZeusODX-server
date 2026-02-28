@@ -35,7 +35,7 @@ const CACHE_TTL = 5000;
 // NGNZ Withdrawal Fee Constants
 // - Operational: What is actually subtracted from the payout to the provider
 // - Recorded: What is displayed to the user and stored in the transaction history
-const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = 30; 
+const NGNZ_WITHDRAWAL_FEE_OPERATIONAL = 45;
 const NGNZ_WITHDRAWAL_FEE_RECORDED = 100;    
 
 // --- HELPER FUNCTIONS ---
