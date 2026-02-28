@@ -223,21 +223,51 @@ async function processObiexWithdrawal(userId, withdrawalData, amountToObiex, wit
     });
 
     if (obiexResult.success) {
+      // Keep status as PENDING - actual confirmation comes via Obiex webhook.
+      // Store Obiex's real transaction ID in obiexTransactionId and ngnzWithdrawal.obiex
+      // so the webhook lookup can find this transaction when it fires.
+      const obiexId = obiexResult.data?.id || null;
+      const obiexRef = obiexResult.data?.reference || null;
       await Transaction.findByIdAndUpdate(transactionId, {
-        $set: { 
-            status: 'SUCCESSFUL', 
-            completedAt: new Date(), 
-            'metadata.obiexId': obiexResult.data?.id 
+        $set: {
+          status: 'PENDING',
+          obiexTransactionId: obiexId || withdrawalReference,
+          'metadata.obiexId': obiexId,
+          'metadata.obiexReference': obiexRef,
+          'ngnzWithdrawal.obiex.id': obiexId,
+          'ngnzWithdrawal.obiex.reference': obiexRef,
+          'ngnzWithdrawal.obiex.status': 'PENDING',
         }
       });
       return { success: true, data: obiexResult.data };
     } else {
+      // Obiex rejected the request immediately - mark FAILED and refund balance now.
+      // (A FAILED webhook may also arrive, but the webhook handler has idempotency
+      //  protection to skip double-refunds.)
       await Transaction.findByIdAndUpdate(transactionId, {
-        $set: { 
-            status: 'FAILED', 
-            'ngnzWithdrawal.failureReason': obiexResult.message 
+        $set: {
+          status: 'FAILED',
+          failedAt: new Date(),
+          'ngnzWithdrawal.failureReason': obiexResult.message,
+          'ngnzWithdrawal.obiex.status': 'FAILED',
         }
       });
+
+      // Refund the deducted amount back to the user's ngnzBalance immediately
+      const tx = await Transaction.findById(transactionId).lean();
+      const refundAmount = tx?.ngnzWithdrawal?.requestedAmount || Math.abs(tx?.amount || 0);
+      if (refundAmount > 0) {
+        await User.findByIdAndUpdate(
+          userId,
+          {
+            $inc: { ngnzBalance: refundAmount },
+            $set: { lastBalanceUpdate: new Date() }
+          },
+          { runValidators: true }
+        );
+        logger.info(`Refunded ${refundAmount} NGNZ to user ${userId} after Obiex API rejection`);
+      }
+
       return { success: false, error: obiexResult.message };
     }
   } catch (error) {
@@ -397,10 +427,10 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
     );
 
     if (obiexResult.success) {
-      // Async Notifications
-      sendWithdrawalEmail(user.email, user.username || 'User', amount, 'NGN', withdrawalResult.withdrawalReference).catch(e => logger.error(e));
-      
-      sendWithdrawalNotification(userId, withdrawalResult.amountToObiex, 'NGN', 'completed', {
+      // Withdrawal is PENDING with Obiex - do NOT send 'completed' notification yet.
+      // The final confirmation email/push will be sent by the webhook handler when
+      // Obiex fires a SUCCESSFUL webhook event.
+      sendWithdrawalNotification(userId, withdrawalResult.amountToObiex, 'NGN', 'pending', {
         reference: withdrawalResult.withdrawalReference,
         bankName: destination.bankName,
         accountNumber: maskAccountNumber(destination.accountNumber),
@@ -410,7 +440,7 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
       return res.json({
         success: true,
-        message: 'Withdrawal processed successfully',
+        message: 'Withdrawal submitted and is being processed',
         data: {
           withdrawalId: withdrawalResult.withdrawalReference,
           totalAmount: amount,
