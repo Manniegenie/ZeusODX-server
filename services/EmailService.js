@@ -4,6 +4,9 @@ require('dotenv').config();
 const apiInstance = new brevo.TransactionalEmailsApi();
 apiInstance.setApiKey(brevo.TransactionalEmailsApiApiKeys.apiKey, process.env.BREVO_API_KEY);
 
+const contactsApiInstance = new brevo.ContactsApi();
+contactsApiInstance.setApiKey(brevo.ContactsApiApiKeys.apiKey, process.env.BREVO_API_KEY);
+
 // ---- Defaults for links/branding ----
 const APP_WEB_BASE_URL = (process.env.APP_WEB_BASE_URL || process.env.FRONTEND_BASE_URL || '').replace(/\/$/, '');
 const APP_DEEP_LINK    = (process.env.APP_DEEP_LINK || 'zeusodx://').replace(/\/$/, '');
@@ -680,6 +683,41 @@ async function SendGiftcardMail(to, name, options = {}) {
   }
 }
 
+/**
+ * Add or update a contact in Brevo (for marketing/CRM list).
+ * Uses ContactsApi from the same SDK — no extra dependency needed.
+ * @param {string} email
+ * @param {string} firstName
+ * @param {string} lastName
+ */
+async function addContactToBrevo(email, firstName = '', lastName = '') {
+  const listId = parseInt(process.env.BREVO_LIST_ID);
+  if (!listId || isNaN(listId)) {
+    console.warn('BREVO_LIST_ID not configured — skipping contact sync');
+    return;
+  }
+
+  const contact = new brevo.CreateContact();
+  contact.email = email;
+  contact.attributes = {
+    FIRSTNAME: firstName || '',
+    LASTNAME: lastName || ''
+  };
+  contact.listIds = [listId];
+  contact.updateEnabled = true; // update if contact already exists
+
+  try {
+    await contactsApiInstance.createContact(contact);
+    console.log(`Brevo contact synced: ${email}`);
+  } catch (error) {
+    // 204 / duplicate responses from Brevo are not real errors
+    const status = error.status || error.statusCode || error.response?.status;
+    if (status === 204) return; // already exists, no body — not an error
+    console.error(`Brevo contact sync failed for ${email}:`, error.response?.body || error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
@@ -696,5 +734,6 @@ module.exports = {
   sendEmailVerificationOTP,
   sendNINVerificationEmail,
   sendAdminWelcomeEmail,
-  sendGiftcardAdminNotify
+  sendGiftcardAdminNotify,
+  addContactToBrevo
 };

@@ -165,6 +165,7 @@ const transactionAuditSchema = new mongoose.Schema({
         'INTERNAL',
         'OBIEX',
         'OFFRAMP',
+        'ONRAMP',
         'NGNZ_TO_BANK',
         'DIRECT' // <-- ADDED to accept "DIRECT" swapType values from logs
       ]

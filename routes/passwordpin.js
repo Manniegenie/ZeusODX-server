@@ -5,7 +5,7 @@ const User = require('../models/user');
 const PendingUser = require("../models/pendinguser");
 const config = require("./config");
 const logger = require('../utils/logger');
-const { sendSignupEmail } = require('../services/EmailService');
+const { sendSignupEmail, addContactToBrevo } = require('../services/EmailService');
 
 // Function to generate unique username from first name
 const generateUniqueUsername = async (firstName) => {
@@ -327,6 +327,11 @@ router.post('/password-pin', async (req, res) => {
         error: emailError.message
       });
     }
+
+    // Sync new user to Brevo contact list (non-blocking)
+    addContactToBrevo(newUser.email, newUser.firstname, newUser.lastname).catch(err => {
+      logger.error('Brevo contact sync failed', { userId: newUser._id, error: err.message });
+    });
 
     // NO BACKGROUND WALLET GENERATION - Wallets will be generated on-demand when requested
 
