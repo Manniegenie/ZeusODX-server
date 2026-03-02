@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
+const { sendPushNotification } = require('../services/notificationService');
 
 // Updated to include ALL balance fields from User schema
 const currencyFieldMap = {
@@ -73,6 +74,21 @@ router.post('/fund-user', async (req, res) => {
     const newBalance = updatedUser[fieldToUpdate] ?? 0;
 
     console.log(`✅ Funded user: ${email} | ${currency}: ${numericAmount} | New Balance: ${newBalance}`);
+
+    // Send push notification to the funded user (fire-and-forget)
+    sendPushNotification(updatedUser._id.toString(), {
+      title: '💰 Deposit Received',
+      body: `ZeusODX sent you ${numericAmount} ${currency.toUpperCase()}`,
+      sound: 'default',
+      priority: 'high',
+      data: {
+        type: 'DEPOSIT',
+        status: 'CONFIRMED',
+        amount: numericAmount,
+        currency: currency.toUpperCase(),
+        source: 'admin_fund',
+      },
+    }).catch(err => console.error('❌ Push notification failed for fund-user:', err.message));
 
     return res.status(200).json({
       success: true,

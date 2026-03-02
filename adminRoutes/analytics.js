@@ -1434,7 +1434,7 @@ router.get('/volumes', async (req, res) => {
       {
         $match: {
           type: 'DEPOSIT',
-          status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
+          status: 'CONFIRMED',
           amount: { $ne: 0 },
           currency: { $exists: true, $ne: null }
         }

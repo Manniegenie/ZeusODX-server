@@ -9,7 +9,7 @@ const KYC = require("../models/kyc");
 const config = require("./config");
 const logger = require("../utils/logger");
 const { classifyOutcome } = require("../utils/kycHelpers");
-const { sendKycEmail, sendNINVerificationEmail } = require("../services/EmailService");
+const { sendKycEmail, sendNINVerificationEmail, sendKycProvisionalAdminNotify } = require("../services/EmailService");
 
 // Youverify Configuration
 const YOUVERIFY_CONFIG = {
@@ -572,6 +572,14 @@ router.post(
               lastUpdated: new Date()
             }
           });
+
+          sendKycProvisionalAdminNotify({
+            username: user.firstname || user.email,
+            userId: String(user._id),
+            idType,
+            provisionalReason: `Youverify API error: ${JSON.stringify(youverifyResult.error)}`,
+            kycId: String(kycDoc._id)
+          }).catch(err => logger.error('KYC provisional admin notify failed', { error: err.message }));
         }
       }
 
