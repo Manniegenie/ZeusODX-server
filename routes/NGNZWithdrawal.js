@@ -430,7 +430,7 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
       // Withdrawal is PENDING with Obiex - do NOT send 'completed' notification yet.
       // The final confirmation email/push will be sent by the webhook handler when
       // Obiex fires a SUCCESSFUL webhook event.
-      sendWithdrawalNotification(userId, withdrawalResult.amountToObiex, 'NGN', 'pending', {
+      sendWithdrawalNotification(userId, withdrawalResult.transaction.bankAmount, 'NGN', 'pending', {
         reference: withdrawalResult.withdrawalReference,
         bankName: destination.bankName,
         accountNumber: maskAccountNumber(destination.accountNumber),
