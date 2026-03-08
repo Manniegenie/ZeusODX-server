@@ -604,6 +604,8 @@ const Fetchnetworktestttt = require("./routes/FetchnetworkTestttt");
 const bannerRoutes = require("./routes/Banners");
 const adminBannerRoutes = require("./adminRoutes/banners");
 const tokenPricesRoutes = require("./routes/tokenPrices");
+const adminBlogRoutes = require("./adminRoutes/blog");
+const blogRoutes = require("./routes/blog");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -618,6 +620,7 @@ app.use("/adminsignin", adminsigninRoutes);
 app.use("/admin-2fa", Admin2FARoutes); // Admin 2FA setup routes (public)
 app.use("/fetchnetworktest", Fetchnetworktestttt);
 app.use("/banners", bannerRoutes);
+app.use("/blog", blogRoutes);
 
 // Webhook Routes
 app.use("/webhook", webhookLimiter, webhookRoutes);
@@ -632,6 +635,7 @@ app.use("/admin/notification", authenticateAdminToken, requireAdmin, requirePush
 app.use("/admin/scheduled-notifications", authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledNotificationRoutes);
 app.use("/admin/scheduled-giftcard-notifications", authenticateAdminToken, requireAdmin, requirePushNotifications, scheduledGiftCardNotificationRoutes);
 app.use("/admin/banners", authenticateAdminToken, requireAdmin, requireBanners, adminBannerRoutes);
+app.use("/admin/blog", authenticateAdminToken, requireAdmin, adminBlogRoutes);
 app.use("/admin/permissions", authenticateAdminToken, permissionsRoutes);
 app.use("/fetch-wallet", authenticateAdminToken, requireModerator, fetchwalletRoutes);
 app.use("/fetch", authenticateAdminToken, requireModerator, fetchtransactionRoutes);
