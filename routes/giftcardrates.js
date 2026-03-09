@@ -23,7 +23,7 @@ const allowedGiftCards = [
 ];
 
 // Allowed countries
-const allowedCountries = ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'];
+const allowedCountries = ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND', 'EUROPE'];
 
 // Allowed vanilla types
 const allowedVanillaTypes = ['4097', '4118'];
@@ -52,7 +52,7 @@ function validateRateRequest(body) {
   if (!country) {
     errors.push('Country is required');
   } else if (!allowedCountries.includes(country.toUpperCase())) {
-    errors.push('Country must be one of: US, CANADA, AUSTRALIA, SWITZERLAND');
+    errors.push('Country must be one of: US, CANADA, AUSTRALIA, SWITZERLAND, EUROPE');
   }
 
   if (cardFormat && !['PHYSICAL', 'E_CODE'].includes(cardFormat.toUpperCase())) {

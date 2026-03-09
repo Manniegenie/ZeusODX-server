@@ -689,6 +689,7 @@ router.post('/purchase', async (req, res) => {
     if (!validation.isValid) {
       return res.status(400).json({
         success: false,
+        error: 'VALIDATION_ERROR',
         message: 'Validation failed',
         errors: validation.errors
       });
@@ -721,6 +722,7 @@ router.post('/purchase', async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
+        error: 'USER_NOT_FOUND',
         message: 'User not found'
       });
     }
@@ -738,6 +740,7 @@ router.post('/purchase', async (req, res) => {
     if (!user.twoFASecret || !user.is2FAEnabled) {
       return res.status(400).json({
         success: false,
+        error: '2FA_NOT_SETUP',
         message: 'Two-factor authentication is not set up or not enabled. Please enable 2FA first.'
       });
     }
@@ -759,6 +762,7 @@ router.post('/purchase', async (req, res) => {
     if (!user.passwordpin) {
       return res.status(400).json({
         success: false,
+        error: 'PIN_NOT_SETUP',
         message: 'Password PIN is not set up for your account. Please set up your password PIN first.'
       });
     }
@@ -804,6 +808,7 @@ router.post('/purchase', async (req, res) => {
     if (!latestUser) {
       return res.status(404).json({
         success: false,
+        error: 'USER_NOT_FOUND',
         message: 'User not found during balance verification'
       });
     }
@@ -895,10 +900,10 @@ router.post('/purchase', async (req, res) => {
     // =====================================
     // STEP 9: ATOMIC IMMEDIATE DEBIT ON API SUCCESS
     // =====================================
-    const ebillsStatus = ebillsResponse.data.status;
+    const paybetaStatus = ebillsResponse.status; // top-level status field from PayBeta response
 
-    // Deduct balance immediately regardless of eBills status (as long as API call succeeded)
-    logger.info(`✅ eBills API succeeded (${ebillsStatus}), deducting balance immediately for ${finalRequestId}`);
+    // Deduct balance immediately (API call succeeded)
+    logger.info(`✅ PayBeta API succeeded (${paybetaStatus}), deducting balance immediately for ${finalRequestId}`);
 
     try {
       await updateUserBalance(userId, currency, -amount);
@@ -1088,8 +1093,9 @@ router.post('/purchase', async (req, res) => {
       });
     }
 
-    // Step 12: Return response - maintaining PayBeta format for compatibility
+    // Step 12: Return normalized response (code kept for frontend compat)
     return res.status(200).json({
+      success: true,
       code: 'success',
       message: 'Electricity purchase successful',
       data: {

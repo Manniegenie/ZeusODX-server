@@ -145,7 +145,8 @@ function getCountryDisplayName(countryCode) {
     'US': 'United States',
     'CANADA': 'Canada',
     'AUSTRALIA': 'Australia',
-    'SWITZERLAND': 'Switzerland'
+    'SWITZERLAND': 'Switzerland',
+    'EUROPE': 'Europe'
   };
   return countryNames[countryCode] || countryCode;
 }

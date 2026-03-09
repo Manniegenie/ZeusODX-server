@@ -44,7 +44,7 @@ const giftCardPriceSchema = new mongoose.Schema({
   country: {
     type: String,
     required: true,
-    enum: ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND'],
+    enum: ['US', 'CANADA', 'AUSTRALIA', 'SWITZERLAND', 'EUROPE'],
     index: true
   },
 

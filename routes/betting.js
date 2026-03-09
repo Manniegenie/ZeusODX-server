@@ -53,7 +53,8 @@ function normalizeServiceIdForNetwork(serviceId) {
 // Valid betting service providers
 const BETTING_SERVICES = [
   '1xBet', 'BangBet', 'Bet9ja', 'BetKing', 'BetLand', 'BetLion',
-  'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet', 'NairaBet', 'SupaBet'
+  'BetWay', 'CloudBet', 'LiveScoreBet', 'MerryBet', 'NaijaBet', 'NairaBet', 'SupaBet',
+  'HallaBet', 'MLotto', 'WesternLotto', 'GreenLotto', 'SportyBet'
 ];
 
 // Supported tokens - aligned with user schema (DOGE REMOVED, NGNB changed to NGNZ)
