@@ -392,6 +392,12 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
     if (!isTokenSupported('NGNZ')) return res.status(400).json({ success: false, message: 'Currency not supported' });
 
+    // 3a. Pre-check balance before acquiring lock (prevents 500 on insufficient funds)
+    const balanceCheck = await validateBalance(userId, 'NGNZ', amount);
+    if (!balanceCheck.success) {
+      return res.status(400).json({ success: false, message: 'Insufficient NGNZ balance' });
+    }
+
     // 3. Execution (Deduct Balance + Create Transaction) WITH DISTRIBUTED LOCK
     // SECURITY FIX: Use distributed lock to prevent race conditions
     const lockKey = `withdrawal:${userId}:NGNZ`;
@@ -464,6 +470,9 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
     }
 
   } catch (err) {
+    if (err.message === 'Insufficient NGNZ balance') {
+      return res.status(400).json({ success: false, message: 'Insufficient NGNZ balance' });
+    }
     logger.error('NGNZ withdrawal terminal error', { error: err.stack, correlationId });
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
