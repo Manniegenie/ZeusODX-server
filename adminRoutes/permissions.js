@@ -91,6 +91,7 @@ router.get('/', async (req, res) => {
       feesAndRates: isSuperAdmin || false, // Admin does NOT have access
       giftCards: isSuperAdmin || effectivePermissions.canManageGiftcards || false,
       banners: isSuperAdmin || effectivePermissions.canManageBanners || false,
+      blog: true, // All admin types have blog access
       fundingAndBalances: isSuperAdmin || false, // Admin does NOT have access
       pushNotifications: isSuperAdmin || effectivePermissions.canManagePushNotifications || false,
       security: isSuperAdmin || false, // Only super admin
