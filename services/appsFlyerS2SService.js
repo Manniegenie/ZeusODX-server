@@ -16,7 +16,7 @@ class AppsFlyerS2SService {
     // AppsFlyer S2S API endpoint
     this.apiEndpoint = 'https://api2.appsflyer.com/inappevent';
     
-    if (!this.devKey || !this.s2sApiToken) {
+    if (!this.devKey) {
       logger.warn('AppsFlyer S2S credentials not configured. S2S events will be skipped.');
     }
   }
@@ -56,7 +56,7 @@ class AppsFlyerS2SService {
       return { success: false, error: 'platform must be "ios" or "android"' };
     }
 
-    if (!this.devKey || !this.s2sApiToken) {
+    if (!this.devKey) {
       logger.warn('AppsFlyer S2S: Credentials not configured, skipping event', { eventName });
       return { success: false, error: 'AppsFlyer credentials not configured' };
     }
@@ -96,7 +96,7 @@ class AppsFlyerS2SService {
     try {
       const response = await axios.post(url, payload, {
         headers: {
-          'Authorization': `Bearer ${this.s2sApiToken}`,
+          'authentication': this.devKey,
           'Content-Type': 'application/json'
         },
         timeout: 10000 // 10 second timeout
