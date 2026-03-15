@@ -24,6 +24,7 @@ const userSchema = new mongoose.Schema({
   // AppsFlyer UID for S2S tracking
   appsflyer_id: { type: String, default: null },
   appsflyer_idUpdatedAt: { type: Date, default: null },
+  appsflyer_platform: { type: String, enum: ['ios', 'android'], default: null },
 
   // OTP fields (used for both pin changes and email verification)
   pinChangeOtp: { type: String, default: null },

@@ -3,6 +3,7 @@ const router = express.Router();
 const User = require('../models/user');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
+const { detectPlatform } = require('../utils/appsFlyerHelper');
 
 /**
  * POST /api/user/appsflyer-id
@@ -32,6 +33,7 @@ router.post('/appsflyer-id', async (req, res) => {
     }
 
     const { appsflyer_id } = req.body;
+    const platform = detectPlatform(req);
 
     if (!appsflyer_id || typeof appsflyer_id !== 'string' || appsflyer_id.trim().length === 0) {
       return res.status(400).json({
@@ -46,7 +48,8 @@ router.post('/appsflyer-id', async (req, res) => {
       userId,
       {
         appsflyer_id: appsflyer_id.trim(),
-        appsflyer_idUpdatedAt: new Date()
+        appsflyer_idUpdatedAt: new Date(),
+        appsflyer_platform: platform
       },
       { new: true, runValidators: true }
     ).select('appsflyer_id appsflyer_idUpdatedAt');

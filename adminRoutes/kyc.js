@@ -7,6 +7,7 @@ const logger = require('../utils/logger');
 
 // Import the email service
 const { sendKycEmail, sendNINVerificationEmail } = require('../services/EmailService');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 // POST: Disable user's KYC by phone number (permanent admin override)
 router.post('/cancel', async (req, res) => {
@@ -192,6 +193,9 @@ router.post('/approve', async (req, res) => {
     } catch (upgradeError) {
       logger.warn('Error during KYC upgrade after manual approval', { error: upgradeError.message, userId: user._id });
     }
+
+    // AppsFlyer S2S: track KYC_2 on manual admin approval
+    trackEvent(user._id.toString(), 'KYC_2', {}, null);
 
     logger.info(`KYC manually approved for user: ${phoneNumber}`, { userId: user._id, kycId: kycDoc._id, idType });
 

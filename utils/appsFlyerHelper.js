@@ -24,13 +24,13 @@ function detectPlatform(req) {
   
   // Detect from user agent
   const ua = userAgent.toLowerCase();
-  if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ios')) {
+  if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ios') || ua.includes('cfnetwork') || ua.includes('darwin')) {
     return 'ios';
   }
   if (ua.includes('android')) {
     return 'android';
   }
-  
+
   // Default to android if unknown
   return 'android';
 }
@@ -51,7 +51,7 @@ async function trackEvent(userId, eventName, eventParams = {}, req = null) {
     }
 
     // Get user with AppsFlyer ID
-    const user = await User.findById(userId).select('appsflyer_id').lean();
+    const user = await User.findById(userId).select('appsflyer_id appsflyer_platform').lean();
     
     if (!user || !user.appsflyer_id) {
       logger.debug('AppsFlyer S2S: User has no appsflyer_id, skipping event', {
@@ -61,8 +61,8 @@ async function trackEvent(userId, eventName, eventParams = {}, req = null) {
       return;
     }
 
-    // Detect platform
-    const platform = req ? detectPlatform(req) : 'android'; // Default to android if req not provided
+    // Detect platform — use stored platform for server-side events (webhooks/admin) where req has no device UA
+    const platform = req ? detectPlatform(req) : (user.appsflyer_platform || 'android');
 
     // Map event name to tracking function
     const eventMap = {
