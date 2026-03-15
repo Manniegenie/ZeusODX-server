@@ -167,7 +167,10 @@ const transactionAuditSchema = new mongoose.Schema({
         'OFFRAMP',
         'ONRAMP',
         'NGNZ_TO_BANK',
-        'DIRECT' // <-- ADDED to accept "DIRECT" swapType values from logs
+        'DIRECT',
+        'NGNX_TO_CRYPTO',
+        'CRYPTO_NGNX_BUY',
+        'CRYPTO_NGNX_SELL'
       ]
     }
   },
@@ -181,7 +184,7 @@ const transactionAuditSchema = new mongoose.Schema({
     obiexRequestId: String,
     obiexOperationType: {
       type: String,
-      enum: ['QUOTE_CREATE', 'QUOTE_ACCEPT', 'CRYPTO_TO_NGNX', 'CURRENCY_FETCH', 'FIAT_WITHDRAWAL']
+      enum: ['QUOTE_CREATE', 'QUOTE_ACCEPT', 'CRYPTO_TO_NGNX', 'NGNX_TO_CRYPTO', 'CURRENCY_FETCH', 'FIAT_WITHDRAWAL']
     }
   },
   
