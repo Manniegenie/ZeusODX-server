@@ -85,13 +85,7 @@ class AppsFlyerS2SService {
     // Build API URL
     const url = `${this.apiEndpoint}/${appId}`;
 
-    logger.info('AppsFlyer S2S sending event', {
-      url,
-      eventName,
-      platform,
-      tokenPrefix: this.s2sApiToken ? this.s2sApiToken.substring(0, 8) + '...' : 'EMPTY',
-      appsflyerIdPrefix: appsflyer_id ? appsflyer_id.substring(0, 8) + '...' : 'EMPTY'
-    });
+    logger.debug('AppsFlyer S2S sending event', { eventName, platform });
 
     try {
       const response = await axios.post(url, payload, {
