@@ -6,6 +6,7 @@ const PendingUser = require("../models/pendinguser");
 const config = require("./config");
 const logger = require('../utils/logger');
 const { sendSignupEmail, addContactToBrevo } = require('../services/EmailService');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 // Function to generate unique username from first name
 const generateUniqueUsername = async (firstName) => {
@@ -332,6 +333,9 @@ router.post('/password-pin', async (req, res) => {
     addContactToBrevo(newUser.email, newUser.firstname, newUser.lastname).catch(err => {
       logger.error('Brevo contact sync failed', { userId: newUser._id, error: err.message });
     });
+
+    // AppsFlyer S2S: track sign_up at the final step (PIN set = real signup complete)
+    trackEvent(newUser._id.toString(), 'sign_up', { registrationMethod: 'phone' }, req);
 
     // NO BACKGROUND WALLET GENERATION - Wallets will be generated on-demand when requested
 

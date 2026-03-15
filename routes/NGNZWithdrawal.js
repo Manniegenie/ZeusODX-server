@@ -10,6 +10,7 @@ const { validateUserBalance: validateBalance, isTokenSupported } = require('../s
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const { sendWithdrawalEmail } = require('../services/EmailService');
 const { sendWithdrawalNotification } = require('../services/notificationService');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 const { bvnCheckService } = require('../services/bvnCheckService');
 
 // SECURITY FIX: Import distributed lock and security service
@@ -444,6 +445,12 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
         totalAmount: amount
       }).catch(e => logger.error('Push Error', e));
 
+      trackEvent(userId.toString(), 'Withdrawal', {
+        amount,
+        currency: 'NGN',
+        method: 'bank'
+      }, req);
+
       return res.json({
         success: true,
         message: 'Withdrawal submitted and is being processed',
@@ -462,10 +469,12 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
         reference: withdrawalResult.withdrawalReference
       }).catch(e => logger.error('Push Error', e));
 
-      return res.status(502).json({ 
-          success: false, 
-          message: 'Withdrawal failed at provider', 
-          error: obiexResult.error 
+      trackEvent(userId.toString(), 'Withdrawal_failed', { method: 'bank' }, req);
+
+      return res.status(502).json({
+          success: false,
+          message: 'Withdrawal failed at provider',
+          error: obiexResult.error
       });
     }
 
@@ -474,6 +483,7 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Insufficient NGNZ balance' });
     }
     logger.error('NGNZ withdrawal terminal error', { error: err.stack, correlationId });
+    trackEvent(req.user?.id?.toString(), 'Withdrawal_failed', { method: 'bank' }, req);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });

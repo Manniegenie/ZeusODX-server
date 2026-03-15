@@ -10,6 +10,7 @@ const logger = require('../utils/logger');
 const GlobalMarkdown = require('../models/pricemarkdown');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
 const { invalidateSpending } = require('../services/kyccheckservice');
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -887,6 +888,12 @@ router.post('/quote/:quoteId', async (req, res) => {
       }
     };
 
+    trackEvent(userId.toString(), 'Swap_', {
+      fromCurrency: quote.sourceCurrency,
+      toCurrency: quote.targetCurrency,
+      amount: quote.sourceAmount
+    }, req);
+
     return res.json({
       success: true,
       message: 'Obiex swap completed successfully',
@@ -894,14 +901,18 @@ router.post('/quote/:quoteId', async (req, res) => {
     });
 
   } catch (err) {
-    logger.error('POST /swap/quote/:quoteId error', { 
+    logger.error('POST /swap/quote/:quoteId error', {
       error: err.stack,
       userId: req.user?.id,
       quoteId: req.params?.quoteId
     });
-    
-    return res.status(500).json({ 
-      success: false, 
+
+    trackEvent(req.user?.id?.toString(), 'Swap_failed', {
+      swapType: 'crypto'
+    }, req);
+
+    return res.status(500).json({
+      success: false,
       message: err.message || 'Swap failed - please try again'
     });
   }

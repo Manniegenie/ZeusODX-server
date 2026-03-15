@@ -125,6 +125,27 @@ async function trackEvent(userId, eventName, eventParams = {}, req = null) {
         appsflyer_id: user.appsflyer_id,
         platform,
         customerUserId: userId.toString()
+      }),
+      'KYC_2_failed': () => appsFlyerS2S.sendEvent({
+        appsflyer_id: user.appsflyer_id,
+        eventName: 'KYC_2_failed',
+        eventValue: {},
+        platform,
+        customerUserId: userId.toString()
+      }),
+      'Swap_failed': () => appsFlyerS2S.sendEvent({
+        appsflyer_id: user.appsflyer_id,
+        eventName: 'Swap_failed',
+        eventValue: eventParams,
+        platform,
+        customerUserId: userId.toString()
+      }),
+      'Withdrawal_failed': () => appsFlyerS2S.sendEvent({
+        appsflyer_id: user.appsflyer_id,
+        eventName: 'Withdrawal_failed',
+        eventValue: eventParams,
+        platform,
+        customerUserId: userId.toString()
       })
     };
 

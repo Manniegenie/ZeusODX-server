@@ -10,6 +10,7 @@ const config = require("./config");
 const logger = require("../utils/logger");
 const { classifyOutcome } = require("../utils/kycHelpers");
 const { sendKycEmail, sendNINVerificationEmail, sendKycProvisionalAdminNotify } = require("../services/EmailService");
+const { trackEvent } = require('../utils/appsFlyerHelper');
 
 // Youverify Configuration
 const YOUVERIFY_CONFIG = {
@@ -539,11 +540,13 @@ router.post(
               // Send approval email
               await sendKycEmail(user.email, user.firstname, 'APPROVED', 'Your identity verification has been successfully completed.');
               logger.info('KYC approval email sent', { userId: user._id, kycId: kycDoc._id });
+              trackEvent(user._id.toString(), 'KYC_2', {}, req);
             } else {
               // Send rejection email with generic reason
               const rejectionReason = 'Incorrect data provided. Please ensure your selfie clearly shows your face and matches your ID document.';
               await sendKycEmail(user.email, user.firstname, 'REJECTED', rejectionReason);
               logger.info('KYC rejection email sent', { userId: user._id, kycId: kycDoc._id });
+              trackEvent(user._id.toString(), 'KYC_2_failed', {}, req);
             }
           } catch (emailErr) {
             logger.error('Failed to send KYC result email', {
