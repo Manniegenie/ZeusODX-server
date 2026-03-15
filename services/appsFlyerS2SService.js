@@ -14,7 +14,7 @@ class AppsFlyerS2SService {
     this.androidAppId = process.env.APPSFLYER_ANDROID_APP_ID || 'com.manniegenie.zeusodx';
     
     // AppsFlyer S2S API endpoint
-    this.apiEndpoint = 'https://api3.appsflyer.com/inappevent';
+    this.apiEndpoint = 'https://api2.appsflyer.com/inappevent';
     
     if (!this.devKey || !this.s2sApiToken) {
       logger.warn('AppsFlyer S2S credentials not configured. S2S events will be skipped.');
@@ -74,13 +74,10 @@ class AppsFlyerS2SService {
     const payload = {
       appsflyer_id,
       eventName,
-      eventValue: {
-        ...eventValue,
-        // Add OS parameter (required for iOS 14+)
-        os: platform.toLowerCase() === 'ios' ? 'iOS' : 'Android',
-        // Add customer user ID if provided
-        ...(customerUserId && { customer_user_id: customerUserId })
-      },
+      // AppsFlyer S2S requires eventValue as a JSON string
+      eventValue: JSON.stringify(eventValue || {}),
+      // customer_user_id must be top-level, not inside eventValue
+      ...(customerUserId && { customer_user_id: customerUserId }),
       // Event time in Unix timestamp (milliseconds)
       eventTime: eventTime || Date.now()
     };
