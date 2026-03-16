@@ -10,7 +10,6 @@ const logger = require('../utils/logger');
 
 // Services
 const { sendKycCompletionNotification } = require('../services/notificationService');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 const { sendKycEmail, sendNINVerificationEmail, sendKycProvisionalEmail, sendKycProvisionalAdminNotify } = require('../services/EmailService');
 
 // KYC Helpers
@@ -434,13 +433,6 @@ router.post('/callback', async (req, res) => {
       } catch (emailErr) {
         logger.error('Email notification failed', { userId, error: emailErr.message });
       }
-    }
-
-    // AppsFlyer S2S: track KYC completion (webhook = real outcome from Youverify)
-    if (status === 'APPROVED') {
-      trackEvent(userId.toString(), 'KYC_2', {}, null);
-    } else if (status === 'REJECTED') {
-      trackEvent(userId.toString(), 'KYC_2_failed', {}, null);
     }
 
     logger.info('Webhook processed successfully', {

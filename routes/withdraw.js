@@ -15,7 +15,6 @@ const { getOriginalPricesWithCache } = require('../services/portfolio');
 const logger = require('../utils/logger');
 const config = require('./config');
 const { sendWithdrawalEmail } = require('../services/EmailService');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 // Import idempotency middleware
 const { idempotencyMiddleware } = require('../utils/Idempotency');
@@ -430,12 +429,6 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
       country: req.get('CF-IPCountry') || 'unknown'
     });
 
-    trackEvent(user._id.toString(), 'Withdrawal', {
-      amount,
-      currency: internalCurrency,
-      method: 'crypto'
-    }, req);
-
     return res.json({
       success: true,
       message: 'Withdrawal initiated successfully',
@@ -452,7 +445,6 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
     }
     const errorMsg = error.response?.data?.message || error.message;
     logger.error(`Withdrawal Error: ${errorMsg}`);
-    trackEvent(req.user?.id?.toString(), 'Withdrawal_failed', { method: 'crypto' }, req);
     return res.status(500).json({ success: false, message: errorMsg });
   }
 });

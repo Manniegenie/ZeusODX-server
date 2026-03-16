@@ -9,7 +9,6 @@ const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
-const { trackEvent } = require('../utils/appsFlyerHelper');
 
 const router = express.Router();
 
@@ -1495,12 +1494,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       }
     };
 
-    trackEvent(userId.toString(), 'Swap_', {
-      fromCurrency: quote.sourceCurrency,
-      toCurrency: quote.targetCurrency,
-      amount: quote.sourceAmount
-    }, req);
-
     return res.json({
       success: true,
       message: `NGNZ ${quote.flow.toLowerCase()} completed successfully, Obiex swap initiated in background`,
@@ -1510,10 +1503,6 @@ router.post('/quote/:quoteId', async (req, res) => {
   } catch (err) {
     const endTime = new Date();
     const correlationId = generateCorrelationId();
-
-    trackEvent(req.user?.id?.toString(), 'Swap_failed', {
-      swapType: 'naira'
-    }, req);
 
     logger.error('POST /ngnz-swap/quote/:quoteId error', { 
       error: err.stack,
