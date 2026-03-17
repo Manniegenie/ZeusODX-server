@@ -1081,6 +1081,12 @@ router.get('/platform-stats', async (req, res) => {
   try {
     console.log('=== Platform Stats Request Started ===');
 
+    const { dateFrom, dateTo } = req.query;
+    const dateFilter = {};
+    if (dateFrom) dateFilter.$gte = new Date(dateFrom);
+    if (dateTo) dateFilter.$lte = new Date(dateTo);
+    const hasDateFilter = !!(dateFrom || dateTo);
+
     // Get offramp rate for Naira conversion
     const nairaMarkdown = await NairaMarkdown.findOne();
     const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
@@ -1206,11 +1212,11 @@ router.get('/platform-stats', async (req, res) => {
 
     // 2. AGGREGATE TOTAL UTILITY SPENDING (from BillTransaction)
     const BillTransaction = require('../models/billstransaction');
+    const utilityMatchQuery = { status: 'completed' };
+    if (hasDateFilter) utilityMatchQuery.createdAt = dateFilter;
     const utilityStats = await BillTransaction.aggregate([
       {
-        $match: {
-          status: 'completed'
-        }
+        $match: utilityMatchQuery
       },
       {
         $group: {
@@ -1258,12 +1264,11 @@ router.get('/platform-stats', async (req, res) => {
     }
 
     // Calculate profit from NGNZ withdrawals (fee retained)
+    const withdrawalMatchQuery = { isNGNZWithdrawal: true, status: { $in: ['SUCCESSFUL', 'COMPLETED'] } };
+    if (hasDateFilter) withdrawalMatchQuery.createdAt = dateFilter;
     const withdrawalProfitStats = await Transaction.aggregate([
       {
-        $match: {
-          isNGNZWithdrawal: true,
-          status: { $in: ['SUCCESSFUL', 'COMPLETED'] }
-        }
+        $match: withdrawalMatchQuery
       },
       {
         $group: {
@@ -1286,17 +1291,19 @@ router.get('/platform-stats', async (req, res) => {
     // Calculate profit from swaps (markdown difference)
     // For swaps, profit = fromAmount * fromPrice - toAmount * toPrice (when markdown is applied)
     // Include legacy swaps without swapDirection, exclude IN swaps
+    const swapMatchQuery = {
+      type: { $in: ['SWAP', 'OBIEX_SWAP'] },
+      status: 'SUCCESSFUL',
+      $or: [
+        { swapDirection: 'OUT' },
+        { swapDirection: { $exists: false } },
+        { swapDirection: null }
+      ]
+    };
+    if (hasDateFilter) swapMatchQuery.createdAt = dateFilter;
     const swapProfitStats = await Transaction.aggregate([
       {
-        $match: {
-          type: { $in: ['SWAP', 'OBIEX_SWAP'] },
-          status: 'SUCCESSFUL',
-          $or: [
-            { swapDirection: 'OUT' },
-            { swapDirection: { $exists: false } },
-            { swapDirection: null }
-          ]
-        }
+        $match: swapMatchQuery
       },
       {
         $group: {
@@ -1403,6 +1410,7 @@ router.get('/platform-stats', async (req, res) => {
       }
     };
 
+    response.filters = { dateFrom: dateFrom || null, dateTo: dateTo || null };
     console.log('=== Platform Stats Request Complete ===');
     res.json(response);
 
@@ -1518,6 +1526,246 @@ router.get('/volumes', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /analytics/marketing-stats
+ * Marketing & user growth statistics with optional date filtering
+ */
+router.get('/marketing-stats', async (req, res) => {
+  try {
+    const { dateFrom, dateTo } = req.query;
+
+    const dateFilter = {};
+    if (dateFrom) dateFilter.$gte = new Date(dateFrom);
+    if (dateTo) dateFilter.$lte = new Date(dateTo);
+    const hasDateFilter = !!(dateFrom || dateTo);
+
+    const periodMatchQuery = hasDateFilter ? { createdAt: dateFilter } : {};
+
+    const [totalUsers, newUsersInPeriod, verifiedUsers, kycPendingUsers] = await Promise.all([
+      User.countDocuments({}),
+      User.countDocuments(hasDateFilter ? { createdAt: dateFilter } : {}),
+      User.countDocuments({ kycStatus: 'approved' }),
+      User.countDocuments({ kycStatus: 'pending' }),
+    ]);
+
+    const transactionMatchQuery = {
+      status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
+      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD', 'DEPOSIT', 'WITHDRAWAL'] },
+    };
+    if (hasDateFilter) transactionMatchQuery.createdAt = dateFilter;
+
+    const activeTraderIds = await Transaction.distinct('userId', transactionMatchQuery);
+
+    // Daily registrations — filtered period or last 30 days as default
+    const regDateFilter = hasDateFilter
+      ? dateFilter
+      : { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) };
+
+    const dailyRegistrations = await User.aggregate([
+      { $match: { createdAt: regDateFilter } },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    const transactionTypeBreakdown = await Transaction.aggregate([
+      { $match: transactionMatchQuery },
+      { $group: { _id: '$type', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+    ]);
+
+    // Giftcard submissions in period
+    const giftcardMatchQuery = {};
+    if (hasDateFilter) giftcardMatchQuery.createdAt = dateFilter;
+    const giftcardCount = await GiftCard.countDocuments(giftcardMatchQuery);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      filters: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+      data: {
+        users: {
+          total: totalUsers,
+          newInPeriod: newUsersInPeriod,
+          kycVerified: verifiedUsers,
+          kycPending: kycPendingUsers,
+          activeTraders: activeTraderIds.length,
+          conversionRate: totalUsers > 0 ? parseFloat(((activeTraderIds.length / totalUsers) * 100).toFixed(1)) : 0,
+        },
+        dailyRegistrations,
+        transactionTypeBreakdown,
+        giftcardSubmissions: giftcardCount,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching marketing stats:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch marketing stats', message: error.message });
+  }
+});
+
+/**
+ * GET /analytics/top-traders
+ * Top users by swap/trade volume with optional date filtering
+ * Query params: dateFrom, dateTo, limit (default 20)
+ */
+router.get('/top-traders', async (req, res) => {
+  try {
+    const { dateFrom, dateTo, limit = 20 } = req.query;
+
+    const matchQuery = {
+      status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
+      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
+    };
+
+    if (dateFrom || dateTo) {
+      matchQuery.createdAt = {};
+      if (dateFrom) matchQuery.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) matchQuery.createdAt.$lte = new Date(dateTo);
+    }
+
+    const nairaMarkdown = await NairaMarkdown.findOne();
+    const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
+
+    const topTraders = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$userId',
+          tradeCount: { $sum: 1 },
+          totalNgnzVolume: {
+            $sum: {
+              $cond: [{ $eq: ['$currency', 'NGNZ'] }, { $abs: '$amount' }, 0],
+            },
+          },
+          currencies: { $addToSet: '$currency' },
+          lastTradeAt: { $max: '$createdAt' },
+        },
+      },
+      {
+        $addFields: {
+          estimatedUsdVolume: { $divide: ['$totalNgnzVolume', offrampRate] },
+        },
+      },
+      { $sort: { tradeCount: -1 } },
+      { $limit: parseInt(limit) },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      { $unwind: { path: '$user', preserveNullAndEmpty: true } },
+      {
+        $project: {
+          userId: '$_id',
+          email: { $ifNull: ['$user.email', 'Unknown'] },
+          firstname: { $ifNull: ['$user.firstname', ''] },
+          lastname: { $ifNull: ['$user.lastname', ''] },
+          tradeCount: 1,
+          totalNgnzVolume: { $round: ['$totalNgnzVolume', 2] },
+          estimatedUsdVolume: { $round: ['$estimatedUsdVolume', 2] },
+          currencies: 1,
+          lastTradeAt: 1,
+        },
+      },
+    ]);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      filters: { dateFrom: dateFrom || null, dateTo: dateTo || null, limit: parseInt(limit) },
+      data: { topTraders },
+    });
+  } catch (error) {
+    console.error('Error fetching top traders:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch top traders', message: error.message });
+  }
+});
+
+/**
+ * GET /analytics/token-volume
+ * Most traded tokens by volume and count with optional date filtering
+ */
+router.get('/token-volume', async (req, res) => {
+  try {
+    const { dateFrom, dateTo } = req.query;
+
+    const matchQuery = {
+      status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
+      type: { $in: ['SWAP', 'OBIEX_SWAP', 'DEPOSIT', 'WITHDRAWAL', 'GIFTCARD'] },
+      currency: { $exists: true, $ne: null },
+    };
+
+    if (dateFrom || dateTo) {
+      matchQuery.createdAt = {};
+      if (dateFrom) matchQuery.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) matchQuery.createdAt.$lte = new Date(dateTo);
+    }
+
+    const tokenVolume = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: { $toUpper: '$currency' },
+          totalVolume: { $sum: { $abs: '$amount' } },
+          tradeCount: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$userId' },
+        },
+      },
+      {
+        $project: {
+          token: '$_id',
+          totalVolume: 1,
+          tradeCount: 1,
+          uniqueUserCount: { $size: '$uniqueUsers' },
+        },
+      },
+      { $sort: { tradeCount: -1 } },
+    ]);
+
+    const tokens = tokenVolume.map((t) => t.token).filter((t) => t && t !== 'NGNZ' && t !== 'USD');
+    let prices = {};
+    try {
+      prices = await getPricesWithCache(tokens) || {};
+    } catch (e) {
+      console.warn('Price fetch failed for token-volume:', e.message);
+    }
+
+    const nairaMarkdown = await NairaMarkdown.findOne();
+    const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
+
+    const enrichedTokens = tokenVolume
+      .map((t) => {
+        let usdValue = 0;
+        if (t.token === 'NGNZ') {
+          usdValue = t.totalVolume / offrampRate;
+        } else if (t.token === 'USD') {
+          usdValue = t.totalVolume;
+        } else if (prices[t.token]) {
+          usdValue = t.totalVolume * prices[t.token];
+        }
+        return { ...t, usdValue: parseFloat(usdValue.toFixed(2)) };
+      })
+      .sort((a, b) => b.usdValue - a.usdValue);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      filters: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+      data: { tokens: enrichedTokens },
+    });
+  } catch (error) {
+    console.error('Error fetching token volume:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch token volume', message: error.message });
   }
 });
 
