@@ -1612,8 +1612,11 @@ router.get('/marketing-stats', async (req, res) => {
 
 /**
  * GET /analytics/top-traders
- * Top users by swap/trade volume with optional date filtering
- * Query params: dateFrom, dateTo, limit (default 20)
+ * Top users ranked by TOTAL volume (USD):
+ *   - ngnzVolume:            NGNZ currency transactions (swaps, bill payments)
+ *   - cryptoWithdrawalUsd:   WITHDRAWAL type transactions in any crypto currency
+ *   - internalTransferUsd:   SWAP / OBIEX_SWAP / GIFTCARD (crypto-to-crypto / internal)
+ * Supports dateFrom, dateTo, limit (default 20)
  */
 router.get('/top-traders', async (req, res) => {
   try {
@@ -1621,7 +1624,8 @@ router.get('/top-traders', async (req, res) => {
 
     const matchQuery = {
       status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
-      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
+      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD', 'WITHDRAWAL'] },
+      currency: { $exists: true, $ne: null },
     };
 
     if (dateFrom || dateTo) {
@@ -1633,57 +1637,136 @@ router.get('/top-traders', async (req, res) => {
     const nairaMarkdown = await NairaMarkdown.findOne();
     const offrampRate = nairaMarkdown?.offrampRate || 1554.42;
 
-    const topTraders = await Transaction.aggregate([
+    // Step 1: Aggregate raw volumes grouped by userId + currency + volume category
+    const rawData = await Transaction.aggregate([
       { $match: matchQuery },
       {
-        $group: {
-          _id: '$userId',
-          tradeCount: { $sum: 1 },
-          totalNgnzVolume: {
-            $sum: {
-              $cond: [{ $eq: ['$currency', 'NGNZ'] }, { $abs: '$amount' }, 0],
+        $addFields: {
+          normalizedCurrency: { $toUpper: '$currency' },
+          volumeCategory: {
+            $switch: {
+              branches: [
+                { case: { $eq: [{ $toUpper: '$currency' }, 'NGNZ'] }, then: 'ngnz' },
+                { case: { $eq: ['$type', 'WITHDRAWAL'] }, then: 'cryptoWithdrawal' },
+              ],
+              default: 'internalTransfer',
             },
           },
-          currencies: { $addToSet: '$currency' },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            userId: '$userId',
+            currency: '$normalizedCurrency',
+            category: '$volumeCategory',
+          },
+          totalVolume: { $sum: { $abs: '$amount' } },
+          tradeCount: { $sum: 1 },
           lastTradeAt: { $max: '$createdAt' },
         },
       },
-      {
-        $addFields: {
-          estimatedUsdVolume: { $divide: ['$totalNgnzVolume', offrampRate] },
-        },
-      },
-      { $sort: { tradeCount: -1 } },
-      { $limit: parseInt(limit) },
-      {
-        $lookup: {
-          from: 'users',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'user',
-        },
-      },
-      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          userId: '$_id',
-          email: { $ifNull: ['$user.email', 'Unknown'] },
-          firstname: { $ifNull: ['$user.firstname', ''] },
-          lastname: { $ifNull: ['$user.lastname', ''] },
-          tradeCount: 1,
-          totalNgnzVolume: { $round: ['$totalNgnzVolume', 2] },
-          estimatedUsdVolume: { $round: ['$estimatedUsdVolume', 2] },
-          currencies: 1,
-          lastTradeAt: 1,
-        },
-      },
     ]);
+
+    // Step 2: Fetch crypto prices for non-NGNZ/non-USD currencies
+    const allCurrencies = [...new Set(
+      rawData
+        .map((r) => r._id.currency)
+        .filter((c) => c && c !== 'NGNZ' && c !== 'USD' && SUPPORTED_TOKENS[c])
+    )];
+
+    let prices = {};
+    try {
+      prices = (await getPricesWithCache(allCurrencies)) || {};
+    } catch (e) {
+      console.warn('Price fetch failed for top-traders:', e.message);
+    }
+
+    function toUSD(currency, amount) {
+      if (!amount) return 0;
+      if (currency === 'NGNZ') return amount / offrampRate;
+      if (currency === 'USD') return amount;
+      const price = prices[currency];
+      return price ? amount * Number(price) : 0;
+    }
+
+    // Step 3: Merge into per-user totals
+    const userMap = {};
+    for (const row of rawData) {
+      const uid = row._id.userId?.toString();
+      if (!uid) continue;
+
+      if (!userMap[uid]) {
+        userMap[uid] = {
+          userId: uid,
+          ngnzVolume: 0,
+          cryptoWithdrawalUsd: 0,
+          internalTransferUsd: 0,
+          tradeCount: 0,
+          lastTradeAt: null,
+          currencies: new Set(),
+        };
+      }
+
+      const u = userMap[uid];
+      u.tradeCount += row.tradeCount;
+      u.currencies.add(row._id.currency);
+      if (!u.lastTradeAt || row.lastTradeAt > u.lastTradeAt) u.lastTradeAt = row.lastTradeAt;
+
+      if (row._id.category === 'ngnz') {
+        u.ngnzVolume += row.totalVolume; // raw NGNZ amount; convert to USD separately
+      } else if (row._id.category === 'cryptoWithdrawal') {
+        u.cryptoWithdrawalUsd += toUSD(row._id.currency, row.totalVolume);
+      } else {
+        u.internalTransferUsd += toUSD(row._id.currency, row.totalVolume);
+      }
+    }
+
+    // Step 4: Sort by total USD volume descending, take top N
+    const sorted = Object.values(userMap)
+      .map((t) => {
+        const ngnzVolumeUsd = t.ngnzVolume / offrampRate;
+        return {
+          ...t,
+          ngnzVolumeUsd,
+          totalVolumeUsd: ngnzVolumeUsd + t.cryptoWithdrawalUsd + t.internalTransferUsd,
+          currencies: [...t.currencies],
+        };
+      })
+      .sort((a, b) => b.totalVolumeUsd - a.totalVolumeUsd)
+      .slice(0, parseInt(limit));
+
+    // Step 5: Batch user lookup
+    const userIds = sorted.map((t) => t.userId);
+    const users = await User.find(
+      { _id: { $in: userIds } },
+      { _id: 1, email: 1, firstname: 1, lastname: 1 }
+    ).lean();
+    const userLookup = Object.fromEntries(users.map((u) => [u._id.toString(), u]));
+
+    const result = sorted.map((t) => {
+      const user = userLookup[t.userId] || {};
+      return {
+        userId: t.userId,
+        email: user.email || 'Unknown',
+        firstname: user.firstname || '',
+        lastname: user.lastname || '',
+        ngnzVolume: parseFloat(t.ngnzVolume.toFixed(2)),
+        ngnzVolumeUsd: parseFloat(t.ngnzVolumeUsd.toFixed(2)),
+        cryptoWithdrawalUsd: parseFloat(t.cryptoWithdrawalUsd.toFixed(2)),
+        internalTransferUsd: parseFloat(t.internalTransferUsd.toFixed(2)),
+        totalVolumeUsd: parseFloat(t.totalVolumeUsd.toFixed(2)),
+        tradeCount: t.tradeCount,
+        currencies: t.currencies,
+        lastTradeAt: t.lastTradeAt,
+      };
+    });
 
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
       filters: { dateFrom: dateFrom || null, dateTo: dateTo || null, limit: parseInt(limit) },
-      data: { topTraders },
+      data: { topTraders: result },
     });
   } catch (error) {
     console.error('Error fetching top traders:', error);
