@@ -86,6 +86,7 @@ router.get('/', async (req, res) => {
     const featureAccess = {
       dashboard: true, // Everyone can see dashboard
       platformStats: isSuperAdmin || false, // Admin does NOT have access
+      analytics: isSuperAdmin || false, // Super admin only
       userManagement: isSuperAdmin || effectivePermissions.canManageUsers || false,
       kycReview: isSuperAdmin || effectivePermissions.canManageKYC || false,
       feesAndRates: isSuperAdmin || false, // Admin does NOT have access

@@ -658,7 +658,7 @@ app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
 // KYC routes - allow moderators without permission check (they can view, but actions require permission)
 app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
 app.use("/usermanagement", authenticateAdminToken, requireModerator, requireUserManagement, usermanagementRoutes);
-app.use("/analytics", authenticateAdminToken, requireModerator, analyticsRoutes);
+app.use("/analytics", authenticateAdminToken, requireSuperAdmin, analyticsRoutes);
 // IMPORTANT: /admin must be LAST to avoid catching /admin/* routes (like /admin/transaction, /admin/permissions, etc.)
 app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
 

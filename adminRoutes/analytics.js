@@ -1663,7 +1663,7 @@ router.get('/top-traders', async (req, res) => {
           as: 'user',
         },
       },
-      { $unwind: { path: '$user', preserveNullAndEmpty: true } },
+      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
       {
         $project: {
           userId: '$_id',
