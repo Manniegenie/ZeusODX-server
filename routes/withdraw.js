@@ -279,8 +279,10 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
       });
     }
 
-    // 2FA passed — reset attempt counter (code stays claimed until TTL)
+    // 2FA passed — reset both 2FA and PIN counters so accumulated failures
+    // from previous sessions don't block a legitimately authenticated user
     await securityService.reset2FAAttempts(user._id.toString());
+    await securityService.resetPINAttempts(user._id.toString());
 
     // SECURITY FIX: Check PIN attempt rate limiting
     const pinCheck = await securityService.checkPINAttempts(user._id.toString());
