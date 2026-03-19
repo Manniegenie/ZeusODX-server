@@ -473,13 +473,17 @@ router.post('/users/:userId/unlock-pin', async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
+    // Clear Redis PIN lock and attempt counter
     const { wasLocked } = await securityService.unlockPINAccount(userId);
+
+    // Clear MongoDB login lock fields (set by signin.js after failed login attempts)
+    await User.findByIdAndUpdate(userId, {
+      $set: { loginAttempts: 0, lockUntil: null, lastFailedLogin: null }
+    });
 
     return res.json({
       success: true,
-      message: wasLocked
-        ? `PIN lock cleared for ${user.email}`
-        : `No active PIN lock found for ${user.email} — attempt counter reset`,
+      message: `All locks cleared for ${user.email} (PIN lock + login lock)`,
       data: {
         userId,
         email: user.email,
