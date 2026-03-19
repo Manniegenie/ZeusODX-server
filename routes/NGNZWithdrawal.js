@@ -325,9 +325,9 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
       });
     }
 
-    // SECURITY FIX: Check for 2FA code replay attack
-    const isReplay = await securityService.check2FACodeReplay(userId, twoFactorCode);
-    if (isReplay) {
+    // Atomically claim the 2FA code — prevents replay without burning it on downstream failures
+    const claimed = await securityService.claim2FACode(userId, twoFactorCode);
+    if (!claimed) {
       logger.warn(`NGNZ 2FA replay attack detected`, { userId, ip: req.ip });
       return res.status(401).json({
         success: false,
@@ -337,6 +337,7 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
     if (!validateTwoFactorAuth(user, twoFactorCode)) {
       await securityService.record2FAFailure(userId);
+      await securityService.release2FACode(userId, twoFactorCode); // code was wrong — release so user can retry
       const remainingAttempts = twoFACheck.attemptsRemaining - 1;
 
       logger.warn(`NGNZ withdrawal blocked: Invalid 2FA code`, {
@@ -353,13 +354,13 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
       });
     }
 
-    // Reset 2FA attempts on success and mark code as used
+    // 2FA passed — reset attempt counter (code stays claimed until TTL)
     await securityService.reset2FAAttempts(userId);
-    await securityService.mark2FACodeUsed(userId, twoFactorCode);
 
     // SECURITY FIX: Check PIN attempt rate limiting
     const pinCheck = await securityService.checkPINAttempts(userId);
     if (!pinCheck.allowed) {
+      await securityService.release2FACode(userId, twoFactorCode); // release so user can retry once PIN lock clears
       return res.status(423).json({
         success: false,
         message: pinCheck.message,
@@ -370,6 +371,7 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
 
     const isPinValid = await comparePasswordPin(passwordpin, user.passwordpin);
     if (!isPinValid) {
+      await securityService.release2FACode(userId, twoFactorCode); // wrong PIN — allow retry with same TOTP code
       const attempts = await securityService.recordPINFailure(userId);
       const remainingAttempts = Math.max(0, 5 - attempts);
 

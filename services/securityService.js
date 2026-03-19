@@ -229,23 +229,60 @@ class SecurityService {
   }
 
   /**
-   * Check if a 2FA code has already been used (without marking it)
+   * Atomically claim a 2FA code via Redis SET NX.
+   * Returns true if the code is fresh (claim succeeded), false if already in use.
+   * Call release2FACode() if the request fails downstream (bad PIN, etc.) so the
+   * user can retry without waiting for a new TOTP code.
    *
-   * @param {string} userId User ID
-   * @param {string} code 2FA code
-   * @returns {Promise<boolean>} True if code was already used, false if not
+   * @param {string} userId
+   * @param {string} code
+   * @returns {Promise<boolean>} true = code is fresh and now claimed, false = already used
+   */
+  async claim2FACode(userId, code) {
+    const replayKey = `2fa_used:${userId}:${code}`;
+    try {
+      // SET NX EX 90 — atomic: sets only if key does not exist
+      const result = await this.redis.set(replayKey, '1', 'EX', 90, 'NX');
+      if (result === null) {
+        logger.warn(`2FA code replay detected for user ${userId}`);
+        return false; // key already existed → code already claimed
+      }
+      return true; // key was set → code is fresh
+    } catch (error) {
+      logger.error('Error claiming 2FA code:', error);
+      return true; // fail open — don't block user on redis errors
+    }
+  }
+
+  /**
+   * Release a previously claimed 2FA code.
+   * Call this when a request fails AFTER 2FA passed but BEFORE the transaction
+   * commits (e.g. wrong PIN, insufficient balance) so the user can retry
+   * with the same TOTP code if it is still valid.
+   *
+   * @param {string} userId
+   * @param {string} code
+   */
+  async release2FACode(userId, code) {
+    const replayKey = `2fa_used:${userId}:${code}`;
+    try {
+      await this.redis.del(replayKey);
+    } catch (error) {
+      logger.error('Error releasing 2FA code:', error);
+    }
+  }
+
+  /**
+   * @deprecated Use claim2FACode() instead — non-atomic, kept for compatibility.
    */
   async check2FACodeReplay(userId, code) {
     const replayKey = `2fa_used:${userId}:${code}`;
-
     try {
       const alreadyUsed = await this.redis.get(replayKey);
-
       if (alreadyUsed) {
         logger.warn(`2FA code replay detected for user ${userId}`);
         return true;
       }
-
       return false;
     } catch (error) {
       logger.error('Error checking 2FA replay:', error);
@@ -254,15 +291,10 @@ class SecurityService {
   }
 
   /**
-   * Mark a 2FA code as used after successful validation
-   * Should only be called AFTER the code has been verified as valid
-   *
-   * @param {string} userId User ID
-   * @param {string} code 2FA code
+   * @deprecated Use claim2FACode() instead — non-atomic, kept for compatibility.
    */
   async mark2FACodeUsed(userId, code) {
     const replayKey = `2fa_used:${userId}:${code}`;
-
     try {
       await this.redis.setex(replayKey, 90, '1');
     } catch (error) {

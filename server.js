@@ -594,6 +594,7 @@ const adminsigninRoutes = require("./adminRoutes/adminsign-in");
 const adminRegisterRoutes = require("./adminRoutes/registeradmin");
 const usermanagementRoutes = require("./adminRoutes/usermanagement");
 const analyticsRoutes = require("./adminRoutes/analytics");
+const marketingStatsRoutes = require("./adminRoutes/marketingStats");
 const resendOtpRoutes = require("./routes/resendOtp");
 const Admin2FARoutes = require("./adminRoutes/Admin2FA");
 const permissionsRoutes = require("./adminRoutes/permissions");
@@ -658,7 +659,8 @@ app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
 // KYC routes - allow moderators without permission check (they can view, but actions require permission)
 app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
 app.use("/usermanagement", authenticateAdminToken, requireModerator, requireUserManagement, usermanagementRoutes);
-app.use("/analytics", authenticateAdminToken, requireSuperAdmin, analyticsRoutes);
+app.use("/analytics", authenticateAdminToken, requireModerator, marketingStatsRoutes); // marketing-stats: moderators+
+app.use("/analytics", authenticateAdminToken, requireSuperAdmin, analyticsRoutes);       // all other analytics: super_admin only
 // IMPORTANT: /admin must be LAST to avoid catching /admin/* routes (like /admin/transaction, /admin/permissions, etc.)
 app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
 

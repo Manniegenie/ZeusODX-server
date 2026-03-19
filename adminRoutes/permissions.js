@@ -87,6 +87,7 @@ router.get('/', async (req, res) => {
       dashboard: true, // Everyone can see dashboard
       platformStats: isSuperAdmin || false, // Admin does NOT have access
       analytics: isSuperAdmin || false, // Super admin only
+      marketingStats: isSuperAdmin || isModerator || false, // Moderators and above
       userManagement: isSuperAdmin || effectivePermissions.canManageUsers || false,
       kycReview: isSuperAdmin || effectivePermissions.canManageKYC || false,
       feesAndRates: isSuperAdmin || false, // Admin does NOT have access
