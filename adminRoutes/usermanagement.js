@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/user'); // adjust path to your model
 const { getPricesWithCache, SUPPORTED_TOKENS } = require('../services/portfolio');
+const securityService = require('../services/securityService');
 
 // Helper to escape user input for regex
 function escapeRegex(text = '') {
@@ -416,6 +417,82 @@ router.get('/summary', async (req, res) => {
   } catch (err) {
     console.error('Error fetching complete user summary:', err);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+
+/**
+ * POST /usermanagement/users/reset-pin
+ * Clears a user's passwordpin by email so they can set a new one via the app.
+ * Accessible to moderators and above.
+ */
+router.post('/users/reset-pin', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Email is required.' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('_id email firstname lastname passwordpin');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    user.passwordpin = null;
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: `PIN cleared for ${user.email}. User must set a new PIN via the app.`,
+      data: {
+        userId: user._id,
+        email: user.email,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        resetAt: new Date().toISOString(),
+        resetBy: req.admin?.email || req.admin?.username || 'admin',
+      },
+    });
+  } catch (error) {
+    console.error('Error resetting user PIN:', error);
+    res.status(500).json({ success: false, error: 'Failed to reset PIN', message: error.message });
+  }
+});
+
+/**
+ * POST /admin/users/:userId/unlock-pin
+ * Clears a user's PIN lock and attempt counter.
+ * Super admin only — called when a user is locked out and contacts support.
+ */
+router.post('/users/:userId/unlock-pin', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId).select('_id email firstname lastname').lean();
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const { wasLocked } = await securityService.unlockPINAccount(userId);
+
+    return res.json({
+      success: true,
+      message: wasLocked
+        ? `PIN lock cleared for ${user.email}`
+        : `No active PIN lock found for ${user.email} — attempt counter reset`,
+      data: {
+        userId,
+        email: user.email,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        wasLocked,
+        unlockedAt: new Date().toISOString(),
+        unlockedBy: req.admin?.email || req.admin?.username || 'admin',
+      },
+    });
+  } catch (error) {
+    console.error('Error unlocking PIN account:', error);
+    res.status(500).json({ success: false, error: 'Failed to unlock account', message: error.message });
   }
 });
 

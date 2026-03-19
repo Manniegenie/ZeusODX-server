@@ -6,7 +6,6 @@ const EmailVerificationService = require('../services/VerifiedEmail');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const logger = require('../utils/logger');
 const validator = require('validator');
-const bcrypt = require('bcryptjs');
 
 // Generate numeric OTP (same as signup)
 function generateOTP(length = 6) {
@@ -291,12 +290,8 @@ router.post('/change-pin', async (req, res) => {
 
     logger.info('✅ 2FA validation successful for forgot pin completion', { userId });
 
-    // Hash the new pin manually (schema no longer auto-hashes passwordpin)
-    const saltRounds = 10; // Match SALT_WORK_FACTOR from schema
-    const hashedNewPin = await bcrypt.hash(newPin, saltRounds);
-
-    // Update user's passwordpin and clear all OTP fields
-    user.passwordpin = hashedNewPin;
+    // Set plaintext PIN — the pre-save hook in user.js hashes it automatically
+    user.passwordpin = newPin;
     user.pinChangeOtp = undefined;
     user.pinChangeOtpCreatedAt = undefined;
     user.pinChangeOtpExpiresAt = undefined;

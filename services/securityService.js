@@ -229,6 +229,28 @@ class SecurityService {
   }
 
   /**
+   * Fully unlock a PIN-locked account — clears both the lock key and the
+   * attempt counter. Called by admins to manually unblock a user.
+   *
+   * @param {string} userId
+   * @returns {Promise<{ wasLocked: boolean }>}
+   */
+  async unlockPINAccount(userId) {
+    const attemptKey = `pin_attempts:${userId}`;
+    const lockKey = `pin_locked:${userId}`;
+
+    try {
+      const wasLocked = !!(await this.redis.get(lockKey));
+      await this.redis.del(lockKey, attemptKey);
+      logger.info(`PIN lock cleared for user ${userId} (wasLocked: ${wasLocked})`);
+      return { wasLocked };
+    } catch (error) {
+      logger.error('Error unlocking PIN account:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Atomically claim a 2FA code via Redis SET NX.
    * Returns true if the code is fresh (claim succeeded), false if already in use.
    * Call release2FACode() if the request fails downstream (bad PIN, etc.) so the
