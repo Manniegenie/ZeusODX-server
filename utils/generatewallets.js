@@ -25,21 +25,27 @@ const retryWithBackoff = async (fn, retries = MAX_RETRIES, delay = RETRY_DELAY_M
   }
 };
 
+// Map internal currency codes to the enum Obiex recognizes in their API
+const toObiexCurrency = (currency) => {
+  const map = { 'TON': 'Toncoin' };
+  return map[currency.toUpperCase()] || currency;
+};
+
 // Function to generate a single wallet for a specific currency/network
 const generateSingleWallet = async (email, userId, currency, network) => {
   validateObiexConfig();
-  logger.info(`Starting single wallet generation for ${email}`, { 
-    userId, 
-    currency, 
-    network 
+  logger.info(`Starting single wallet generation for ${email}`, {
+    userId,
+    currency,
+    network
   });
 
   // Ensure purpose is alphanumeric and uses only hyphens
   const cleanedPurpose = String(userId).replace(/[^a-zA-Z0-9-]/g, '-');
-  
+
   const payload = {
     purpose: cleanedPurpose,
-    currency,
+    currency: toObiexCurrency(currency), // Use Obiex-recognized enum
     network,
   };
 
@@ -141,8 +147,8 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   // Tron
   'TRX_TRX': 'TRX_TRX',             // TRX on Tron network
 
-  // TON
-  'TON_TON': 'TON_TON',             // Toncoin on TON network
+  // TON (schema key reflecting User model — network config managed by admin via CryptoFeeMarkup)
+  'TON_TON': 'TON_TON',
 };
 
 // Function to get the correct currency/network for obiex from schema key

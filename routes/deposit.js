@@ -14,21 +14,7 @@ const {
   CURRENCY_NETWORK_TO_SCHEMA
 } = require('../utils/generatewallets');
 
-// Helper: build a supported tokens map dynamically from getAvailableNetworks
-const buildSupportedTokens = () => {
-  const map = {};
-  // CURRENCY_NETWORK_TO_SCHEMA keys are like "ETH_ARBITRUM", "TRX_TRX", etc.
-  // This automatically includes TRX_TRX once CURRENCY_NETWORK_TO_SCHEMA is updated
-  Object.keys(CURRENCY_NETWORK_TO_SCHEMA).forEach(key => {
-    const [currency, network] = key.split('_');
-    if (!map[currency]) map[currency] = new Set();
-    map[currency].add(network);
-  });
-  // convert sets to arrays
-  return Object.fromEntries(Object.entries(map).map(([k, set]) => [k, Array.from(set)]));
-};
-
-const SUPPORTED_TOKENS = buildSupportedTokens();
+const CryptoFeeMarkup = require('../models/cryptofee');
 
 // Function to generate a single wallet for a specific token/network and save to user
 const generateSingleWalletForUser = async (userId, email, schemaKey) => {
@@ -82,9 +68,12 @@ router.post(
       .isLength({ min: 2, max: 10 })
       .withMessage('Token symbol must be between 2 and 10 characters.')
       .toUpperCase()
-      .custom((value) => {
-        if (!SUPPORTED_TOKENS[value]) {
-          throw new Error(`Unsupported token: ${value}. Supported tokens: ${Object.keys(SUPPORTED_TOKENS).join(', ')}`);
+      .custom(async (value) => {
+        // Validate against admin-managed CryptoFeeMarkup — no hardcoded list
+        const exists = await CryptoFeeMarkup.exists({ currency: value });
+        if (!exists) {
+          const supported = await CryptoFeeMarkup.distinct('currency');
+          throw new Error(`Unsupported token: ${value}. Supported tokens: ${supported.join(', ')}`);
         }
         return true;
       }),
@@ -92,8 +81,7 @@ router.post(
       .trim()
       .notEmpty()
       .withMessage('Network is required.')
-      .custom((value, { req }) => {
-        // allow letters, numbers, underscores
+      .custom((value) => {
         if (!/^[A-Za-z0-9_]+$/.test(value)) {
           throw new Error('Network must contain only letters, numbers, and underscores.');
         }
@@ -102,23 +90,17 @@ router.post(
       .isLength({ min: 2, max: 15 })
       .withMessage('Network must be between 2 and 15 characters.')
       .toUpperCase()
-      .custom((value, { req }) => {
+      .custom(async (value, { req }) => {
         const tokenSymbol = req.body.tokenSymbol?.toUpperCase();
         if (!tokenSymbol) return true;
 
-        // Use getSchemaKeyFromNetworkId (which will throw if unsupported) for validation
-        try {
-          // If this throws, it's an unsupported combo
-          const schemaKey = getSchemaKeyFromNetworkId(tokenSymbol, value);
-          // Ensure schemaKey exists in your canonical map (redundant but explicit)
-          if (!CURRENCY_NETWORK_TO_SCHEMA[schemaKey]) {
-            throw new Error(`Unsupported network ${value} for token ${tokenSymbol}`);
-          }
-          return true;
-        } catch (err) {
-          const supported = SUPPORTED_TOKENS[tokenSymbol] || [];
+        // Validate network against admin-managed CryptoFeeMarkup
+        const feeDoc = await CryptoFeeMarkup.findOne({ currency: tokenSymbol, network: value });
+        if (!feeDoc) {
+          const supported = await CryptoFeeMarkup.find({ currency: tokenSymbol }).distinct('network');
           throw new Error(`Invalid network ${value} for token ${tokenSymbol}. Supported networks: ${supported.join(', ')}`);
         }
+        return true;
       }),
   ],
   async (req, res) => {
@@ -162,7 +144,7 @@ router.post(
         return res.status(400).json({
           success: false,
           message: `Invalid token/network combination: ${tokenSymbol}/${network}`,
-          supportedNetworks: SUPPORTED_TOKENS[tokenSymbol] || []
+          supportedNetworks: await CryptoFeeMarkup.find({ currency: tokenSymbol }).distinct('network')
         });
       }
 

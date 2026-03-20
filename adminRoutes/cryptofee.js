@@ -22,8 +22,8 @@ router.post('/crypto-fee', async (req, res) => {
     });
 
     if (existingFee) {
-      return res.status(409).json({ 
-        message: 'Crypto fee already exists for this currency and network combination.' 
+      return res.status(409).json({
+        message: 'Crypto fee already exists for this currency and network combination.'
       });
     }
 

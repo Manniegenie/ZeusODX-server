@@ -12,7 +12,8 @@ const SUPPORTED_TOKENS = {
   USDC: { name: 'USD Coin', symbol: 'USDC', decimals: 6, isStablecoin: true },
   BNB: { name: 'Binance Coin', symbol: 'BNB', decimals: 18, isStablecoin: false },
   MATIC: { name: 'Polygon', symbol: 'MATIC', decimals: 18, isStablecoin: false },
-  TRX: { name: 'Tron', symbol: 'TRX', decimals: 6, isStablecoin: false } // ✅ Added TRX
+  TRX: { name: 'Tron', symbol: 'TRX', decimals: 6, isStablecoin: false },
+  TON: { name: 'Toncoin', symbol: 'TON', decimals: 9, isStablecoin: false }
 };
 
 /**
