@@ -49,6 +49,8 @@ router.post('/deduct', async (req, res) => {
       balanceField = 'maticBalance';
     } else if (currencyKey.startsWith('trx')) {
       balanceField = 'trxBalance';
+    } else if (currencyKey.startsWith('ton')) {
+      balanceField = 'tonBalance';
     } else {
       return res.status(400).json({ error: 'Unsupported currency for balance deduction' });
     }
