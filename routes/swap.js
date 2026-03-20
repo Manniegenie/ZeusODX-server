@@ -47,7 +47,6 @@ const DEFAULT_STABLECOIN = 'USDT';
 function mapToObiexCurrency(currency) {
   const upperCurrency = currency.toUpperCase();
   if (upperCurrency === 'MATIC') return 'POL';
-  if (upperCurrency === 'TON') return 'Toncoin';
   return upperCurrency;
 }
 

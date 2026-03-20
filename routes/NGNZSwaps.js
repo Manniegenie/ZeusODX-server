@@ -28,7 +28,6 @@ registerCache('ngnz_swaps_userCache', userCache);
 function mapToObiexCurrency(currency) {
   const upperCurrency = currency.toUpperCase();
   if (upperCurrency === 'MATIC') return 'POL';
-  if (upperCurrency === 'TON') return 'Toncoin';
   return upperCurrency;
 }
 

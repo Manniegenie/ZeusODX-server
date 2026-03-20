@@ -25,12 +25,6 @@ const retryWithBackoff = async (fn, retries = MAX_RETRIES, delay = RETRY_DELAY_M
   }
 };
 
-// Map internal currency codes to the enum Obiex recognizes in their API
-const toObiexCurrency = (currency) => {
-  const map = { 'TON': 'Toncoin' };
-  return map[currency.toUpperCase()] || currency;
-};
-
 // Function to generate a single wallet for a specific currency/network
 const generateSingleWallet = async (email, userId, currency, network) => {
   validateObiexConfig();
@@ -45,7 +39,7 @@ const generateSingleWallet = async (email, userId, currency, network) => {
 
   const payload = {
     purpose: cleanedPurpose,
-    currency: toObiexCurrency(currency), // Use Obiex-recognized enum
+    currency,
     network,
   };
 
