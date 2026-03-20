@@ -110,8 +110,8 @@ router.get('/dashboard', async (req, res) => {
     const user = await User.findById(userId).select(
       'firstname lastname email username phonenumber avatarUrl is2FAEnabled ' +
       'kycLevel kycStatus failedLoginAttempts lastFailedLogin wallets ' +
-      'btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance ngnzBalance ' +
-      'btcPendingBalance ethPendingBalance solPendingBalance usdtPendingBalance usdcPendingBalance bnbPendingBalance maticPendingBalance trxPendingBalance ngnzPendingBalance'
+      'btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance ngnzBalance tonBalance ' +
+      'btcPendingBalance ethPendingBalance solPendingBalance usdtPendingBalance usdcPendingBalance bnbPendingBalance maticPendingBalance trxPendingBalance ngnzPendingBalance tonPendingBalance'
     );
 
     if (!user) {
