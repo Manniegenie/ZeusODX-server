@@ -187,8 +187,8 @@ class KYCLimitService {
         return await offrampService.convertUsdToNaira(amount);
       }
 
-      // Support all withdrawable crypto tokens: BTC, ETH, SOL, BNB, MATIC, TRX
-      const cryptoCurrencies = ['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'TRX'];
+      // Support all withdrawable crypto tokens: BTC, ETH, SOL, BNB, MATIC, TRX, TON
+      const cryptoCurrencies = ['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'TRX', 'TON'];
       if (cryptoCurrencies.includes(currency)) {
         const prices = await this.getCryptoPricesFromCurrencyAPI();
         const cryptoPrice = prices[currency];
@@ -223,7 +223,7 @@ class KYCLimitService {
 
   async getCryptoPricesFromCurrencyAPI() {
     // Fetch prices for all withdrawable crypto tokens
-    return await getPricesWithCache(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX']);
+    return await getPricesWithCache(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX', 'TON']);
   }
 
   async getConversionRate(currency) {

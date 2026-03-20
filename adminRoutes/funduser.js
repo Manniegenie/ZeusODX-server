@@ -14,6 +14,7 @@ const currencyFieldMap = {
   BNB: 'bnbBalance',      // Added
   MATIC: 'maticBalance',  // Added
   TRX: 'trxBalance',
+  TON: 'tonBalance',
   NGNZ: 'ngnzBalance'
 };
 
@@ -61,7 +62,7 @@ router.post('/fund-user', async (req, res) => {
       { email },
       update,
       { new: true, runValidators: true }
-    ).select('email btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance ngnzBalance');
+    ).select('email btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance tonBalance ngnzBalance');
 
     if (!updatedUser) {
       return res.status(404).json({ 
@@ -107,6 +108,7 @@ router.post('/fund-user', async (req, res) => {
           BNB: updatedUser.bnbBalance,
           MATIC: updatedUser.maticBalance,
           TRX: updatedUser.trxBalance,
+          TON: updatedUser.tonBalance,
           NGNZ: updatedUser.ngnzBalance
         }
       }
@@ -164,7 +166,7 @@ router.post('/deduct-user', async (req, res) => {
       { email },
       update,
       { new: true, runValidators: true }
-    ).select('email btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance ngnzBalance');
+    ).select('email btcBalance ethBalance solBalance usdtBalance usdcBalance bnbBalance maticBalance trxBalance tonBalance ngnzBalance');
 
     if (!updatedUser) {
       return res.status(404).json({ 
@@ -194,6 +196,7 @@ router.post('/deduct-user', async (req, res) => {
           BNB: updatedUser.bnbBalance,
           MATIC: updatedUser.maticBalance,
           TRX: updatedUser.trxBalance,
+          TON: updatedUser.tonBalance,
           NGNZ: updatedUser.ngnzBalance
         }
       }
