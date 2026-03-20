@@ -43,8 +43,12 @@ const SUPPORTED_TOKENS = {
     isStablecoin: false, 
     supportedByJob: true
   },
-  TRX: { 
-    isStablecoin: false, 
+  TRX: {
+    isStablecoin: false,
+    supportedByJob: true
+  },
+  TON: {
+    isStablecoin: false,
     supportedByJob: true
   },
   NGNZ: { 

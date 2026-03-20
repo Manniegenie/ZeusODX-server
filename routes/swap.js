@@ -22,7 +22,7 @@ const { registerCache } = require('../utils/cacheManager');
 registerCache('swap_userCache', userCache);
 
 // Supported tokens
-const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'Polygon', 'TRX']);
+const SUPPORTED_TOKENS = new Set(['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'Polygon', 'TRX', 'TON']);
 const TOKEN_MAP = {
   BTC: { name: 'Bitcoin', currency: 'btc' },
   ETH: { name: 'Ethereum', currency: 'eth' },
@@ -32,11 +32,12 @@ const TOKEN_MAP = {
   BNB: { name: 'BNB', currency: 'bnb' },
   MATIC: { name: 'Polygon', currency: 'matic' },
   Polygon: { name: 'Polygon', currency: 'matic' },
-  TRX: { name: 'Tron', currency: 'trx' }
+  TRX: { name: 'Tron', currency: 'trx' },
+  TON: { name: 'Toncoin', currency: 'ton' }
 };
 
 const STABLECOINS = new Set(['USDT', 'USDC']);
-const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'Polygon', 'TRX']);
+const CRYPTOCURRENCIES = new Set(['BTC', 'ETH', 'SOL', 'BNB', 'MATIC', 'Polygon', 'TRX', 'TON']);
 const DEFAULT_STABLECOIN = 'USDT';
 
 /**

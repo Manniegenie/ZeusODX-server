@@ -144,11 +144,16 @@ const userSchema = new mongoose.Schema({
     // Tron variants
     TRX_TRX: { address: String, network: String, walletReferenceId: String },
 
+    // TON
+    TON_TON: { address: String, network: String, walletReferenceId: String },
+
     // NGN stable / on-platform currency
     NGNZ: { address: String, network: String, walletReferenceId: String }
   },
 
   // Balances
+  tonBalance: { type: Number, default: 0, min: 0 },
+  tonPendingBalance: { type: Number, default: 0, min: 0 },
   solBalance: { type: Number, default: 0, min: 0 },
   solPendingBalance: { type: Number, default: 0, min: 0 },
   btcBalance: { type: Number, default: 0, min: 0 },

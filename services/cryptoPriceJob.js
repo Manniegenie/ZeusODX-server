@@ -64,6 +64,7 @@ const SUPPORTED_TOKENS = {
   BNB: { binanceSymbol: 'BNBUSDT',   isStablecoin: false },
   MATIC:{ binanceSymbol: 'MATICUSDT',isStablecoin: false }, // MATICUSDT still exists on Binance
   TRX: { binanceSymbol: 'TRXUSDT', isStablecoin: false },
+  TON: { binanceSymbol: 'TONUSDT', isStablecoin: false },
 };
 
 // ---- Global rate gate ----

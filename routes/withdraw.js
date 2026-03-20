@@ -50,7 +50,8 @@ const SUPPORTED_TOKENS = {
   USDC: { name: 'USD Coin', symbol: 'USDC' },
   BNB: { name: 'Binance Coin', symbol: 'BNB' },
   MATIC: { name: 'Polygon', symbol: 'MATIC' },
-  TRX: { name: 'Tron', symbol: 'TRX' }
+  TRX: { name: 'Tron', symbol: 'TRX' },
+  TON: { name: 'Toncoin', symbol: 'TON' }
 };
 
 // Network-specific minimum withdrawal amounts (prevents unprofitable micro-withdrawals)
@@ -67,7 +68,8 @@ const NETWORK_MINIMUM_WITHDRAWALS = {
   'USDC-TRC20': { min: 5, max: 100000 },
   'BNB-BEP20': { min: 0.01, max: 1000 },
   'MATIC-POLYGON': { min: 1, max: 100000 },
-  'TRX-TRC20': { min: 10, max: 1000000 }
+  'TRX-TRC20': { min: 10, max: 1000000 },
+  'TON-TON': { min: 1, max: 100000 }
 };
 
 /**
@@ -76,7 +78,8 @@ const NETWORK_MINIMUM_WITHDRAWALS = {
 function getBalanceFieldName(currency) {
   const fieldMap = {
     'BTC': 'btcBalance', 'ETH': 'ethBalance', 'SOL': 'solBalance', 'USDT': 'usdtBalance',
-    'USDC': 'usdcBalance', 'BNB': 'bnbBalance', 'MATIC': 'maticBalance', 'TRX': 'trxBalance'
+    'USDC': 'usdcBalance', 'BNB': 'bnbBalance', 'MATIC': 'maticBalance', 'TRX': 'trxBalance',
+    'TON': 'tonBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }
@@ -84,7 +87,8 @@ function getBalanceFieldName(currency) {
 function getPendingBalanceFieldName(currency) {
   const fieldMap = {
     'BTC': 'btcPendingBalance', 'ETH': 'ethPendingBalance', 'SOL': 'solPendingBalance', 'USDT': 'usdtPendingBalance',
-    'USDC': 'usdcPendingBalance', 'BNB': 'bnbPendingBalance', 'MATIC': 'maticPendingBalance', 'TRX': 'trxPendingBalance'
+    'USDC': 'usdcPendingBalance', 'BNB': 'bnbPendingBalance', 'MATIC': 'maticPendingBalance', 'TRX': 'trxPendingBalance',
+    'TON': 'tonPendingBalance'
   };
   return fieldMap[currency.toUpperCase()];
 }

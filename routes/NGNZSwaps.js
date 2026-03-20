@@ -1564,6 +1564,7 @@ router.get('/supported-currencies', (req, res) => {
       { code: 'BNB', name: 'BNB', type: 'cryptocurrency' },
       { code: 'MATIC', name: 'Polygon', type: 'cryptocurrency' },
       { code: 'Polygon', name: 'Polygon', type: 'cryptocurrency' },
+      { code: 'TON', name: 'Toncoin', type: 'cryptocurrency' },
       { code: 'NGNZ', name: 'Nigerian Naira Digital', type: 'fiat' }
     ];
 
