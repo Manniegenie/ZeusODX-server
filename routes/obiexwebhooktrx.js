@@ -20,7 +20,8 @@ const SUPPORTED_TOKENS = {
   USDC: 'usdc',
   BNB: 'bnb',
   MATIC: 'matic',
-  TRX: 'trx',      // Added TRX
+  TRX: 'trx',
+  TON: 'ton',
   NGNZ: 'ngnz',
   NGNX: 'ngnz'     // Obiex uses NGNX, map to NGNZ for our app
 };
