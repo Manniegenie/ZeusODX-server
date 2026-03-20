@@ -452,7 +452,7 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
       await releaseReservedBalanceInternal(req.user.id, finalCurrency, finalAmount);
     }
     const errorMsg = error.response?.data?.message || error.message;
-    logger.error(`Withdrawal Error: ${errorMsg}`);
+    logger.error(`Withdrawal Error: ${errorMsg}`, { obiexResponse: error.response?.data, status: error.response?.status });
     return res.status(500).json({ success: false, message: errorMsg });
   }
 });
