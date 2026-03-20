@@ -303,7 +303,7 @@
         "memoRegex": null,
         "name": "BSC (BEP20)",
         "code": "BSC",
-        "fee": 0.00005,
+        "fee": 5e-05,
         "feeType": "FLAT",
         "minimum": 0.0001,
         "contractAddress": "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c",
@@ -987,7 +987,7 @@
       "exchangeCode": null,
       "leverageBaseCurrencyCode": null,
       "leverageMultipler": null,
-      "receivable": false,
+      "receivable": true,
       "withdrawable": true,
       "transferrable": true,
       "minimumWithdrawal": 0,
@@ -1005,7 +1005,18 @@
       "allowVirtualCardTransactions": false,
       "enableWithdrawalApproval": false
     },
-    "networks": []
+    "networks": [
+      {
+        "addressRegex": "^[EUkQ][Qq0-9A-Za-z_\\-]{46,47}$",
+        "memoRegex": null,
+        "name": "Toncoin",
+        "code": "TON",
+        "fee": 0.01,
+        "feeType": "FLAT",
+        "minimum": 1,
+        "contractAddress": null
+      }
+    ]
   },
   "TRUMP": {
     "currency": {
