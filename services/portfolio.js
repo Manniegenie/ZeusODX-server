@@ -232,6 +232,7 @@ async function getFallbackPrices(tokens) {
     'BNB': 580,
     'MATIC': 0.85,
     'TRX': 0.14,
+    'TON': 5.5,
     'NGNZ': 1 / await getNairaOfframpRate(),
   };
   
@@ -289,6 +290,19 @@ async function getPricesWithCache(tokenSymbols) {
       priceMap = await getFallbackPrices(normalizedTokens);
     }
     
+    // Fill any individual tokens that came back missing (e.g. TON not yet in DB)
+    // with per-token fallbacks so they still appear rather than showing $0
+    const fallbackMap = await getFallbackPrices(normalizedTokens);
+    for (const token of normalizedTokens) {
+      if (!priceMap.has(token) || priceMap.get(token) === 0) {
+        const fallback = fallbackMap.get(token);
+        if (fallback && fallback > 0) {
+          logger.warn(`Using fallback price for ${token}`, { fallback });
+          priceMap.set(token, fallback);
+        }
+      }
+    }
+
     // Apply hardcoded 0.75% markdown to displayed prices (stablecoins/NGNZ exempt)
     const HARDCODED_MARKDOWN_PERCENT = 0.68;
     priceMap = applyMarkdownToPrices(priceMap, HARDCODED_MARKDOWN_PERCENT);
