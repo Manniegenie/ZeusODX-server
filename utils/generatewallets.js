@@ -140,6 +140,9 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   
   // Tron
   'TRX_TRX': 'TRX_TRX',             // TRX on Tron network
+
+  // TON
+  'TON_TON': 'TON_TON',             // Toncoin on TON network
 };
 
 // Function to get the correct currency/network for obiex from schema key
@@ -161,13 +164,14 @@ const getCurrencyNetworkFromSchema = (schemaKey) => {
 const getSchemaKeyFromNetworkId = (currency, networkId) => {
   const networkMap = {
     'ethereum': 'ETH',
-    'arbitrum': 'ARBITRUM', 
+    'arbitrum': 'ARBITRUM',
     'base': 'BASE',
     'bsc': 'BSC',
     'polygon': 'POLYGON',
     'solana': 'SOL',
     'tron': 'TRX',      // Tron network
-    'trx': 'TRX'        // Alternative mapping for Tron
+    'trx': 'TRX',       // Alternative mapping for Tron
+    'ton': 'TON',       // TON network
   };
   
   const network = networkMap[networkId.toLowerCase()] || networkId.toUpperCase();
