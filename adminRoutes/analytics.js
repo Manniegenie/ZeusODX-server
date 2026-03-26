@@ -1541,10 +1541,15 @@ router.get('/top-traders', async (req, res) => {
   try {
     const { dateFrom, dateTo, limit = 20 } = req.query;
 
+    // Only count the TO side of swaps (swapDirection: 'IN') so each swap is counted
+    // once using the currency and amount the user actually received.
     const matchQuery = {
       status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
-      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD', 'WITHDRAWAL'] },
       currency: { $exists: true, $ne: null },
+      $or: [
+        { type: 'WITHDRAWAL' },
+        { type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] }, swapDirection: 'IN' },
+      ],
     };
 
     if (dateFrom || dateTo) {
@@ -1619,6 +1624,7 @@ router.get('/top-traders', async (req, res) => {
         userMap[uid] = {
           userId: uid,
           ngnzVolume: 0,
+          ngnzVolumeUsd: 0,
           cryptoWithdrawalUsd: 0,
           internalTransferUsd: 0,
           tradeCount: 0,
@@ -1632,8 +1638,10 @@ router.get('/top-traders', async (req, res) => {
       u.currencies.add(row._id.currency);
       if (!u.lastTradeAt || row.lastTradeAt > u.lastTradeAt) u.lastTradeAt = row.lastTradeAt;
 
+      // All volumes are converted to USD using the toCurrency price
       if (row._id.category === 'ngnz') {
-        u.ngnzVolume += row.totalVolume; // raw NGNZ amount; convert to USD separately
+        u.ngnzVolume += row.totalVolume;
+        u.ngnzVolumeUsd += toUSD(row._id.currency, row.totalVolume);
       } else if (row._id.category === 'cryptoWithdrawal') {
         u.cryptoWithdrawalUsd += toUSD(row._id.currency, row.totalVolume);
       } else {
@@ -1643,15 +1651,11 @@ router.get('/top-traders', async (req, res) => {
 
     // Step 4: Sort by total USD volume descending, take top N
     const sorted = Object.values(userMap)
-      .map((t) => {
-        const ngnzVolumeUsd = t.ngnzVolume / offrampRate;
-        return {
-          ...t,
-          ngnzVolumeUsd,
-          totalVolumeUsd: ngnzVolumeUsd + t.cryptoWithdrawalUsd + t.internalTransferUsd,
-          currencies: [...t.currencies],
-        };
-      })
+      .map((t) => ({
+        ...t,
+        totalVolumeUsd: t.ngnzVolumeUsd + t.cryptoWithdrawalUsd + t.internalTransferUsd,
+        currencies: [...t.currencies],
+      }))
       .sort((a, b) => b.totalVolumeUsd - a.totalVolumeUsd)
       .slice(0, parseInt(limit));
 
