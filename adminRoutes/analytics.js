@@ -1625,36 +1625,31 @@ router.get('/top-traders', async (req, res) => {
           userId: uid,
           ngnzVolume: 0,
           ngnzVolumeUsd: 0,
-          cryptoWithdrawalUsd: 0,
-          internalTransferUsd: 0,
-          tradeCount: 0,
-          lastTradeAt: null,
-          currencies: new Set(),
+          totalVolumeUsd: 0,
+          currencyVolumes: {},  // { [currency]: usdVolume } — used to derive top tokens
         };
       }
 
       const u = userMap[uid];
-      u.tradeCount += row.tradeCount;
-      u.currencies.add(row._id.currency);
-      if (!u.lastTradeAt || row.lastTradeAt > u.lastTradeAt) u.lastTradeAt = row.lastTradeAt;
+      const usdVal = toUSD(row._id.currency, row.totalVolume);
+      u.currencyVolumes[row._id.currency] = (u.currencyVolumes[row._id.currency] || 0) + usdVal;
 
-      // All volumes are converted to USD using the toCurrency price
       if (row._id.category === 'ngnz') {
         u.ngnzVolume += row.totalVolume;
-        u.ngnzVolumeUsd += toUSD(row._id.currency, row.totalVolume);
-      } else if (row._id.category === 'cryptoWithdrawal') {
-        u.cryptoWithdrawalUsd += toUSD(row._id.currency, row.totalVolume);
-      } else {
-        u.internalTransferUsd += toUSD(row._id.currency, row.totalVolume);
+        u.ngnzVolumeUsd += usdVal;
       }
+      u.totalVolumeUsd += usdVal;
     }
 
     // Step 4: Sort by total USD volume descending, take top N
     const sorted = Object.values(userMap)
       .map((t) => ({
         ...t,
-        totalVolumeUsd: t.ngnzVolumeUsd + t.cryptoWithdrawalUsd + t.internalTransferUsd,
-        currencies: [...t.currencies],
+        // Top 3 tokens ranked by their USD volume contribution
+        topTokens: Object.entries(t.currencyVolumes)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([currency]) => currency),
       }))
       .sort((a, b) => b.totalVolumeUsd - a.totalVolumeUsd)
       .slice(0, parseInt(limit));
@@ -1675,13 +1670,9 @@ router.get('/top-traders', async (req, res) => {
         firstname: user.firstname || '',
         lastname: user.lastname || '',
         ngnzVolume: parseFloat(t.ngnzVolume.toFixed(2)),
-        ngnzVolumeUsd: parseFloat(t.ngnzVolumeUsd.toFixed(2)),
-        cryptoWithdrawalUsd: parseFloat(t.cryptoWithdrawalUsd.toFixed(2)),
-        internalTransferUsd: parseFloat(t.internalTransferUsd.toFixed(2)),
         totalVolumeUsd: parseFloat(t.totalVolumeUsd.toFixed(2)),
-        tradeCount: t.tradeCount,
-        currencies: t.currencies,
-        lastTradeAt: t.lastTradeAt,
+        topTokens: t.topTokens,
+        currencies: t.topTokens, // backward-compat alias for old frontend builds
       };
     });
 
