@@ -1543,13 +1543,13 @@ router.get('/top-traders', async (req, res) => {
 
     // Only count the TO side of swaps (swapDirection: 'IN') so each swap is counted
     // once using the currency and amount the user actually received.
+    // WITHDRAWAL is excluded — it is not a swap and inflates volume for users who
+    // buy crypto and immediately withdraw it.
     const matchQuery = {
       status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
       currency: { $exists: true, $ne: null },
-      $or: [
-        { type: 'WITHDRAWAL' },
-        { type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] }, swapDirection: 'IN' },
-      ],
+      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
+      swapDirection: 'IN',
     };
 
     if (dateFrom || dateTo) {
@@ -1568,12 +1568,10 @@ router.get('/top-traders', async (req, res) => {
         $addFields: {
           normalizedCurrency: { $toUpper: '$currency' },
           volumeCategory: {
-            $switch: {
-              branches: [
-                { case: { $eq: [{ $toUpper: '$currency' }, 'NGNZ'] }, then: 'ngnz' },
-                { case: { $eq: ['$type', 'WITHDRAWAL'] }, then: 'cryptoWithdrawal' },
-              ],
-              default: 'internalTransfer',
+            $cond: {
+              if: { $eq: [{ $toUpper: '$currency' }, 'NGNZ'] },
+              then: 'ngnz',
+              else: 'swap',
             },
           },
         },
