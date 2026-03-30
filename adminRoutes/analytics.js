@@ -1541,13 +1541,17 @@ router.get('/top-traders', async (req, res) => {
   try {
     const { dateFrom, dateTo, limit = 20 } = req.query;
 
-    // Mirror calculateTransactionVolume(): count the OUT side of swaps only.
-    // OUT = the FROM currency the user spent. SWAP + OBIEX_SWAP only, no giftcards.
+    // Two cases captured in one query:
+    // 1. OUT swaps — counts the FROM currency spent (drives totalVolumeUsd + top tokens)
+    // 2. IN swaps where currency = NGNZ — counts the NGNZ the user received (drives ngnzVolume display)
     const matchQuery = {
       status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
       currency: { $exists: true, $ne: null },
       type: { $in: ['SWAP', 'OBIEX_SWAP'] },
-      swapDirection: 'OUT',
+      $or: [
+        { swapDirection: 'OUT' },
+        { swapDirection: 'IN', currency: { $regex: /^ngnz$/i } },
+      ],
     };
 
     if (dateFrom || dateTo) {
@@ -1567,7 +1571,11 @@ router.get('/top-traders', async (req, res) => {
           normalizedCurrency: { $toUpper: '$currency' },
           volumeCategory: {
             $cond: {
-              if: { $eq: [{ $toUpper: '$currency' }, 'NGNZ'] },
+              // IN + NGNZ = naira received; everything else (OUT) = swap volume spent
+              if: { $and: [
+                { $eq: ['$swapDirection', 'IN'] },
+                { $eq: [{ $toUpper: '$currency' }, 'NGNZ'] },
+              ]},
               then: 'ngnz',
               else: 'swap',
             },
@@ -1619,22 +1627,23 @@ router.get('/top-traders', async (req, res) => {
       if (!userMap[uid]) {
         userMap[uid] = {
           userId: uid,
-          ngnzVolume: 0,
-          ngnzVolumeUsd: 0,
-          totalVolumeUsd: 0,
-          currencyVolumes: {},  // { [currency]: usdVolume } — used to derive top tokens
+          ngnzVolume: 0,   // raw NGNZ received (IN side)
+          totalVolumeUsd: 0, // USD value of OUT swaps only
+          currencyVolumes: {}, // { [currency]: usdVolume } — used to derive top tokens
         };
       }
 
       const u = userMap[uid];
-      const usdVal = toUSD(row._id.currency, row.totalVolume);
-      u.currencyVolumes[row._id.currency] = (u.currencyVolumes[row._id.currency] || 0) + usdVal;
 
       if (row._id.category === 'ngnz') {
+        // IN side, NGNZ received — display only, does not affect USD ranking or top tokens
         u.ngnzVolume += row.totalVolume;
-        u.ngnzVolumeUsd += usdVal;
+      } else {
+        // OUT side — drives totalVolumeUsd and top tokens
+        const usdVal = toUSD(row._id.currency, row.totalVolume);
+        u.currencyVolumes[row._id.currency] = (u.currencyVolumes[row._id.currency] || 0) + usdVal;
+        u.totalVolumeUsd += usdVal;
       }
-      u.totalVolumeUsd += usdVal;
     }
 
     // Step 4: Sort by total USD volume descending, take top N
