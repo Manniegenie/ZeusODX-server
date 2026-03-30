@@ -1541,15 +1541,13 @@ router.get('/top-traders', async (req, res) => {
   try {
     const { dateFrom, dateTo, limit = 20 } = req.query;
 
-    // Only count the TO side of swaps (swapDirection: 'IN') so each swap is counted
-    // once using the currency and amount the user actually received.
-    // WITHDRAWAL is excluded — it is not a swap and inflates volume for users who
-    // buy crypto and immediately withdraw it.
+    // Mirror calculateTransactionVolume(): count the OUT side of swaps only.
+    // OUT = the FROM currency the user spent. SWAP + OBIEX_SWAP only, no giftcards.
     const matchQuery = {
       status: { $in: ['SUCCESSFUL', 'COMPLETED', 'CONFIRMED'] },
       currency: { $exists: true, $ne: null },
-      type: { $in: ['SWAP', 'OBIEX_SWAP', 'GIFTCARD'] },
-      swapDirection: 'IN',
+      type: { $in: ['SWAP', 'OBIEX_SWAP'] },
+      swapDirection: 'OUT',
     };
 
     if (dateFrom || dateTo) {
@@ -1652,27 +1650,35 @@ router.get('/top-traders', async (req, res) => {
       .sort((a, b) => b.totalVolumeUsd - a.totalVolumeUsd)
       .slice(0, parseInt(limit));
 
-    // Step 5: Batch user lookup
-    const userIds = sorted.map((t) => t.userId);
+    // Step 5: Batch user lookup — cast strings to ObjectId to ensure Mongoose matches correctly
+    const mongoose = require('mongoose');
+    const objectIds = sorted
+      .map((t) => { try { return new mongoose.Types.ObjectId(t.userId); } catch { return null; } })
+      .filter(Boolean);
+
     const users = await User.find(
-      { _id: { $in: userIds } },
+      { _id: { $in: objectIds } },
       { _id: 1, email: 1, firstname: 1, lastname: 1 }
     ).lean();
     const userLookup = Object.fromEntries(users.map((u) => [u._id.toString(), u]));
 
-    const result = sorted.map((t) => {
-      const user = userLookup[t.userId] || {};
-      return {
-        userId: t.userId,
-        email: user.email || 'Unknown',
-        firstname: user.firstname || '',
-        lastname: user.lastname || '',
-        ngnzVolume: parseFloat(t.ngnzVolume.toFixed(2)),
-        totalVolumeUsd: parseFloat(t.totalVolumeUsd.toFixed(2)),
-        topTokens: t.topTokens,
-        currencies: t.topTokens, // backward-compat alias for old frontend builds
-      };
-    });
+    const result = sorted
+      .map((t) => {
+        const user = userLookup[t.userId];
+        // Skip traders whose user record no longer exists (deleted accounts)
+        if (!user) return null;
+        return {
+          userId: t.userId,
+          email: user.email || '',
+          firstname: user.firstname || '',
+          lastname: user.lastname || '',
+          ngnzVolume: parseFloat(t.ngnzVolume.toFixed(2)),
+          totalVolumeUsd: parseFloat(t.totalVolumeUsd.toFixed(2)),
+          topTokens: t.topTokens,
+          currencies: t.topTokens, // backward-compat alias for old frontend builds
+        };
+      })
+      .filter(Boolean);
 
     res.json({
       success: true,
