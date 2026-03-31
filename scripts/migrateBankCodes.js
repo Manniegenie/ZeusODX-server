@@ -37,7 +37,7 @@ async function run() {
     });
 
     if (changed) {
-      await user.save();
+      await user.save({ validateBeforeSave: false });
     }
   }
 
