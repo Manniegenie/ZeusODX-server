@@ -9,6 +9,7 @@ const { validateTransactionLimit, invalidateSpending } = require('../services/ky
 const { sendTransferNotification } = require('../services/notificationService');
 const { sendDepositEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
+const { withLock } = require('../utils/redisLock');
 
 // Supported tokens configuration
 const SUPPORTED_TOKENS = {
@@ -504,8 +505,15 @@ router.post('/internal', async (req, res) => {
   let senderTransaction = null;
   let recipientTransaction = null;
 
+  const senderUserId = req.user?.id;
+  if (!senderUserId) {
+    return res.status(401).json({ success: false, message: 'Unauthenticated' });
+  }
+
+  const lockKey = `internal_transfer:${senderUserId}`;
+
   try {
-    const senderUserId = req.user.id;
+    await withLock(lockKey, async () => {
     
     logger.info(`Internal transfer request from user ${senderUserId}:`, {
       ...req.body,
@@ -669,6 +677,11 @@ router.post('/internal', async (req, res) => {
     });
 
     if (!transferResult.success) {
+      // Clean up PENDING transactions that will never complete
+      await Transaction.updateMany(
+        { _id: { $in: [senderTransaction._id, recipientTransaction._id] } },
+        { status: 'FAILED', failedAt: new Date(), failureReason: transferResult.message }
+      );
       return res.status(500).json({
         success: false,
         error: 'TRANSFER_EXECUTION_FAILED',
@@ -775,12 +788,21 @@ router.post('/internal', async (req, res) => {
       }
     }
 
+    if (error.message?.startsWith('Failed to acquire lock')) {
+      return res.status(429).json({
+        success: false,
+        error: 'TRANSFER_IN_PROGRESS',
+        message: 'A transfer is already in progress for your account. Please wait and try again.'
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
       message: 'Internal server error during transfer processing. Please contact support if this persists.'
     });
   }
+  }); // end withLock
 });
 
 module.exports = router;
