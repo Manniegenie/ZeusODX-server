@@ -884,7 +884,8 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-    
+    });  // end withLock
+
   } catch (error) {
     logger.error('Airtime purchase unexpected error:', {
       userId: req.user?.id,
@@ -939,7 +940,6 @@ router.post('/purchase', async (req, res) => {
       message: 'An unexpected error occurred while processing your airtime purchase'
     });
   }
-  }); // end withLock
 });
 
 // Clean up cache
