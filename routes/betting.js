@@ -9,6 +9,7 @@ const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
+const { withLock } = require('../utils/redisLock');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 
 const router = express.Router();
@@ -248,10 +249,11 @@ router.post('/fund', async (req, res) => {
   let pendingTransaction = null;
   let ebillsResponse = null;
   let validation;
+  const userId = req.user?.id;
 
   try {
+    await withLock(`betting:${userId}`, async () => {
     const requestBody = req.body;
-    const userId = req.user.id;
     
     logger.info(`🎰 Betting funding request from user ${userId}:`, {
       ...requestBody,
@@ -730,12 +732,16 @@ router.post('/fund', async (req, res) => {
       }
     }
     
+    if (error.message?.startsWith('Failed to acquire lock')) {
+      return res.status(429).json({ success: false, message: 'A transaction is already in progress. Please wait and try again.' });
+    }
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
       message: 'An unexpected error occurred while processing your betting account funding'
     });
   }
+  }); // end withLock
 });
 
 /**

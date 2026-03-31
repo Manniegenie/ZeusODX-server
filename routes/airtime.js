@@ -9,6 +9,7 @@ const { validateUserBalance } = require('../services/balance');
 const { validateTwoFactorAuth } = require('../services/twofactorAuth');
 const { validateTransactionLimit } = require('../services/kyccheckservice');
 const logger = require('../utils/logger');
+const { withLock } = require('../utils/redisLock');
 const { registerCache, clearUserCaches } = require('../utils/cacheManager');
 
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
@@ -391,10 +392,11 @@ router.post('/purchase', async (req, res) => {
   let pendingTransaction = null;
   let payBetaResponse = null;
   let validation;
+  const userId = req.user?.id;
 
   try {
+    await withLock(`airtime:${userId}`, async () => {
     const requestBody = req.body;
-    const userId = req.user.id;
     
     logger.info(`📱 Airtime purchase request from user ${userId}:`, {
       ...requestBody,
@@ -928,12 +930,16 @@ router.post('/purchase', async (req, res) => {
       }
     }
     
+    if (error.message?.startsWith('Failed to acquire lock')) {
+      return res.status(429).json({ success: false, message: 'A purchase is already in progress. Please wait and try again.' });
+    }
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
       message: 'An unexpected error occurred while processing your airtime purchase'
     });
   }
+  }); // end withLock
 });
 
 // Clean up cache

@@ -11,6 +11,7 @@ const { validateTransactionLimit } = require('../services/kyccheckservice');
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
+const { withLock } = require('../utils/redisLock');
 
 const router = express.Router();
 
@@ -402,10 +403,11 @@ router.post('/purchase', async (req, res) => {
   let pendingTransaction = null;
   let payBetaResponse = null;
   let validation;
+  const userId = req.user?.id;
 
   try {
+    await withLock(`data:${userId}`, async () => {
     const requestBody = req.body;
-    const userId = req.user.id;
     
     logger.info(`📊 Data purchase request from user ${userId}:`, {
       ...requestBody,
@@ -899,12 +901,16 @@ router.post('/purchase', async (req, res) => {
       }
     }
     
+    if (error.message?.startsWith('Failed to acquire lock')) {
+      return res.status(429).json({ success: false, message: 'A purchase is already in progress. Please wait and try again.' });
+    }
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_SERVER_ERROR',
       message: 'An unexpected error occurred while processing your data purchase'
     });
   }
+  }); // end withLock
 });
 
 // Clean up user cache periodically

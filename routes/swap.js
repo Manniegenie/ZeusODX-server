@@ -7,6 +7,7 @@ const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
+const { withLock } = require('../utils/redisLock');
 const GlobalMarkdown = require('../models/pricemarkdown');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
 const { invalidateSpending } = require('../services/kyccheckservice');
@@ -801,11 +802,14 @@ router.post('/quote', async (req, res) => {
 router.post('/quote/:quoteId', async (req, res) => {
   const systemContext = getSystemContext(req);
   const startTime = new Date();
-  
+  const userId = req.user?.id;
+
   try {
+    await withLock(`swap:${userId}`, async () => {
     const { quoteId } = req.params;
-    const userId = req.user.id;
     const quote = quoteCache.get(quoteId);
+    // Claim quote immediately to prevent concurrent execution
+    if (quote) quoteCache.delete(quoteId);
     
     const correlationId = quote?.correlationId || generateCorrelationId();
 
@@ -893,6 +897,9 @@ router.post('/quote/:quoteId', async (req, res) => {
     });
 
   } catch (err) {
+    if (err.message?.startsWith('Failed to acquire lock')) {
+      return res.status(429).json({ success: false, message: 'A swap is already in progress. Please wait and try again.' });
+    }
     logger.error('POST /swap/quote/:quoteId error', {
       error: err.stack,
       userId: req.user?.id,
@@ -904,6 +911,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       message: err.message || 'Swap failed - please try again'
     });
   }
+  }); // end withLock
 });
 
 // GET /swap/tokens - Get supported tokens
