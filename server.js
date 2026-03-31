@@ -660,7 +660,7 @@ app.use("/2FA-Disable", authenticateAdminToken, requireModerator, TwooFARoutes);
 app.use('/admin-kyc', authenticateAdminToken, requireModerator, AdminKYCRoutes);
 app.use("/usermanagement", authenticateAdminToken, requireModerator, requireUserManagement, usermanagementRoutes);
 app.use("/analytics", authenticateAdminToken, requireModerator, marketingStatsRoutes); // marketing-stats: moderators+
-app.use("/analytics", authenticateAdminToken, requireSuperAdmin, analyticsRoutes);       // all other analytics: super_admin only
+app.use("/analytics", authenticateAdminToken, requireModerator, analyticsRoutes);       // analytics: moderators and above
 // IMPORTANT: /admin must be LAST to avoid catching /admin/* routes (like /admin/transaction, /admin/permissions, etc.)
 app.use("/admin", authenticateAdminToken, requireSuperAdmin, adminRegisterRoutes);
 

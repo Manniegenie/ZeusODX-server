@@ -11,6 +11,7 @@ try {
 }
 
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
+const { migrateCode } = require('../utils/sortCodeMigration');
 
 const baseURL = (config.obiex && String(config.obiex.baseURL || '').replace(/\/+$/, '')) ||
   String(process.env.OBIEX_BASE_URL || '').replace(/\/+$/, '');
@@ -43,7 +44,7 @@ function sanitizeDestination(d = {}) {
     accountNumber: cleanStr(d.accountNumber),
     accountName: cleanStr(d.accountName),
     bankName: cleanStr(d.bankName),
-    bankCode: cleanStr(d.bankCode),
+    bankCode: migrateCode(cleanStr(d.bankCode)),
     // Optional fields
     pagaBankCode: d.pagaBankCode ? cleanStr(d.pagaBankCode) : undefined,
     merchantCode: d.merchantCode ? cleanStr(d.merchantCode) : undefined,

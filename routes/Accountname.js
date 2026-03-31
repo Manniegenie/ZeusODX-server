@@ -7,6 +7,8 @@ const logger = require('../utils/logger');
 let config = {};
 try { config = require('../routes/config'); } catch (_) { config = {}; }
 
+const { migrateCode } = require('../utils/sortCodeMigration');
+
 const baseURL =
   (config.obiex && String(config.obiex.baseURL || '').replace(/\/+$/, '')) ||
   String(process.env.OBIEX_BASE_URL || '').replace(/\/+$/, '') ||
@@ -71,7 +73,7 @@ function pickRequestId(headers = {}) {
 
 function sanitizeAccountQuery(query = {}) {
   return {
-    sortCode: cleanStr(query.sortCode),
+    sortCode: migrateCode(cleanStr(query.sortCode)),
     accountNumber: cleanStr(query.accountNumber),
   };
 }
