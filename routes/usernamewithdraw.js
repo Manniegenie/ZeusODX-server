@@ -767,6 +767,7 @@ router.post('/internal', async (req, res) => {
         }
       }
     });
+    });  // end withLock
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
@@ -802,7 +803,6 @@ router.post('/internal', async (req, res) => {
       message: 'Internal server error during transfer processing. Please contact support if this persists.'
     });
   }
-  }); // end withLock
 });
 
 module.exports = router;

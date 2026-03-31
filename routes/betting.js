@@ -680,7 +680,8 @@ router.post('/fund', async (req, res) => {
         }
       });
     }
-    
+    });  // end withLock
+
   } catch (error) {
     logger.error('Betting funding unexpected error:', {
       userId: req.user?.id,
@@ -741,7 +742,6 @@ router.post('/fund', async (req, res) => {
       message: 'An unexpected error occurred while processing your betting account funding'
     });
   }
-  }); // end withLock
 });
 
 /**

@@ -1119,6 +1119,7 @@ router.post('/purchase', async (req, res) => {
         customerId: ebillsResponse.data.customerId
       }
     });
+    });  // end withLock
 
   } catch (error) {
     logger.error('Electricity purchase unexpected error:', {
@@ -1176,7 +1177,6 @@ router.post('/purchase', async (req, res) => {
       message: 'An unexpected error occurred while processing your electricity purchase'
     });
   }
-  }); // end withLock
 });
 
 // Clean up user cache periodically

@@ -895,6 +895,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       message: 'Obiex swap completed successfully',
       data: { data: responsePayload, ...responsePayload }
     });
+    });  // end withLock
 
   } catch (err) {
     if (err.message?.startsWith('Failed to acquire lock')) {
@@ -911,7 +912,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       message: err.message || 'Swap failed - please try again'
     });
   }
-  }); // end withLock
 });
 
 // GET /swap/tokens - Get supported tokens

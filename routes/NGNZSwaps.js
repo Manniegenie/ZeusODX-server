@@ -1501,6 +1501,7 @@ router.post('/quote/:quoteId', async (req, res) => {
       message: `NGNZ ${quote.flow.toLowerCase()} completed successfully, Obiex swap initiated in background`,
       data: { data: responsePayload, ...responsePayload }
     });
+    });  // end withLock
 
   } catch (err) {
     const endTime = new Date();
@@ -1552,7 +1553,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       message: err.message || 'Swap failed - please try again'
     });
   }
-  }); // end withLock
 });
 
 // MAINTAINING ORIGINAL SUPPORTED CURRENCIES ENDPOINT WITH AUDITING

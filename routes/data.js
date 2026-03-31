@@ -849,7 +849,8 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-    
+    });  // end withLock
+
   } catch (error) {
     logger.error('Data purchase unexpected error:', {
       userId: req.user?.id,
@@ -910,7 +911,6 @@ router.post('/purchase', async (req, res) => {
       message: 'An unexpected error occurred while processing your data purchase'
     });
   }
-  }); // end withLock
 });
 
 // Clean up user cache periodically
