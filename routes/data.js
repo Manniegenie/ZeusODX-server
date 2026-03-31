@@ -406,7 +406,6 @@ router.post('/purchase', async (req, res) => {
   const userId = req.user?.id;
 
   try {
-    await withLock(`data:${userId}`, async () => {
     const requestBody = req.body;
     
     logger.info(`📊 Data purchase request from user ${userId}:`, {
@@ -849,7 +848,6 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-    });  // end withLock
 
   } catch (error) {
     logger.error('Data purchase unexpected error:', {

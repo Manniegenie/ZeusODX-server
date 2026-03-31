@@ -395,7 +395,6 @@ router.post('/purchase', async (req, res) => {
   const userId = req.user?.id;
 
   try {
-    await withLock(`airtime:${userId}`, async () => {
     const requestBody = req.body;
     
     logger.info(`📱 Airtime purchase request from user ${userId}:`, {
@@ -884,7 +883,6 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-    });  // end withLock
 
   } catch (error) {
     logger.error('Airtime purchase unexpected error:', {

@@ -513,7 +513,6 @@ router.post('/internal', async (req, res) => {
   const lockKey = `internal_transfer:${senderUserId}`;
 
   try {
-    await withLock(lockKey, async () => {
     
     logger.info(`Internal transfer request from user ${senderUserId}:`, {
       ...req.body,
@@ -767,7 +766,6 @@ router.post('/internal', async (req, res) => {
         }
       }
     });
-    });  // end withLock
 
   } catch (error) {
     const processingTime = Date.now() - startTime;

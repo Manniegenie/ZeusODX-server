@@ -252,7 +252,6 @@ router.post('/fund', async (req, res) => {
   const userId = req.user?.id;
 
   try {
-    await withLock(`betting:${userId}`, async () => {
     const requestBody = req.body;
     
     logger.info(`🎰 Betting funding request from user ${userId}:`, {
@@ -680,7 +679,6 @@ router.post('/fund', async (req, res) => {
         }
       });
     }
-    });  // end withLock
 
   } catch (error) {
     logger.error('Betting funding unexpected error:', {

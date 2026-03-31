@@ -414,7 +414,6 @@ router.post('/purchase', async (req, res) => {
   const userId = req.user?.id;
 
   try {
-    await withLock(`cabletv:${userId}`, async () => {
     const requestBody = req.body;
     
     logger.info(`📺 Cable TV purchase request from user ${userId}:`, {
@@ -897,7 +896,6 @@ router.post('/purchase', async (req, res) => {
         }
       });
     }
-    });  // end withLock
 
   } catch (error) {
     logger.error('Cable TV purchase unexpected error:', {

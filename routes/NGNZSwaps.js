@@ -1271,7 +1271,6 @@ router.post('/quote/:quoteId', async (req, res) => {
   const userId = req.user?.id;
 
   try {
-    await withLock(`ngnz_swap:${userId}`, async () => {
     const { quoteId } = req.params;
     const quote = ngnzQuoteCache.get(quoteId);
     // Claim quote immediately to prevent concurrent execution
@@ -1501,7 +1500,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       message: `NGNZ ${quote.flow.toLowerCase()} completed successfully, Obiex swap initiated in background`,
       data: { data: responsePayload, ...responsePayload }
     });
-    });  // end withLock
 
   } catch (err) {
     const endTime = new Date();

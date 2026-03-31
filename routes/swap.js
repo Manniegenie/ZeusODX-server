@@ -805,7 +805,6 @@ router.post('/quote/:quoteId', async (req, res) => {
   const userId = req.user?.id;
 
   try {
-    await withLock(`swap:${userId}`, async () => {
     const { quoteId } = req.params;
     const quote = quoteCache.get(quoteId);
     // Claim quote immediately to prevent concurrent execution
@@ -895,7 +894,6 @@ router.post('/quote/:quoteId', async (req, res) => {
       message: 'Obiex swap completed successfully',
       data: { data: responsePayload, ...responsePayload }
     });
-    });  // end withLock
 
   } catch (err) {
     if (err.message?.startsWith('Failed to acquire lock')) {

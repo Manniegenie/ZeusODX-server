@@ -678,7 +678,6 @@ router.post('/purchase', async (req, res) => {
   const userId = req.user?.id;
 
   try {
-    await withLock(`electricity:${userId}`, async () => {
     const requestBody = req.body;
 
     logger.info(`⚡ Electricity purchase request from user ${userId}:`, {
@@ -1119,7 +1118,6 @@ router.post('/purchase', async (req, res) => {
         customerId: ebillsResponse.data.customerId
       }
     });
-    });  // end withLock
 
   } catch (error) {
     logger.error('Electricity purchase unexpected error:', {
