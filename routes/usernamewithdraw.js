@@ -9,7 +9,7 @@ const { validateTransactionLimit, invalidateSpending } = require('../services/ky
 const { sendTransferNotification } = require('../services/notificationService');
 const { sendDepositEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
-const { withLock } = require('../utils/redisLock');
+const { RedisLock } = require('../utils/redisLock');
 
 // Supported tokens configuration
 const SUPPORTED_TOKENS = {
@@ -512,6 +512,15 @@ router.post('/internal', async (req, res) => {
 
   const lockKey = `internal_transfer:${senderUserId}`;
 
+  const lock = new RedisLock(lockKey, 60000);
+  if (!await lock.acquireWithRetry(3000, 100)) {
+    return res.status(429).json({
+      success: false,
+      error: 'TRANSFER_IN_PROGRESS',
+      message: 'A transfer is already in progress for your account. Please wait and try again.'
+    });
+  }
+
   try {
     
     logger.info(`Internal transfer request from user ${senderUserId}:`, {
@@ -800,6 +809,8 @@ router.post('/internal', async (req, res) => {
       error: 'INTERNAL_SERVER_ERROR',
       message: 'Internal server error during transfer processing. Please contact support if this persists.'
     });
+  } finally {
+    await lock.release();
   }
 });
 

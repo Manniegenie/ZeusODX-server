@@ -11,7 +11,7 @@ const { validateTransactionLimit } = require('../services/kyccheckservice');
 const { sendAirtimePurchaseNotification } = require('../services/notificationService');
 const { sendUtilityTransactionEmail } = require('../services/EmailService');
 const logger = require('../utils/logger');
-const { withLock } = require('../utils/redisLock');
+const { RedisLock } = require('../utils/redisLock');
 
 const router = express.Router();
 
@@ -405,9 +405,14 @@ router.post('/purchase', async (req, res) => {
   let validation;
   const userId = req.user?.id;
 
+  const lock = new RedisLock(`data:${userId}`, 60000);
+  if (!await lock.acquireWithRetry(3000, 100)) {
+    return res.status(429).json({ success: false, message: 'A purchase is already in progress. Please wait and try again.' });
+  }
+
   try {
     const requestBody = req.body;
-    
+
     logger.info(`📊 Data purchase request from user ${userId}:`, {
       ...requestBody,
       passwordpin: '[REDACTED]'
@@ -908,6 +913,8 @@ router.post('/purchase', async (req, res) => {
       error: 'INTERNAL_SERVER_ERROR',
       message: 'An unexpected error occurred while processing your data purchase'
     });
+  } finally {
+    await lock.release();
   }
 });
 

@@ -8,7 +8,7 @@ const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
-const { withLock } = require('../utils/redisLock');
+const { RedisLock } = require('../utils/redisLock');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
 
 const router = express.Router();
@@ -1270,6 +1270,11 @@ router.post('/quote/:quoteId', async (req, res) => {
   const startTime = new Date();
   const userId = req.user?.id;
 
+  const lock = new RedisLock(`ngnz_swap:${userId}`, 60000);
+  if (!await lock.acquireWithRetry(3000, 100)) {
+    return res.status(429).json({ success: false, message: 'A swap is already in progress. Please wait and try again.' });
+  }
+
   try {
     const { quoteId } = req.params;
     const quote = ngnzQuoteCache.get(quoteId);
@@ -1550,6 +1555,8 @@ router.post('/quote/:quoteId', async (req, res) => {
       success: false,
       message: err.message || 'Swap failed - please try again'
     });
+  } finally {
+    await lock.release();
   }
 });
 
