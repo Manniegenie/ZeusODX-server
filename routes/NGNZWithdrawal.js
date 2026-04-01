@@ -173,7 +173,7 @@ async function executeNGNZWithdrawal(userId, withdrawalData, correlationId, syst
         transactionId: withdrawalReference,
         bankName: destination.bankName,
         accountName: destination.accountName,
-        accountNumber: maskAccountNumber(destination.accountNumber),
+        accountNumber: destination.accountNumber,
         amount: formatCurrency(totalDeducted, 'NGNZ'),
         fee: formatCurrency(feeAmountRecorded),
         date: formatDate(new Date()),

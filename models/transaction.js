@@ -11,7 +11,7 @@ const BankDestinationSchema = new mongoose.Schema({
   merchantCode: { type: String, trim: true },
   accountName: { type: String, trim: true },
 
-  // Store only safe variants here; use a vault if you need the raw value elsewhere
+  accountNumber:        { type: String, trim: true },   // full account number
   accountNumberMasked: { type: String, trim: true },   // e.g. "12****34"
   accountNumberLast4:  { type: String, trim: true },   // e.g. "1234"
   accountNumberHash:   { type: String },               // index moved below
