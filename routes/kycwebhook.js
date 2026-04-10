@@ -137,7 +137,8 @@ router.post('/callback', async (req, res) => {
     }
 
     // 2. Data Normalization
-    const norm = normalize(req.body);
+    const parsedBody = req.rawBody ? JSON.parse(req.rawBody) : req.body;
+    const norm = normalize(parsedBody);
     if (!norm) {
       logger.warn('Webhook received with missing or invalid data');
       return res.status(400).json({ success: false, message: 'Missing data' });
@@ -152,7 +153,7 @@ router.post('/callback', async (req, res) => {
       allValidationPassed: norm.allValidationPassed,
       jobSuccess: norm.jobSuccess,
       reason: norm.reason,
-      fullPayload: JSON.stringify(req.body)
+      fullPayload: req.rawBody || JSON.stringify(req.body)
     });
 
     // 3. Find KYC Record - IMPROVED MATCHING
