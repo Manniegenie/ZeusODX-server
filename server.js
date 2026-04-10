@@ -611,6 +611,8 @@ const adminBannerRoutes = require("./adminRoutes/banners");
 const tokenPricesRoutes = require("./routes/tokenPrices");
 const adminBlogRoutes = require("./adminRoutes/blog");
 const blogRoutes = require("./routes/blog");
+const adminAuditLog = require("./middleware/adminAuditLog");
+const auditLogsRoutes = require("./adminRoutes/auditlogs");
 
 // Public Routes
 app.use("/signin", signinRoutes);
@@ -632,6 +634,12 @@ app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
 app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
 app.use("/tawk/webhook", webhookLimiter, require('./routes/tawk'));
+
+// Admin audit logging — wraps res.json for all subsequent routes
+app.use(adminAuditLog);
+
+// Audit logs query (super admin only)
+app.use("/audit-logs", authenticateAdminToken, requireSuperAdmin, auditLogsRoutes);
 
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 // IMPORTANT: More specific routes must come BEFORE less specific routes
