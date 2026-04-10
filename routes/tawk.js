@@ -43,8 +43,14 @@ router.post('/', (req, res) => {
     }
   }
 
-  const payload = req.body;
-  const event   = payload?.event;
+  let payload;
+  try {
+    const raw = req.rawBody || (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : null);
+    payload = raw ? JSON.parse(raw) : req.body;
+  } catch (_) {
+    return res.status(400).json({ success: false, error: 'Invalid JSON body' });
+  }
+  const event = payload?.event;
 
   // Only handle visitor message events
   if (event !== 'chat:start' && event !== 'chat:message') {
