@@ -718,6 +718,54 @@ async function addContactToBrevo(email, firstName = '', lastName = '') {
   }
 }
 
+async function sendTawkMessageNotify({ visitorName, visitorEmail, message, chatId, event }) {
+  const templateId = safeParseTemplateId(process.env.BREVO_TEMPLATE_TAWK_MESSAGE);
+
+  const adminEmails = getGiftcardAdminEmails();
+  if (!adminEmails.length) {
+    console.warn('No giftcard admin emails configured (GIFTCARD_ADMIN_EMAILS)');
+    return { success: false };
+  }
+
+  const params = {
+    visitorName: String(visitorName || 'Unknown Visitor'),
+    visitorEmail: String(visitorEmail || '—'),
+    message: String(message || ''),
+    chatId: String(chatId || ''),
+    event: String(event || 'chat:message'),
+    date: formatDate(new Date()),
+    companyName: String(COMPANY_NAME),
+  };
+
+  const results = await Promise.allSettled(
+    adminEmails.map(admin => {
+      if (templateId) {
+        return sendEmail({ to: admin.email, name: admin.name, templateId, params });
+      }
+      // Fallback: plain-text email via Brevo when no template is configured
+      const email = new brevo.SendSmtpEmail();
+      email.to = [{ email: admin.email, name: admin.name }];
+      email.sender = { email: SENDER_EMAIL, name: SENDER_NAME };
+      email.subject = `💬 Tawk Message from ${params.visitorName}`;
+      email.htmlContent = `
+        <p><strong>Visitor:</strong> ${params.visitorName} (${params.visitorEmail})</p>
+        <p><strong>Message:</strong> ${params.message}</p>
+        <p><strong>Chat ID:</strong> ${params.chatId}</p>
+        <p><strong>Event:</strong> ${params.event}</p>
+        <p><strong>Time:</strong> ${params.date}</p>
+      `;
+      return apiInstance.sendTransacEmail(email);
+    })
+  );
+
+  const failed = results.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    failed.forEach(r => console.error('Failed to send Tawk message notify:', r.reason?.message));
+  }
+
+  return { success: failed.length < adminEmails.length };
+}
+
 module.exports = {
   sendDepositEmail,
   sendWithdrawalEmail,
@@ -735,5 +783,6 @@ module.exports = {
   sendNINVerificationEmail,
   sendAdminWelcomeEmail,
   sendGiftcardAdminNotify,
+  sendTawkMessageNotify,
   addContactToBrevo
 };

@@ -227,6 +227,10 @@ app.use('/kyc-webhook', express.raw({ type: 'application/json', limit: '10mb' })
   req.rawBody = req.body.toString('utf8');
   next();
 });
+app.use('/tawk/webhook', express.raw({ type: 'application/json', limit: '1mb' }), (req, res, next) => {
+  req.rawBody = req.body.toString('utf8');
+  next();
+});
 
 // JSON Body Parser for Other Routes - INCREASED TO 100MB FOR IMAGE UPLOADS (KYC documents, driver's license, etc.)
 app.use(express.json({ limit: '100mb' }));
@@ -627,6 +631,7 @@ app.use("/blog", blogRoutes);
 app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/billwebhook", webhookLimiter, billwebhookRoutes);
 app.use("/kyc-webhook", webhookLimiter, kycwebhookRoutes);
+app.use("/tawk/webhook", webhookLimiter, require('./routes/tawk'));
 
 // MODERATOR LEVEL ROUTES (all admin roles can access)
 // IMPORTANT: More specific routes must come BEFORE less specific routes
