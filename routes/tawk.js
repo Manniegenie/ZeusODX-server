@@ -4,10 +4,10 @@
  * Receives POST events from Tawk.to when a visitor sends a message,
  * then notifies all giftcard admin emails via Brevo.
  *
- * Tawk.to sends a HMAC-SHA256 signature in the `x-tawk-signature` header.
+ * Tawk.to sends a HMAC-SHA1 signature in the `x-tawk-signature` header.
  * Set TAWK_WEBHOOK_SECRET in .env to enable signature verification.
  *
- * Supported events: chat:start, chat:message
+ * Supported events: chat:start
  */
 
 const express = require('express');
@@ -18,9 +18,10 @@ const router = express.Router();
 
 function verifySignature(secret, rawBody, signature) {
   const expected = crypto
-    .createHmac('sha256', secret)
+    .createHmac('sha1', secret)
     .update(rawBody)
     .digest('hex');
+  // Compare hex strings as buffers (same length guaranteed)
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }
 
@@ -63,10 +64,10 @@ router.post('/', (req, res) => {
     return res.status(200).json({ success: true, ignored: true });
   }
 
-  const visitorName  = payload?.chat?.visitor?.name  || payload?.visitor?.name  || 'Unknown';
-  const visitorEmail = payload?.chat?.visitor?.email || payload?.visitor?.email || '';
+  const visitorName  = payload?.visitor?.name  || 'Unknown';
+  const visitorEmail = payload?.visitor?.email || '';
   const message      = payload?.message?.text || '(new chat started)';
-  const chatId       = payload?.chat?.id || '';
+  const chatId       = payload?.chatId || '';
 
   // Fire-and-forget — don't block the 200 response
   sendTawkMessageNotify({ visitorName, visitorEmail, message, chatId, event })
