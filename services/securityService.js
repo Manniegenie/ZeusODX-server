@@ -229,6 +229,28 @@ class SecurityService {
   }
 
   /**
+   * Fully unlock a 2FA-locked account — clears the lock key and the
+   * attempt counter. Called by admins when a user is locked out of 2FA.
+   *
+   * @param {string} userId
+   * @returns {Promise<{ wasLocked: boolean }>}
+   */
+  async unlock2FALock(userId) {
+    const attemptKey = `2fa_attempts:${userId}`;
+    const lockKey    = `2fa_locked:${userId}`;
+
+    try {
+      const wasLocked = !!(await this.redis.get(lockKey));
+      await this.redis.del(lockKey, attemptKey);
+      logger.info(`2FA lock cleared for user ${userId} (wasLocked: ${wasLocked})`);
+      return { wasLocked };
+    } catch (error) {
+      logger.error('Error unlocking 2FA account:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Fully unlock a PIN-locked account — clears both the lock key and the
    * attempt counter. Called by admins to manually unblock a user.
    *

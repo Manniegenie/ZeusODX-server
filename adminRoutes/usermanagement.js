@@ -500,4 +500,39 @@ router.post('/users/:userId/unlock-pin', async (req, res) => {
   }
 });
 
+/**
+ * POST /usermanagement/users/:userId/unlock-2fa
+ * Clears a user's 2FA lock and failed-attempt counter in Redis.
+ * Called when a user is locked out after too many failed 2FA attempts.
+ */
+router.post('/users/:userId/unlock-2fa', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId).select('_id email firstname lastname').lean();
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const { wasLocked } = await securityService.unlock2FALock(userId);
+
+    return res.json({
+      success: true,
+      message: `2FA lock cleared for ${user.email}${wasLocked ? '' : ' (was not locked)'}`,
+      data: {
+        userId,
+        email: user.email,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        wasLocked,
+        unlockedAt: new Date().toISOString(),
+        unlockedBy: req.admin?.email || req.admin?.username || 'admin',
+      },
+    });
+  } catch (error) {
+    console.error('Error unlocking 2FA lock:', error);
+    res.status(500).json({ success: false, error: 'Failed to unlock 2FA lock', message: error.message });
+  }
+});
+
 module.exports = router;
