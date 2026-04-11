@@ -35,8 +35,8 @@ class SecurityService {
             message: `Too many failed 2FA attempts. Account locked for ${minutesRemaining} minute(s).`
           };
         } else {
-          // Lock expired, clear it
-          await this.redis.del(lockKey);
+          // Lock expired — clear both lock and attempt counter so user starts fresh
+          await this.redis.del(lockKey, attemptKey);
         }
       }
 
@@ -143,8 +143,8 @@ class SecurityService {
             message: `Account locked due to too many failed PIN attempts. Locked for ${hoursRemaining} hour(s). Contact support to unlock.`
           };
         } else {
-          // Lock expired
-          await this.redis.del(lockKey);
+          // Lock expired — clear both lock and attempt counter so user starts fresh
+          await this.redis.del(lockKey, attemptKey);
         }
       }
 
