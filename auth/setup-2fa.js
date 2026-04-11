@@ -11,28 +11,40 @@ router.get('/setup-2fa', async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const secret = speakeasy.generateSecret({
-      name: `ZeusODX (${user.email})`, // This will show "ZeusODX" in authenticator apps
+    // Reuse the existing secret if setup is in progress (not yet enabled).
+    // Regenerating on every call means the user copies one key while the DB
+    // already holds a different one — causing "invalid 2FA" on first use.
+    let base32Secret;
+    if (user.twoFASecret && !user.is2FAEnabled) {
+      base32Secret = user.twoFASecret;
+    } else {
+      const secret = speakeasy.generateSecret({
+        name: `ZeusODX (${user.email})`,
+      });
+      base32Secret = secret.base32;
+      user.twoFASecret = base32Secret;
+      user.is2FAEnabled = false;
+      user.is2FAVerified = false;
+      await user.save();
+    }
+
+    // Standard otpauth URL format: otpauth://totp/ISSUER:LABEL?secret=BASE32&issuer=ISSUER
+    // The ISSUER:LABEL colon-separated format is required by Google Authenticator, Authy, etc.
+    const otpAuthUrl = `otpauth://totp/ZeusODX:${encodeURIComponent(user.email)}?secret=${base32Secret}&issuer=ZeusODX`;
+    const qrCodeDataURL = await qrcode.toDataURL(otpAuthUrl, {
+      errorCorrectionLevel: 'M',
+      type: 'image/png',
+      width: 300,
+      margin: 2,
+      color: { dark: '#000000', light: '#FFFFFF' },
     });
 
-    user.twoFASecret = secret.base32;
-    user.is2FAEnabled = false;
-    user.is2FAVerified = false; // Reset verification status during setup
-    await user.save();
-
-    // Use the built-in otpauth_url from speakeasy
-    const otpAuthUrl = secret.otpauth_url;
-    const qrCodeDataURL = await qrcode.toDataURL(otpAuthUrl);
-
-    console.log('2FA setup completed for user:', { 
-      userId: user._id, 
-      email: user.email 
-    });
+    console.log('2FA setup served for user:', { userId: user._id, email: user.email });
 
     res.json({
       message: 'Scan this QR code with your Authenticator app',
       qrCodeDataURL,
-      manualEntryKey: secret.base32,
+      manualEntryKey: base32Secret,
     });
   } catch (err) {
     console.error('Error generating 2FA secret:', err);
@@ -57,27 +69,18 @@ router.post('/verify-2fa', async (req, res) => {
       tokenLength: token.length 
     });
 
-    // TEMPORARY BYPASS: Allow "00000" to work for testing/development
-    // TODO: Remove this bypass before production deployment
-    let verified = false;
-    if (token === '00000') {
-      console.warn('⚠️ TEMPORARY 2FA BYPASS USED: Code "00000" accepted for user:', user._id);
-      verified = true;
-    } else {
-      verified = speakeasy.totp.verify({
-        secret: user.twoFASecret,
-        encoding: 'base32',
-        token,
-        window: 2, // Allow for clock drift
-      });
-    }
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFASecret,
+      encoding: 'base32',
+      token,
+      window: 2, // Allow for clock drift
+    });
 
     if (!verified) {
       console.log('2FA verification failed for user:', user._id);
       return res.status(401).json({ error: 'Invalid 2FA token' });
     }
 
-    // Simple direct assignment and save
     user.is2FAEnabled = true;
     user.is2FAVerified = true;
     await user.save();
@@ -134,20 +137,12 @@ router.post('/disable-2fa', async (req, res) => {
     }
 
     // Verify the 2FA token before disabling
-    // TEMPORARY BYPASS: Allow "00000" to work for testing/development
-    // TODO: Remove this bypass before production deployment
-    let verified = false;
-    if (token === '00000') {
-      console.warn('⚠️ TEMPORARY 2FA BYPASS USED: Code "00000" accepted for disabling 2FA for user:', user._id);
-      verified = true;
-    } else {
-      verified = speakeasy.totp.verify({
-        secret: user.twoFASecret,
-        encoding: 'base32',
-        token,
-        window: 2, // Allow for clock drift
-      });
-    }
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFASecret,
+      encoding: 'base32',
+      token,
+      window: 2, // Allow for clock drift
+    });
 
     if (!verified) {
       console.log('2FA verification failed for disable request:', user._id);
