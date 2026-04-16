@@ -1779,4 +1779,242 @@ router.get('/token-volume', async (req, res) => {
   }
 });
 
+// ============================================================
+// BALANCE HISTORY & FUNDING HISTORY
+// ============================================================
+
+const PlatformSnapshot = require('../models/platformSnapshot');
+const FundingEvent     = require('../models/fundingEvent');
+
+/**
+ * Shared helper — computes current platform wallet totals.
+ * Returns the snapshot payload ready to save or return directly.
+ */
+async function computePlatformSnapshot() {
+  const NairaMarkdown = require('../models/offramp');
+  const nairaMarkdown = await NairaMarkdown.findOne();
+  const offrampRate   = nairaMarkdown?.offrampRate || 1554.42;
+  const ngnzPriceUsd  = 1 / offrampRate;
+
+  const cryptoTokens = ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'MATIC', 'TRX'];
+  let prices = {};
+  try {
+    prices = await getPricesWithCache(cryptoTokens) || {};
+  } catch {
+    prices = { BTC: 65000, ETH: 3200, SOL: 200, USDT: 1, USDC: 1, BNB: 580, MATIC: 0.85, TRX: 0.14 };
+  }
+
+  const walletBalances = await User.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalBtc:       { $sum: { $ifNull: ['$btcBalance', 0] } },
+        totalEth:       { $sum: { $ifNull: ['$ethBalance', 0] } },
+        totalSol:       { $sum: { $ifNull: ['$solBalance', 0] } },
+        totalUsdt:      { $sum: { $ifNull: ['$usdtBalance', 0] } },
+        totalUsdc:      { $sum: { $ifNull: ['$usdcBalance', 0] } },
+        totalBnb:       { $sum: { $ifNull: ['$bnbBalance', 0] } },
+        totalMatic:     { $sum: { $ifNull: ['$maticBalance', 0] } },
+        totalTrx:       { $sum: { $ifNull: ['$trxBalance', 0] } },
+        totalNgnz:      { $sum: { $ifNull: ['$ngnzBalance', 0] } },
+        totalBtcPending:   { $sum: { $ifNull: ['$btcPendingBalance', 0] } },
+        totalEthPending:   { $sum: { $ifNull: ['$ethPendingBalance', 0] } },
+        totalSolPending:   { $sum: { $ifNull: ['$solPendingBalance', 0] } },
+        totalUsdtPending:  { $sum: { $ifNull: ['$usdtPendingBalance', 0] } },
+        totalUsdcPending:  { $sum: { $ifNull: ['$usdcPendingBalance', 0] } },
+        totalBnbPending:   { $sum: { $ifNull: ['$bnbPendingBalance', 0] } },
+        totalMaticPending: { $sum: { $ifNull: ['$maticPendingBalance', 0] } },
+        totalTrxPending:   { $sum: { $ifNull: ['$trxPendingBalance', 0] } },
+        totalNgnzPending:  { $sum: { $ifNull: ['$ngnzPendingBalance', 0] } },
+        userCount: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const b = walletBalances[0] || {};
+
+  const breakdown = {
+    BTC:  { amount: b.totalBtc  || 0, pendingAmount: b.totalBtcPending  || 0, priceUsd: prices.BTC  || 0, usdValue: (b.totalBtc  || 0) * (prices.BTC  || 0), pendingUsdValue: (b.totalBtcPending  || 0) * (prices.BTC  || 0) },
+    ETH:  { amount: b.totalEth  || 0, pendingAmount: b.totalEthPending  || 0, priceUsd: prices.ETH  || 0, usdValue: (b.totalEth  || 0) * (prices.ETH  || 0), pendingUsdValue: (b.totalEthPending  || 0) * (prices.ETH  || 0) },
+    SOL:  { amount: b.totalSol  || 0, pendingAmount: b.totalSolPending  || 0, priceUsd: prices.SOL  || 0, usdValue: (b.totalSol  || 0) * (prices.SOL  || 0), pendingUsdValue: (b.totalSolPending  || 0) * (prices.SOL  || 0) },
+    USDT: { amount: b.totalUsdt || 0, pendingAmount: b.totalUsdtPending || 0, priceUsd: prices.USDT || 1, usdValue: (b.totalUsdt || 0) * (prices.USDT || 1), pendingUsdValue: (b.totalUsdtPending || 0) * (prices.USDT || 1) },
+    USDC: { amount: b.totalUsdc || 0, pendingAmount: b.totalUsdcPending || 0, priceUsd: prices.USDC || 1, usdValue: (b.totalUsdc || 0) * (prices.USDC || 1), pendingUsdValue: (b.totalUsdcPending || 0) * (prices.USDC || 1) },
+    BNB:  { amount: b.totalBnb  || 0, pendingAmount: b.totalBnbPending  || 0, priceUsd: prices.BNB  || 0, usdValue: (b.totalBnb  || 0) * (prices.BNB  || 0), pendingUsdValue: (b.totalBnbPending  || 0) * (prices.BNB  || 0) },
+    MATIC:{ amount: b.totalMatic|| 0, pendingAmount: b.totalMaticPending|| 0, priceUsd: prices.MATIC|| 0, usdValue: (b.totalMatic|| 0) * (prices.MATIC|| 0), pendingUsdValue: (b.totalMaticPending|| 0) * (prices.MATIC|| 0) },
+    TRX:  { amount: b.totalTrx  || 0, pendingAmount: b.totalTrxPending  || 0, priceUsd: prices.TRX  || 0, usdValue: (b.totalTrx  || 0) * (prices.TRX  || 0), pendingUsdValue: (b.totalTrxPending  || 0) * (prices.TRX  || 0) },
+    NGNZ: { amount: b.totalNgnz || 0, pendingAmount: b.totalNgnzPending || 0, priceUsd: ngnzPriceUsd,     usdValue: (b.totalNgnz || 0) * ngnzPriceUsd,        pendingUsdValue: (b.totalNgnzPending || 0) * ngnzPriceUsd },
+  };
+
+  const totalUsd          = Object.values(breakdown).reduce((s, t) => s + t.usdValue, 0);
+  const totalPendingUsd   = Object.values(breakdown).reduce((s, t) => s + t.pendingUsdValue, 0);
+  const totalNaira        = totalUsd * offrampRate;
+  const totalPendingNaira = totalPendingUsd * offrampRate;
+
+  return {
+    usdToNairaRate: offrampRate,
+    totalUsd:       parseFloat(totalUsd.toFixed(2)),
+    totalNaira:     parseFloat(totalNaira.toFixed(2)),
+    totalPendingUsd:    parseFloat(totalPendingUsd.toFixed(2)),
+    totalPendingNaira:  parseFloat(totalPendingNaira.toFixed(2)),
+    userCount:      b.userCount || 0,
+    breakdown,
+  };
+}
+
+// POST /analytics/snapshot — manually take a balance snapshot
+router.post('/snapshot', async (req, res) => {
+  try {
+    const adminId = req.admin?._id || req.user?._id;
+    const { notes } = req.body;
+
+    const data = await computePlatformSnapshot();
+    const snapshot = await PlatformSnapshot.create({
+      ...data,
+      snapshotType: 'manual',
+      takenBy: adminId,
+      notes: notes || '',
+    });
+
+    res.json({ success: true, message: 'Snapshot saved', data: snapshot });
+  } catch (error) {
+    console.error('Error creating snapshot:', error);
+    res.status(500).json({ success: false, error: 'Failed to create snapshot', message: error.message });
+  }
+});
+
+// GET /analytics/balance-history — paginated list of snapshots
+router.get('/balance-history', async (req, res) => {
+  try {
+    const { dateFrom, dateTo, page = 1, limit = 30, type } = req.query;
+    const query = {};
+
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
+      if (dateTo)   query.createdAt.$lte = new Date(new Date(dateTo).setHours(23, 59, 59, 999));
+    }
+    if (type && ['auto', 'manual'].includes(type)) query.snapshotType = type;
+
+    const pageNum  = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip     = (pageNum - 1) * limitNum;
+
+    const [snapshots, total] = await Promise.all([
+      PlatformSnapshot.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .populate('takenBy', 'adminName email')
+        .lean(),
+      PlatformSnapshot.countDocuments(query),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        snapshots,
+        pagination: {
+          total,
+          page: pageNum,
+          limit: limitNum,
+          pages: Math.ceil(total / limitNum),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching balance history:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch balance history', message: error.message });
+  }
+});
+
+// POST /analytics/funding-events — log a funding event
+router.post('/funding-events', async (req, res) => {
+  try {
+    const adminId = req.admin?._id || req.user?._id;
+    const { type, amountNaira, amountUsd, description, reference } = req.body;
+
+    const validTypes = ['obiex_topup', 'bank_deposit', 'manual_funding', 'platform_withdrawal', 'other'];
+    if (!type || !validTypes.includes(type)) {
+      return res.status(400).json({ success: false, error: `type must be one of: ${validTypes.join(', ')}` });
+    }
+    if (!amountNaira && !amountUsd) {
+      return res.status(400).json({ success: false, error: 'Provide at least amountNaira or amountUsd' });
+    }
+
+    const event = await FundingEvent.create({
+      type,
+      amountNaira: amountNaira || 0,
+      amountUsd:   amountUsd   || 0,
+      description: description || '',
+      reference:   reference   || '',
+      recordedBy:  adminId,
+    });
+
+    res.status(201).json({ success: true, message: 'Funding event recorded', data: event });
+  } catch (error) {
+    console.error('Error recording funding event:', error);
+    res.status(500).json({ success: false, error: 'Failed to record funding event', message: error.message });
+  }
+});
+
+// GET /analytics/funding-history — paginated list of funding events
+router.get('/funding-history', async (req, res) => {
+  try {
+    const { dateFrom, dateTo, page = 1, limit = 30, type } = req.query;
+    const query = {};
+
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
+      if (dateTo)   query.createdAt.$lte = new Date(new Date(dateTo).setHours(23, 59, 59, 999));
+    }
+    if (type) query.type = type;
+
+    const pageNum  = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip     = (pageNum - 1) * limitNum;
+
+    const [events, total] = await Promise.all([
+      FundingEvent.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .populate('recordedBy', 'adminName email')
+        .lean(),
+      FundingEvent.countDocuments(query),
+    ]);
+
+    // Summary totals for the filtered range
+    const summary = await FundingEvent.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: '$type',
+          totalNaira: { $sum: '$amountNaira' },
+          totalUsd:   { $sum: '$amountUsd' },
+          count:      { $sum: 1 },
+        },
+      },
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        events,
+        summary,
+        pagination: {
+          total,
+          page: pageNum,
+          limit: limitNum,
+          pages: Math.ceil(total / limitNum),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching funding history:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch funding history', message: error.message });
+  }
+});
+
 module.exports = router;
+module.exports.computePlatformSnapshot = computePlatformSnapshot;

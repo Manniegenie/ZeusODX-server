@@ -750,6 +750,20 @@ cron.schedule('*/15 * * * *', async () => {
   }
 });
 
+// Daily platform balance snapshot at midnight UTC
+const { computePlatformSnapshot } = require('./adminRoutes/analytics');
+const PlatformSnapshot = require('./models/platformSnapshot');
+cron.schedule('0 0 * * *', async () => {
+  try {
+    console.log('📸 Taking daily platform balance snapshot...');
+    const data = await computePlatformSnapshot();
+    await PlatformSnapshot.create({ ...data, snapshotType: 'auto', takenBy: null });
+    console.log('✅ Daily platform snapshot saved');
+  } catch (error) {
+    console.error('❌ Daily platform snapshot failed:', error.message);
+  }
+});
+
 // Start Server
 const startServer = async () => {
   try {
