@@ -8,9 +8,12 @@ const adminAuditLogSchema = new mongoose.Schema(
     adminRole:  { type: String },
     method:     { type: String },       // GET, POST, PATCH, DELETE
     route:      { type: String, index: true }, // full originalUrl
-    action:     { type: String },       // human-readable label
-    requestBody: { type: mongoose.Schema.Types.Mixed },
-    statusCode: { type: Number },
+    action:          { type: String },       // human-readable label
+    requestBody:     { type: mongoose.Schema.Types.Mixed },
+    targetUserId:    { type: String },       // user/entity affected by the action
+    targetUserEmail: { type: String },       // email of affected user if available
+    details:         { type: String },       // short human-readable summary of key params
+    statusCode:      { type: Number },
     ipAddress:  { type: String },
     userAgent:  { type: String },
     durationMs: { type: Number },

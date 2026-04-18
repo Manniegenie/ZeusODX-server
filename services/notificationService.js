@@ -816,6 +816,28 @@ async function sendGiftcardSubmissionNotification(userId, cardType, cardValue, e
 }
 
 /**
+ * Send giftcard under review notification
+ */
+async function sendGiftcardReviewingNotification(userId, cardType, submissionId) {
+  try {
+    const notificationData = {
+      title: 'Gift Card Under Review',
+      body: `Your ${cardType} gift card submission is currently being reviewed. We'll notify you once it's processed.`,
+      data: {
+        type: 'GIFTCARD_REVIEWING',
+        cardType,
+        submissionId,
+        screen: 'GiftCardHistory'
+      }
+    };
+    return await sendNotificationToUser(userId, notificationData);
+  } catch (error) {
+    logger.error('Failed to send giftcard reviewing notification', { userId, submissionId, error: error.message });
+    return { success: false, message: 'Failed to send giftcard reviewing notification' };
+  }
+}
+
+/**
  * Send giftcard approval notification
  */
 async function sendGiftcardApprovalNotification(userId, cardType, paymentAmount, submissionId) {
@@ -908,6 +930,7 @@ module.exports = {
   sendSwapCompletionNotification,
   sendUtilityPaymentNotification,
   sendGiftcardSubmissionNotification,
+  sendGiftcardReviewingNotification,
   sendGiftcardApprovalNotification,
   sendGiftcardRejectionNotification,
   NOTIFICATION_TEMPLATES

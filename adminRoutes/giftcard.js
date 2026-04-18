@@ -7,7 +7,7 @@ const Transaction = require('../models/transaction');
 const logger = require('../utils/logger');
 const validator = require('validator');
 const { SendGiftcardMail } = require('../services/EmailService');
-const { sendGiftcardApprovalNotification, sendGiftcardRejectionNotification } = require('../services/notificationService');
+const { sendGiftcardApprovalNotification, sendGiftcardRejectionNotification, sendGiftcardReviewingNotification } = require('../services/notificationService');
 
 // Rate ranges configuration
 const RATE_RANGES_CONFIG = {
@@ -726,12 +726,12 @@ router.post('/submissions/:id/approve', async (req, res) => {
       });
     }
 
-    // Only allow approval of PENDING submissions
-    if (submission.status !== 'PENDING') {
+    // Only allow approval of PENDING or REVIEWING submissions
+    if (submission.status !== 'PENDING' && submission.status !== 'REVIEWING') {
       logger.warn('Cannot approve submission with current status', {
         submissionId: id,
         currentStatus: submission.status,
-        allowedStatus: 'PENDING'
+        allowedStatuses: ['PENDING', 'REVIEWING']
       });
       return res.status(400).json({
         success: false,
@@ -740,7 +740,7 @@ router.post('/submissions/:id/approve', async (req, res) => {
           ? 'Cannot approve rejected submissions'
           : submission.status === 'PAID'
           ? 'Submission has already been paid'
-          : `Only PENDING submissions can be approved`
+          : `Only PENDING or REVIEWING submissions can be approved`
       });
     }
 
@@ -1068,7 +1068,7 @@ router.post('/submissions/:id/review', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Valid submission ID is required.' });
     }
 
-    const submission = await GiftCard.findById(id);
+    const submission = await GiftCard.findById(id).populate('userId', 'firstname username');
     if (!submission) {
       return res.status(404).json({ success: false, error: 'Gift card submission not found.' });
     }
@@ -1084,6 +1084,25 @@ router.post('/submissions/:id/review', async (req, res) => {
     await submission.save();
 
     logger.info('Gift card submission marked as reviewing', { submissionId: id });
+
+    // Notify the user that their submission is under review
+    try {
+      await sendGiftcardReviewingNotification(
+        submission.userId._id,
+        submission.cardType,
+        submission._id.toString()
+      );
+      logger.info('Giftcard reviewing notification sent', {
+        userId: submission.userId._id,
+        submissionId: submission._id
+      });
+    } catch (notifError) {
+      logger.error('Failed to send giftcard reviewing notification', {
+        userId: submission.userId?._id,
+        submissionId: submission._id,
+        error: notifError.message
+      });
+    }
 
     return res.status(200).json({
       success: true,

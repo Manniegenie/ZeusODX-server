@@ -11,7 +11,7 @@ try {
 }
 
 const { validateObiexConfig, attachObiexAuth } = require('../utils/obiexAuth');
-const { migrateCode } = require('../utils/sortCodeMigration');
+const { resolveCode } = require('../utils/bankCodeResolver');
 
 const baseURL = (config.obiex && String(config.obiex.baseURL || '').replace(/\/+$/, '')) ||
   String(process.env.OBIEX_BASE_URL || '').replace(/\/+$/, '');
@@ -39,12 +39,14 @@ function cleanStr(v) {
   return (v ?? '').toString().trim(); 
 }
 
-function sanitizeDestination(d = {}) {
+async function sanitizeDestination(d = {}) {
+  const bankName = cleanStr(d.bankName);
+  const storedCode = cleanStr(d.bankCode);
   return {
     accountNumber: cleanStr(d.accountNumber),
     accountName: cleanStr(d.accountName),
-    bankName: cleanStr(d.bankName),
-    bankCode: migrateCode(cleanStr(d.bankCode)),
+    bankName,
+    bankCode: await resolveCode(bankName, storedCode),
     // Optional fields
     pagaBankCode: d.pagaBankCode ? cleanStr(d.pagaBankCode) : undefined,
     merchantCode: d.merchantCode ? cleanStr(d.merchantCode) : undefined,
@@ -55,11 +57,11 @@ function sanitizeDestination(d = {}) {
  * Sanitize and prepare the payload for Obiex fiat debit
  * Currency should be NGNX for Obiex (NGNZ maps to NGNX)
  */
-function sanitizeFiatPayload(body = {}) {
-  const destination = sanitizeDestination(body.destination || {});
+async function sanitizeFiatPayload(body = {}) {
+  const destination = await sanitizeDestination(body.destination || {});
   const amount = Number(body.amount);
   const currency = cleanStr(body.currency || 'NGNX').toUpperCase();
-  const narration = cleanStr(body.narration) || 
+  const narration = cleanStr(body.narration) ||
     `NGNX withdrawal to ${destination.accountName || 'beneficiary'} (${maskAccountNumber(destination.accountNumber)})`;
 
   return { destination, amount, currency, narration };
@@ -125,7 +127,7 @@ async function debitNaira(payload, opts = {}) {
   // Validate Obiex configuration
   validateObiexConfig();
 
-  const clean = sanitizeFiatPayload(payload);
+  const clean = await sanitizeFiatPayload(payload);
   const errors = validateFiatPayload(clean);
   
   if (errors.length) {
