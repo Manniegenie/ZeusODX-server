@@ -11,11 +11,19 @@ router.get('/setup-2fa', async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Reuse the existing secret if setup is in progress (not yet enabled).
-    // Regenerating on every call means the user copies one key while the DB
-    // already holds a different one — causing "invalid 2FA" on first use.
+    // Block re-setup if 2FA is already active — user must disable it first.
+    // Allowing this silently replaces the stored secret while the authenticator
+    // app still holds the old one, causing all future codes to fail.
+    if (user.is2FAEnabled) {
+      return res.status(409).json({
+        error: '2FA is already enabled. Disable it first before setting up again.',
+      });
+    }
+
+    // Reuse in-progress secret so repeated calls to this endpoint before
+    // verification don't rotate the secret out from under the user.
     let base32Secret;
-    if (user.twoFASecret && !user.is2FAEnabled) {
+    if (user.twoFASecret) {
       base32Secret = user.twoFASecret;
     } else {
       const secret = speakeasy.generateSecret({
@@ -23,7 +31,6 @@ router.get('/setup-2fa', async (req, res) => {
       });
       base32Secret = secret.base32;
       user.twoFASecret = base32Secret;
-      user.is2FAEnabled = false;
       user.is2FAVerified = false;
       await user.save();
     }
