@@ -14,8 +14,8 @@ function validateTwoFactorAuth(user, twoFactorCode) {
   return speakeasy.totp.verify({
     secret: user.twoFASecret,
     encoding: 'base32',
-    token: twoFactorCode,
-    window: 2,
+    token: String(twoFactorCode).trim(),
+    window: 3,
   });
 }
 

@@ -275,7 +275,7 @@ router.post('/crypto', idempotencyMiddleware, async (req, res) => {
         attemptsRemaining: remainingAttempts
       });
 
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: remainingAttempts > 0
           ? `Invalid 2FA code. ${remainingAttempts} attempt(s) remaining.`

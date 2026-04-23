@@ -95,7 +95,7 @@ function validateWithdrawalRequest(data) {
   if (data.amount < minimumWithdrawal) {
     errors.push(`Minimum withdrawal is ₦${minimumWithdrawal}`);
   }
-  if (!data.twoFactorCode) errors.push('2FA code is required');
+  if (!data.twoFactorCode || !/^\d{6}$/.test(String(data.twoFactorCode).trim())) errors.push('Valid 6-digit 2FA code is required');
   if (!data.passwordpin || !/^\d{6}$/.test(data.passwordpin)) errors.push('Valid 6-digit PIN is required');
   
   return errors;
@@ -346,7 +346,7 @@ router.post('/withdraw', idempotencyMiddleware, async (req, res) => {
         attemptsRemaining: remainingAttempts
       });
 
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: remainingAttempts > 0
           ? `Invalid 2FA code. ${remainingAttempts} attempt(s) remaining.`
