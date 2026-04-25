@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const PendingUser = require('../models/pendinguser');
-const User = require('../models/user'); 
+const User = require('../models/user');
+const Referral = require('../models/referral');
 const { sendVerificationCode } = require('../utils/verifyAT');
 const logger = require('../utils/logger');
 const validator = require('validator');
@@ -55,7 +56,7 @@ function normalizeNigerianPhone(phone) {
 
 // POST: /add-user
 router.post('/add-user', async (req, res) => {
-  let { email, firstname, middlename, lastname, phonenumber } = req.body;
+  let { email, firstname, middlename, lastname, phonenumber, referralCode } = req.body;
 
   // Validate presence of all required fields
   if (!email || !firstname || !lastname || !phonenumber) {
@@ -91,6 +92,23 @@ router.post('/add-user', async (req, res) => {
   // Validate phone number format (Nigerian: +234 followed by 10 digits)
   if (!/^\+234[789][01]\d{8}$/.test(phonenumber)) {
     return res.status(400).json({ message: 'Invalid phone number. Use Nigerian format +2348xxxxxxxxx.' });
+  }
+
+  // Normalise and validate referral code if provided (optional field)
+  let validatedReferralCode = null;
+  if (referralCode) {
+    const cleaned = String(referralCode).toUpperCase().trim();
+
+    if (!/^[A-Z0-9]{8}$/.test(cleaned)) {
+      return res.status(400).json({ message: 'Invalid referral code format.' });
+    }
+
+    const referralDoc = await Referral.findOne({ referralCode: cleaned, isActive: true }).lean();
+    if (!referralDoc) {
+      return res.status(400).json({ message: 'Referral code not found or no longer active.' });
+    }
+
+    validatedReferralCode = cleaned;
   }
 
   try {
@@ -144,7 +162,8 @@ router.post('/add-user', async (req, res) => {
       phonenumber,
       verificationCode: otp,
       verificationCodeCreatedAt: createdAt,
-      verificationCodeExpiresAt: expiresAt
+      verificationCodeExpiresAt: expiresAt,
+      referralCode: validatedReferralCode  // null if not provided
     });
 
     await pendingUser.save();

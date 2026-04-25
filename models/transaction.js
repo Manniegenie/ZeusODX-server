@@ -95,7 +95,8 @@ const transactionSchema = new mongoose.Schema({
       'SWAP',
       'OBIEX_SWAP',
       'GIFTCARD',
-      'GIFTCARD_PAYOUT'
+      'GIFTCARD_PAYOUT',
+      'REFERRAL_REWARD'
     ],
     required: true
   },

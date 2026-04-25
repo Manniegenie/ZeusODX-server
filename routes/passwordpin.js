@@ -3,9 +3,11 @@ const jwt = require("jsonwebtoken");
 const router = express.Router();
 const User = require('../models/user');
 const PendingUser = require("../models/pendinguser");
+const Referral = require('../models/referral');
 const config = require("./config");
 const logger = require('../utils/logger');
 const { sendSignupEmail, addContactToBrevo } = require('../services/EmailService');
+const { generateUniqueReferralCode } = require('../utils/generateReferralCode');
 
 // Function to generate unique username from first name
 const generateUniqueUsername = async (firstName) => {
@@ -112,7 +114,8 @@ router.post('/password-pin', async (req, res) => {
       firstname,
       middlename,
       lastname,
-      phonenumber
+      phonenumber,
+      referralCode: pendingReferralCode
     } = pendingUser;
 
     // Generate unique username from first name (placeholder - can be changed once via username endpoint)
@@ -129,6 +132,7 @@ router.post('/password-pin', async (req, res) => {
       password: null, // Explicitly set to null
       passwordpin: newPin, // Set the PIN - let the model handle hashing
       transactionpin: null,
+      referredBy: pendingReferralCode || null, // Carry over from signup if provided
       wallets: {
         // Initialize empty wallet structure - wallets will be generated on-demand
         BTC_BTC: { address: null, network: null, walletReferenceId: null },
@@ -284,6 +288,60 @@ router.post('/password-pin', async (req, res) => {
     newUser.refreshTokens.push({ token: refreshToken, createdAt: new Date() });
     await newUser.save();
 
+    // ── Referral program: generate unique code for every new user ─────────────
+    try {
+      const referralCode = await generateUniqueReferralCode();
+
+      // Persist the code on the User document for fast lookups
+      newUser.referralCode = referralCode;
+      await newUser.save();
+
+      // Create the Referral record that tracks earnings / referred users
+      await Referral.create({
+        userId: newUser._id,
+        referralCode,
+      });
+
+      logger.info('Referral code created for new user', {
+        userId: newUser._id,
+        referralCode,
+        source: 'password-pin',
+      });
+
+      // If this user signed up with someone's referral code, register them
+      // in the referrer's Referral document so earnings tracking is live.
+      if (pendingReferralCode) {
+        try {
+          const referrerDoc = await Referral.findOne({ referralCode: pendingReferralCode });
+          if (referrerDoc) {
+            await referrerDoc.addReferredUser(newUser._id);
+            logger.info('New user registered under referrer', {
+              newUserId: newUser._id,
+              referralCode: pendingReferralCode,
+              referrerId: referrerDoc.userId,
+              source: 'password-pin',
+            });
+          }
+        } catch (referrerLinkError) {
+          // Non-fatal — don't fail account creation over this.
+          logger.error('Failed to link new user to referrer document', {
+            newUserId: newUser._id,
+            referralCode: pendingReferralCode,
+            error: referrerLinkError.message,
+            source: 'password-pin',
+          });
+        }
+      }
+    } catch (referralError) {
+      // Non-fatal — account creation has already succeeded. Log and move on.
+      logger.error('Failed to create referral code for new user', {
+        userId: newUser._id,
+        error: referralError.message,
+        source: 'password-pin',
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // DEBUG: Log generated tokens (for debugging only - remove in production)
     logger.info('JWT tokens generated', {
       userId: newUser._id,
@@ -354,9 +412,11 @@ router.post('/password-pin', async (req, res) => {
         firstname: newUser.firstname,
         middlename: newUser.middlename,
         lastname: newUser.lastname,
-        username: newUser.username, // Now includes generated username
+        username: newUser.username,
         kycLevel: newUser.kycLevel,
         kycStatus: newUser.kycStatus,
+        referralCode: newUser.referralCode || null,
+        referredBy: newUser.referredBy || null,
       },
       accessToken,
       refreshToken,

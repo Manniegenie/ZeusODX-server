@@ -10,6 +10,7 @@ const TransactionAudit = require('../models/TransactionAudit');
 const logger = require('../utils/logger');
 const { RedisLock } = require('../utils/redisLock');
 const { sendSwapCompletionNotification } = require('../services/notificationService');
+const { creditOfframpReferralReward } = require('../services/referralRewardService');
 
 const router = express.Router();
 
@@ -1421,7 +1422,20 @@ router.post('/quote/:quoteId', async (req, res) => {
       executeObiexNGNZSwapBackground(userId, quote, swapResult.swapId, correlationId, systemContext);
     });
 
-    logger.info('NGNZ swap completed, Obiex NGNZ swap initiated in background', { 
+    // ── Revenue-sharing referral reward (offramp only, non-blocking) ──────────
+    // Credit ₦1 NGNZ to the referrer whenever their referee completes a
+    // Crypto → NGNZ offramp swap. Runs fully in the background; any failure
+    // is logged but never affects the swap response.
+    if (quote.flow === 'OFFRAMP') {
+      // quote.sourceAmountUSD = USD value of the crypto the referee sold
+      // e.g. 0.01 BTC @ $100,000 = $1000 → referrer receives 1000 NGNZ
+      setImmediate(() => {
+        creditOfframpReferralReward(userId, swapResult.swapId, quote.sourceAmountUSD, correlationId);
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    logger.info('NGNZ swap completed, Obiex NGNZ swap initiated in background', {
       userId, 
       quoteId, 
       correlationId,

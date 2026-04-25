@@ -12,7 +12,10 @@ const pendingUserSchema = new mongoose.Schema({
 
   // OTP verification status fields
   otpVerified: { type: Boolean, default: false },
-  otpVerifiedAt: { type: Date, default: null }
+  otpVerifiedAt: { type: Date, default: null },
+
+  // Optional referral code entered at signup (validated against Referral collection)
+  referralCode: { type: String, default: null, uppercase: true, trim: true }
 }, { timestamps: true });
 
 /**

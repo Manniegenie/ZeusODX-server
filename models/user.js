@@ -181,6 +181,12 @@ const userSchema = new mongoose.Schema({
   is2FAEnabled: { type: Boolean, default: false },
   is2FAVerified: { type: Boolean, default: false },
 
+  // Referral program
+  // The user's own unique 8-character referral code (populated after pin is set)
+  referralCode: { type: String, default: null, uppercase: true, trim: true },
+  // The referral code the user signed up with (null if organic signup)
+  referredBy: { type: String, default: null, uppercase: true, trim: true },
+
   // Refresh tokens
   refreshTokens: [
     { token: String, createdAt: { type: Date, default: Date.now } }
@@ -194,6 +200,8 @@ userSchema.index({ phonenumber: 1 }, { unique: true, sparse: true });
 userSchema.index({ bvn: 1 }, { unique: true, sparse: true });
 userSchema.index({ kycLevel: 1, kycStatus: 1 });
 userSchema.index({ isBlocked: 1 }); // Index for blocked user queries
+userSchema.index({ referralCode: 1 }, { unique: true, sparse: true });
+userSchema.index({ referredBy: 1 }, { sparse: true });
 
 // Virtuals
 userSchema.virtual('id').get(function () { return this._id.toHexString(); });
