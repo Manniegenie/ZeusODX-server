@@ -133,10 +133,18 @@ referralSchema.methods.addReferredUser = async function (newUserId) {
  * @param {number}          earningsAmount  Amount in NGNZ to credit
  */
 referralSchema.methods.recordConversion = async function (referredUserId, earningsAmount = 0) {
-  const entry = this.referredUsers.find(
+  let entry = this.referredUsers.find(
     (r) => r.userId.toString() === referredUserId.toString()
   );
-  if (!entry) return this;
+
+  // Referee may not be in the array if the referral doc was auto-created for an
+  // existing user, or if addReferredUser was missed. Add them now so stats stay
+  // consistent and totalEarnings always gets credited.
+  if (!entry) {
+    this.referredUsers.push({ userId: referredUserId });
+    this.totalReferrals += 1;
+    entry = this.referredUsers[this.referredUsers.length - 1];
+  }
 
   if (!entry.hasConverted) {
     entry.hasConverted = true;
