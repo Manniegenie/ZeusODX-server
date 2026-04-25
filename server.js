@@ -267,6 +267,41 @@ const apiLimiter = rateLimit({
 // Apply global limiter to all routes
 app.use(apiLimiter);
 
+// Tight limiter for auth endpoints — prevents OTP/PIN brute-force
+// 10 requests per 15 minutes per IP (global 1000/15min still applies as outer bound)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { success: false, error: 'Too many attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.connection.remoteAddress || 'unknown',
+});
+
+// Per-user rate limiter for high-value financial endpoints
+// Uses userId from the JWT so a stolen token can't loop-abuse swap/withdrawal
+const { getRedisClient } = require('./utils/redis');
+const userFinancialLimiter = async (req, res, next) => {
+  const userId = req.user?.id;
+  if (!userId) return next(); // unauthenticated calls fall through to authenticateToken's own 401
+
+  try {
+    const redis = getRedisClient();
+    if (!redis) return next(); // Redis unavailable — fail open, don't block users
+
+    const key = `fin_limit:${userId}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, 60); // 1-minute window
+
+    if (count > 30) { // 30 requests per minute per user on financial routes
+      return res.status(429).json({ success: false, error: 'Too many requests. Please slow down.' });
+    }
+  } catch {
+    // Redis error — fail open
+  }
+  next();
+};
+
 const webhookLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50,
@@ -615,11 +650,11 @@ const adminAuditLog = require("./middleware/adminAuditLog");
 const auditLogsRoutes = require("./adminRoutes/auditlogs");
 
 // Public Routes
-app.use("/signin", signinRoutes);
-app.use("/signup", signupRoutes);
+app.use("/signin", authLimiter, signinRoutes);
+app.use("/signup", authLimiter, signupRoutes);
 app.use('/auth', refreshtokenRoutes);
-app.use("/verify-otp", verifyotpRoutes);
-app.use("/passwordpin", passwordpinRoutes);
+app.use("/verify-otp", authLimiter, verifyotpRoutes);
+app.use("/passwordpin", authLimiter, passwordpinRoutes);
 app.use("/usernamecheck", usernamecheckRoutes);
 app.use("/naira", nairaAccountsRoutes);
 app.use("/accountname", AccountnameRoutes);
@@ -689,7 +724,7 @@ app.use("/username", authenticateToken, usernameRoutes);
 app.use("/balance", authenticateToken, balanceRoutes);
 app.use("/deposit", authenticateToken, depositRoutes);
 app.use("/wallet", authenticateToken, walletRoutes);
-app.use("/withdraw", authenticateToken, withdrawRoutes);
+app.use("/withdraw", authenticateToken, userFinancialLimiter, withdrawRoutes);
 app.use("/validate-balance", authenticateToken, validatewithdrawRoutes);
 app.use("/2FA", authenticateToken, TwoFARoutes);
 app.use("/airtime", authenticateToken, AirtimeRoutes);
@@ -701,8 +736,8 @@ app.use("/betting", authenticateToken, BettingRoutes);
 app.use("/cabletv", authenticateToken, CableTVRoutes);
 app.use("/verifycabletv", authenticateToken, CableTVRoutes);
 app.use("/dashboard", authenticateToken, dashboardRoutes);
-app.use("/swap", authenticateToken, swapRoutes);
-app.use("/ngnz-swap", authenticateToken, ngnzSwapRoutes);
+app.use("/swap", authenticateToken, userFinancialLimiter, swapRoutes);
+app.use("/ngnz-swap", authenticateToken, userFinancialLimiter, ngnzSwapRoutes);
 app.use("/cable-packages", authenticateToken, cablepackagesRoutes);
 app.use("/username-withdraw", authenticateToken, usernamewithdrawRoutes);
 app.use("/user-query", authenticateToken, userqueryRoutes);
@@ -719,11 +754,11 @@ app.use("/giftcardrates", authenticateToken, giftcardRatesRoutes);
 app.use("/giftcardcountry", authenticateToken, giftcardcountryRoutes);
 app.use("/verification", authenticateToken, VerificationProgressRoutes);
 app.use("/enhanced-kyc", authenticateToken, EnhancedKYCRoutes);
-app.use("/ngnz-withdrawal", authenticateToken, NGNZWithdrawal);
+app.use("/ngnz-withdrawal", authenticateToken, userFinancialLimiter, NGNZWithdrawal);
 app.use("/nin", authenticateToken, NINRoutes);
 app.use("/email", authenticateToken, EmailVerifyRoutes)
 app.use("/kyc", authenticateToken, KYCRoutes);
-app.use("/forgot-pin", ForgotPinRoutes);
+app.use("/forgot-pin", authLimiter, ForgotPinRoutes);
 app.use("/collection", authenticateToken, collectionRoutes);
 app.use("/notifications", authenticateToken, notificationRoutes);
 app.use("/signup", resendOtpRoutes);
@@ -767,7 +802,13 @@ cron.schedule('0 0 * * *', async () => {
 // Start Server
 const startServer = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {});
+    await mongoose.connect(process.env.MONGODB_URI, {
+      maxPoolSize: 20,               // up to 20 concurrent DB connections
+      minPoolSize: 5,                // keep 5 warm at idle
+      serverSelectionTimeoutMS: 5000, // fail fast if DB unreachable at startup
+      socketTimeoutMS: 45000,        // drop stalled queries after 45 s
+      connectTimeoutMS: 10000,       // initial connection timeout
+    });
     console.log("✅ MongoDB Connected");
     
     // Fix CryptoFeeMarkup indexes after database connection

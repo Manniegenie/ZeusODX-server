@@ -24,6 +24,7 @@ const User = require('../models/user');
 const Referral = require('../models/referral');
 const Transaction = require('../models/transaction');
 const logger = require('../utils/logger');
+const { sendCustomNotification } = require('./notificationService');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -65,10 +66,6 @@ async function creditOfframpReferralReward(refereeUserId, swapReference, swapAmo
   // Compute reward up front so we can log it at every exit point
   const rewardNGNZ = computeRewardNGNZ(swapAmountUSD);
 
-  logger.info('Referral reward check triggered', {
-    refereeUserId, swapReference, swapAmountUSD, rewardNGNZ, correlationId
-  });
-
   if (rewardNGNZ <= 0) {
     logger.warn('Referral reward skipped — swap USD value is zero or invalid', {
       refereeUserId, swapReference, swapAmountUSD, correlationId
@@ -88,10 +85,6 @@ async function creditOfframpReferralReward(refereeUserId, swapReference, swapAmo
       });
       return;
     }
-
-    logger.info('Referral reward — referee referredBy value', {
-      refereeUserId, referredBy: referee.referredBy, swapReference, correlationId
-    });
 
     if (!referee.referredBy) {
       logger.info('Referral reward skipped — referee has no referral code (organic signup)', {
@@ -194,7 +187,17 @@ async function creditOfframpReferralReward(refereeUserId, swapReference, swapAmo
       throw txError;
     }
 
-    // ── 5. Update Referral doc stats (outside session — non-critical) ──────────
+    // ── 5. Push notification to referrer (non-blocking, non-critical) ────────
+    setImmediate(() => {
+      sendCustomNotification(
+        referrerId.toString(),
+        'Referral Reward Earned! 🎉',
+        `You earned ₦${rewardNGNZ.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} NGNZ from a referral swap.`,
+        { type: 'REFERRAL_REWARD', rewardNGNZ, swapReference }
+      ).catch(() => {}); // silent — reward already credited, notification is best-effort
+    });
+
+    // ── 6. Update Referral doc stats (outside session — non-critical) ──────────
     try {
       await referralDoc.recordConversion(refereeUserId, rewardNGNZ);
     } catch (referralUpdateError) {

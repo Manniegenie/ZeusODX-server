@@ -14,8 +14,8 @@ const { creditOfframpReferralReward } = require('../services/referralRewardServi
 
 const router = express.Router();
 
-// Optimized caching
-const ngnzQuoteCache = new Map();
+// Quote cache — Redis-backed with in-memory fallback (survives restarts, scales horizontally)
+const ngnzQuoteCache = require('../utils/redisQuoteCache');
 const userCache = new Map();
 const priceCache = new Map();
 const CACHE_TTL = 5000; // 5 seconds - reduced for profile data freshness
@@ -1180,9 +1180,8 @@ router.post('/quote', async (req, res) => {
       correlationId
     });
 
-    // OPTIMIZED CACHING WITH AUTO-CLEANUP
-    ngnzQuoteCache.set(id, payload);
-    setTimeout(() => ngnzQuoteCache.delete(id), 30000);
+    // Store in Redis (TTL handled server-side); no manual setTimeout needed
+    await ngnzQuoteCache.set(id, payload);
     
     const endTime = new Date();
 
@@ -1278,9 +1277,9 @@ router.post('/quote/:quoteId', async (req, res) => {
 
   try {
     const { quoteId } = req.params;
-    const quote = ngnzQuoteCache.get(quoteId);
+    const quote = await ngnzQuoteCache.get(quoteId);
     // Claim quote immediately to prevent concurrent execution
-    if (quote) ngnzQuoteCache.delete(quoteId);
+    if (quote) await ngnzQuoteCache.delete(quoteId);
     
     // Use existing correlation ID from quote or generate new one
     const correlationId = quote?.correlationId || generateCorrelationId();
@@ -1338,7 +1337,7 @@ router.post('/quote/:quoteId', async (req, res) => {
     }
 
     if (new Date() > new Date(quote.expiresAt)) {
-      ngnzQuoteCache.delete(quoteId);
+      await ngnzQuoteCache.delete(quoteId);
       
       await createAuditEntry({
         userId,
@@ -1444,7 +1443,7 @@ router.post('/quote/:quoteId', async (req, res) => {
     });
 
     // Clean up quote from cache
-    ngnzQuoteCache.delete(quoteId);
+    await ngnzQuoteCache.delete(quoteId);
     
     const endTime = new Date();
 
@@ -1647,13 +1646,8 @@ router.get('/supported-currencies', (req, res) => {
 setInterval(() => {
   const now = Date.now();
   
-  // Clean expired NGNZ quotes
-  for (const [key, quote] of ngnzQuoteCache.entries()) {
-    if (now > new Date(quote.expiresAt).getTime()) {
-      ngnzQuoteCache.delete(key);
-    }
-  }
-  
+  // NGNZ quote expiry is handled by Redis TTL — no manual sweep needed
+
   // Clean old user cache entries
   for (const [key, entry] of userCache.entries()) {
     if (now - entry.timestamp > CACHE_TTL) {
