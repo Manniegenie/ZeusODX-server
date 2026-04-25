@@ -428,60 +428,6 @@ const requireBanners = requirePermission('canManageBanners');
 const requireRemoveFunding = requirePermission('canRemoveFunding');
 const requireManageBalances = requirePermission('canManageBalances');
 
-// One-time migration: Backfill totalEarnings/pendingEarnings on Referral docs
-// for all REFERRAL_REWARD transactions that were credited before the
-// recordConversion bug was fixed (it silently returned when referee wasn't
-// in referredUsers, so balances were credited but Referral stats stayed at 0).
-const backfillReferralEarnings = async () => {
-  try {
-    const db = mongoose.connection.db;
-    const migrationsCollection = db.collection('migrations');
-
-    const migrationId = 'backfill_referral_earnings_v1';
-    const existing = await migrationsCollection.findOne({ _id: migrationId });
-    if (existing) {
-      console.log('ℹ️  Referral earnings backfill already completed, skipping');
-      return;
-    }
-
-    console.log('🔄 Running referral earnings backfill...');
-
-    const transactions = db.collection('transactions');
-    const referrals    = db.collection('referrals');
-
-    // Sum all REFERRAL_REWARD transactions per referrer userId
-    const rewards = await transactions.aggregate([
-      { $match: { type: 'REFERRAL_REWARD', status: 'SUCCESSFUL' } },
-      { $group: { _id: '$userId', total: { $sum: '$amount' } } },
-    ]).toArray();
-
-    if (rewards.length === 0) {
-      console.log('ℹ️  No REFERRAL_REWARD transactions found — nothing to backfill');
-    }
-
-    let updated = 0;
-    for (const { _id: userId, total } of rewards) {
-      // Only patch docs where totalEarnings is still 0 (not yet updated by the fixed code)
-      const result = await referrals.updateOne(
-        { userId, totalEarnings: 0 },
-        { $set: { totalEarnings: total, pendingEarnings: total } }
-      );
-      if (result.modifiedCount) updated++;
-    }
-
-    console.log(`✅ Referral earnings backfill completed: ${updated} of ${rewards.length} referral docs updated`);
-
-    await migrationsCollection.insertOne({
-      _id: migrationId,
-      completedAt: new Date(),
-      rewardersFound: rewards.length,
-      docsUpdated: updated,
-    });
-  } catch (error) {
-    console.error('❌ Error running referral earnings backfill:', error.message);
-  }
-};
-
 // One-time migration: Add swapDirection to existing swap transactions
 const migrateSwapDirections = async () => {
   try {
@@ -832,9 +778,6 @@ const startServer = async () => {
 
     // Run one-time swap direction migration
     await migrateSwapDirections();
-
-    // Backfill referral earnings for transactions credited before the recordConversion fix
-    await backfillReferralEarnings();
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🔥 Server running on port ${PORT}`);
