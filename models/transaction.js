@@ -132,7 +132,8 @@ const transactionSchema = new mongoose.Schema({
       'INTERNAL',
       'GIFTCARD',
       'NGNZ_WITHDRAWAL',
-      'OBIEX'
+      'OBIEX',
+      'REFERRAL_PROGRAM'
     ],
     default: 'CRYPTO_WALLET'
   },
