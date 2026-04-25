@@ -65,6 +65,10 @@ async function creditOfframpReferralReward(refereeUserId, swapReference, swapAmo
   // Compute reward up front so we can log it at every exit point
   const rewardNGNZ = computeRewardNGNZ(swapAmountUSD);
 
+  logger.info('Referral reward check triggered', {
+    refereeUserId, swapReference, swapAmountUSD, rewardNGNZ, correlationId
+  });
+
   if (rewardNGNZ <= 0) {
     logger.warn('Referral reward skipped — swap USD value is zero or invalid', {
       refereeUserId, swapReference, swapAmountUSD, correlationId
@@ -85,8 +89,14 @@ async function creditOfframpReferralReward(refereeUserId, swapReference, swapAmo
       return;
     }
 
+    logger.info('Referral reward — referee referredBy value', {
+      refereeUserId, referredBy: referee.referredBy, swapReference, correlationId
+    });
+
     if (!referee.referredBy) {
-      // Organic signup — no referrer to credit.
+      logger.info('Referral reward skipped — referee has no referral code (organic signup)', {
+        refereeUserId, swapReference, correlationId
+      });
       return;
     }
 
