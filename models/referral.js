@@ -104,8 +104,7 @@ const referralSchema = new mongoose.Schema(
 );
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
-referralSchema.index({ referralCode: 1 }, { unique: true });
-referralSchema.index({ userId: 1 }, { unique: true });
+// referralCode and userId already have unique: true in the field definition
 referralSchema.index({ isActive: 1 });
 
 // ─── Instance helpers ─────────────────────────────────────────────────────────

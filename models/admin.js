@@ -116,7 +116,6 @@ const adminUserSchema = new mongoose.Schema({
 });
 
 // Indexes
-adminUserSchema.index({ email: 1 }, { unique: true });
 adminUserSchema.index({ role: 1 });
 adminUserSchema.index({ isActive: 1 });
 adminUserSchema.index({ lastSuccessfulLogin: 1 });
