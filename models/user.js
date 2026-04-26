@@ -123,6 +123,7 @@ const userSchema = new mongoose.Schema({
     USDT_BSC: { address: String, network: String, walletReferenceId: String },
     USDT_ARBITRUM: { address: String, network: String, walletReferenceId: String },
     USDT_BASE: { address: String, network: String, walletReferenceId: String },
+    USDT_SOL: { address: String, network: String, walletReferenceId: String },
 
     // USDC variants
     USDC_ETH: { address: String, network: String, walletReferenceId: String },

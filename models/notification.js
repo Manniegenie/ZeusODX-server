@@ -43,6 +43,7 @@ const notificationSchema = new mongoose.Schema({
       'GIFTCARD_APPROVAL',
       'GIFTCARD_REJECTION',
       'giftcard_rates',
+      'REFERRAL_REWARD',
       'CUSTOM'
     ],
     default: 'CUSTOM',

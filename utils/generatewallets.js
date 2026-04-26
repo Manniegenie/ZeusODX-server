@@ -119,6 +119,7 @@ const CURRENCY_NETWORK_TO_SCHEMA = {
   'USDT_BSC': 'USDT_BSC',
   'USDT_ARBITRUM': 'USDT_ARBITRUM', // USDT on Arbitrum
   'USDT_BASE': 'USDT_BASE',         // USDT on Base
+  'USDT_SOL': 'USDT_SOL',           // USDT on Solana
   
   // USDC variants
   'USDC_ETH': 'USDC_ETH',           // USDC on Ethereum
