@@ -16,6 +16,17 @@ const {
 
 const CryptoFeeMarkup = require('../models/cryptofee');
 
+const SUPPORTED_TOKENS = {
+  BTC:  { name: 'Bitcoin',       symbol: 'BTC',  decimals: 8,  isStablecoin: false },
+  ETH:  { name: 'Ethereum',      symbol: 'ETH',  decimals: 18, isStablecoin: false },
+  SOL:  { name: 'Solana',        symbol: 'SOL',  decimals: 9,  isStablecoin: false },
+  USDT: { name: 'Tether',        symbol: 'USDT', decimals: 6,  isStablecoin: true  },
+  USDC: { name: 'USD Coin',      symbol: 'USDC', decimals: 6,  isStablecoin: true  },
+  BNB:  { name: 'Binance Coin',  symbol: 'BNB',  decimals: 18, isStablecoin: false },
+  TRX:  { name: 'Tron',          symbol: 'TRX',  decimals: 6,  isStablecoin: false },
+  TON:  { name: 'Toncoin',       symbol: 'TON',  decimals: 9,  isStablecoin: false },
+};
+
 // Function to generate a single wallet for a specific token/network and save to user
 const generateSingleWalletForUser = async (userId, email, schemaKey) => {
   try {
