@@ -4,6 +4,7 @@ const PendingUser = require('../models/pendinguser');
 const User = require('../models/user');
 const Referral = require('../models/referral');
 const { sendVerificationCode } = require('../utils/verifyAT');
+const { sendEmailVerificationOTP } = require('../services/EmailService');
 const logger = require('../utils/logger');
 const validator = require('validator');
 
@@ -168,6 +169,11 @@ router.post('/add-user', async (req, res) => {
 
     await pendingUser.save();
     logger.info('Pending user created and OTP sent', { email, phonenumber });
+
+    // Send OTP to email as well — non-blocking so SMS failure doesn't cascade
+    sendEmailVerificationOTP(email, firstname, otp, 10).catch(err =>
+      logger.warn('Signup: email OTP send failed (non-fatal)', { email: email.slice(0, 3) + '****', error: err.message })
+    );
 
     res.status(201).json({
       message: 'User created successfully. Verification code sent.',

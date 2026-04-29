@@ -106,7 +106,25 @@ router.post('/password-pin', async (req, res) => {
     }
 
     const now = new Date();
-    
+
+    // ── Guard: re-check email + phone uniqueness against the live User collection ──
+    // The signup check is stale — this user could have been created by a concurrent
+    // request or a retry between signup and PIN-set.
+    const conflict = await User.findOne({
+      $or: [{ email: pendingUser.email }, { phonenumber: pendingUser.phonenumber }]
+    }).select('_id email phonenumber').lean();
+
+    if (conflict) {
+      const field = conflict.email === pendingUser.email ? 'email' : 'phone number';
+      logger.warn('Duplicate user detected at password-pin step', {
+        pendingUserId,
+        field,
+        source: 'password-pin'
+      });
+      return res.status(409).json({ message: `An account with this ${field} already exists.` });
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
+
     // Create user document with KYC Level 1
     // Only use fields that exist in pendingUser model
     const {
@@ -214,15 +232,14 @@ router.post('/password-pin', async (req, res) => {
         });
       }
       
-      // Handle duplicate key errors (race condition - username taken between check and save)
+      // Handle duplicate key errors (race condition between check and save)
       if (saveError.code === 11000) {
         const duplicateField = Object.keys(saveError.keyPattern || {})[0];
         if (duplicateField === 'username') {
-          // Username was taken by another user between our check and save
-          // Regenerate username from firstname as fallback
-          logger.warn('Username collision during signup, regenerating', { 
-            requestedUsername: generatedUsername, 
-            pendingUserId 
+          // Username was taken between our check and save — regenerate
+          logger.warn('Username collision during signup, regenerating', {
+            requestedUsername: generatedUsername,
+            pendingUserId
           });
           const fallbackUsername = await generateUniqueUsername(firstname);
           newUser.username = fallbackUsername;
@@ -239,13 +256,19 @@ router.post('/password-pin', async (req, res) => {
               error: retryError.message,
               pendingUserId
             });
-            return res.status(500).json({ 
-              message: 'Failed to create account. Please try again.' 
+            return res.status(500).json({
+              message: 'Failed to create account. Please try again.'
             });
           }
+        } else if (duplicateField === 'email') {
+          logger.warn('Email already exists at save (race condition)', { pendingUserId });
+          return res.status(409).json({ message: 'An account with this email already exists.' });
+        } else if (duplicateField === 'phonenumber') {
+          logger.warn('Phone number already exists at save (race condition)', { pendingUserId });
+          return res.status(409).json({ message: 'An account with this phone number already exists.' });
         } else {
-          return res.status(400).json({ 
-            message: `${duplicateField} already exists` 
+          return res.status(409).json({
+            message: `An account with this ${duplicateField} already exists.`
           });
         }
       } else {
