@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '/Users/mac/Projects/Bramp-Server/.env' });
+require('dotenv').config();
 module.exports = {
   port: process.env.PORT || 3000,
   mongoURI: process.env.MONGODB_URI,
