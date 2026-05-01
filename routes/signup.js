@@ -149,7 +149,8 @@ router.post('/add-user', async (req, res) => {
     const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000);
 
     // Send OTP via Africa's Talking; fall back to Brevo SMS if AT fails
-    const atResult = await sendVerificationCode(phoneForSMS, otp);
+    // const atResult = await sendVerificationCode(phoneForSMS, otp);
+    const atResult = { success: false, error: 'AT temporarily disabled' };
     if (!atResult.success) {
       logger.warn('AT SMS failed, attempting Brevo SMS fallback', {
         phone: phoneForSMS.slice(0, 5) + '****',
