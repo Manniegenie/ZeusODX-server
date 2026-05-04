@@ -145,7 +145,7 @@ router.post('/add-user', async (req, res) => {
     // Generate OTP and expiration
     const otp = generateOTP();
     const createdAt = new Date();
-    const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000);
+    const expiresAt = new Date(createdAt.getTime() + 2 * 60 * 1000);
 
     // Send OTP via Africa's Talking
     const atResult = await sendVerificationCode(phoneForSMS, otp);
@@ -171,7 +171,7 @@ router.post('/add-user', async (req, res) => {
     logger.info('Pending user created and OTP sent', { email, phonenumber });
 
     // Send OTP to email as well — non-blocking so SMS failure doesn't cascade
-    sendEmailVerificationOTP(email, firstname, otp, 10).catch(err =>
+    sendEmailVerificationOTP(email, firstname, otp, 2).catch(err =>
       logger.warn('Signup: email OTP send failed (non-fatal)', { email: email.slice(0, 3) + '****', error: err.message })
     );
 
