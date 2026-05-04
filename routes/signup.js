@@ -5,7 +5,6 @@ const User = require('../models/user');
 const Referral = require('../models/referral');
 const { sendVerificationCode } = require('../utils/verifyAT');
 const { sendEmailVerificationOTP } = require('../services/EmailService');
-const { sendBrevoSMS } = require('../services/BrevoSMSService');
 const logger = require('../utils/logger');
 const validator = require('validator');
 
@@ -148,21 +147,11 @@ router.post('/add-user', async (req, res) => {
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000);
 
-    // Send OTP via Africa's Talking; fall back to Brevo SMS if AT fails
+    // Send OTP via Africa's Talking
     const atResult = await sendVerificationCode(phoneForSMS, otp);
     if (!atResult.success) {
-      logger.warn('AT SMS failed, attempting Brevo SMS fallback', {
-        phone: phoneForSMS.slice(0, 5) + '****',
-        error: atResult.error,
-      });
-      const brevoResult = await sendBrevoSMS(phonenumber, otp);
-      if (!brevoResult.success) {
-        logger.error('Both AT and Brevo SMS failed — OTP not delivered via SMS', {
-          phone: phoneForSMS.slice(0, 5) + '****',
-          brevoError: brevoResult.error,
-        });
-        // Email delivery (below) still proceeds; don't block signup entirely
-      }
+      logger.error('Failed to send OTP via AT', { phone: phoneForSMS.slice(0, 5) + '****', error: atResult.error });
+      return res.status(500).json({ message: 'Failed to send verification code.' });
     }
 
     // Save pending user (NORMALIZED phone only)
